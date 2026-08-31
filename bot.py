@@ -1,29 +1,128 @@
 import os
 import itertools
 import asyncio
+import datetime
+from zoneinfo import ZoneInfo
+
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from google import genai
 
+# --- CONFIGURATION & ENVIRONNEMENT ---
+TOKEN = os.getenv("DISCORD_TOKEN")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-intents = discord.Intents.default()
-intents.guilds = True
+# Salon secret pour le récapitulatif quotidien (Orgas / Spectateurs / Admins)
+# Définissez RECAP_CHANNEL_ID dans vos variables d'environnement
+RECAP_CHANNEL_ID = int(os.getenv("RECAP_CHANNEL_ID", 0))
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+# Heure du récapitulatif automatique chaque soir (Fuseau Paris)
+HEURE_RECAP = datetime.time(hour=23, minute=0, tzinfo=ZoneInfo("Europe/Paris"))
 
 MAX_CHANNELS_PER_CATEGORY = 45  # Marge de sécurité sous la limite Discord de 50
-
-# Rôles avec accès automatique à tous les duos
 ROLE_SPECTATEURS_NAME = "Spectateurs"
 ROLE_ORGAS_NAME = "Orgas"
 
+# Initialisation du client IA et du Bot Discord
+gemini_client = genai.Client(api_key=GEMINI_KEY)
+
+intents = discord.Intents.default()
+intents.guilds = True
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+# ==========================================
+# 1. FONCTIONS DE RÉCAPITULATIF JOURNALIER
+# ==========================================
+
+async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channel: discord.TextChannel):
+    """Scanne tous les salons duos des dernières 24h et publie une synthèse IA."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    depuis = now - datetime.timedelta(hours=24)
+
+    duo_transcripts = []
+
+    # Scanner tous les salons de duos
+    for channel in guild.text_channels:
+        if channel.name.startswith("duo-"):
+            messages = [
+                msg async for msg in channel.history(after=depuis, oldest_first=True)
+                if not msg.author.bot and msg.content.strip()
+            ]
+
+            if messages:
+                duo_name = channel.name.replace("duo-", "").replace("-", " & ")
+                lines = [f"[{msg.created_at.strftime('%H:%M')}] {msg.author.display_name}: {msg.content}" for msg in messages]
+                duo_transcripts.append(f"=== DUO : {duo_name} ({len(messages)} messages) ===\n" + "\n".join(lines))
+
+    if not duo_transcripts:
+        await target_channel.send("😴 **Journal du jour :** Aucun échange dans les salons duos au cours des dernières 24 heures.")
+        return
+
+    full_context = "\n\n".join(duo_transcripts)
+
+    prompt = (
+        "Tu es l'arbitre en chef d'un jeu de stratégie et d'alliances (type Koh-Lanta / Survivor / Secret Story).\n"
+        "Voici l'ensemble des discussions privées échangées aujourd'hui dans les différents salons duos :\n\n"
+        f"{full_context}\n\n"
+        "Rédige le **Journal de Bord Stratégique de la Journée** pour l'équipe d'organisation (Orgas/Spectateurs).\n"
+        "Structure ta réponse avec des titres clairs et des emojis :\n"
+        "1. 🌍 **Synthèse Générale de la Journée** (ambiance, intensité des complots, dynamiques)\n"
+        "2. 🤝 **Alliances & Pactes confirmés** (qui s'associe avec qui ?)\n"
+        "3. 🎯 **Cibles & Stratégies d'Élimination** (qui est en danger ? qui mène les votes ?)\n"
+        "4. ⚠️ **Trahisons & Double-Jeu** (incohérences, mensonges découverts, candidats en ballotage)\n"
+        "5. 📌 **Point rapide par duo actif** (1 ou 2 phrases résumant l'essentiel par salon)"
+    )
+
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=prompt
+        )
+        recap_text = response.text
+
+        date_str = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y")
+        header = f"📰 **JOURNAL STRATÉGIQUE DU {date_str} — DUOS**\n*(Réservé aux Orgas, Spectateurs et Admins)*\n\n"
+        full_message = header + recap_text
+
+        # Découpage si le texte dépasse 1900 caractères
+        for chunk in [full_message[i:i + 1900] for i in range(0, len(full_message), 1900)]:
+            await target_channel.send(chunk)
+
+    except Exception as e:
+        await target_channel.send(f"❌ Erreur lors de la génération du récapitulatif : {e}")
+
+
+@tasks.loop(time=HEURE_RECAP)
+async def tache_recap_quotidien():
+    """Tâche automatique planifiée chaque soir à 23h00."""
+    if RECAP_CHANNEL_ID == 0:
+        return
+    channel = bot.get_channel(RECAP_CHANNEL_ID)
+    if channel:
+        await generer_et_envoyer_recap_quotidien(channel.guild, channel)
+    else:
+        print(f"⚠️ Salon de récapitulatif (ID: {RECAP_CHANNEL_ID}) introuvable.")
+
+
+# ==========================================
+# 2. ÉVÉNEMENT ON_READY
+# ==========================================
 
 @bot.event
 async def on_ready():
     await bot.tree.sync()
+    if not tache_recap_quotidien.is_running() and RECAP_CHANNEL_ID != 0:
+        tache_recap_quotidien.start()
     print(f"🤖 Bot connecté en tant que : {bot.user}")
 
+
+# ==========================================
+# 3. COMMANDES SLASH DUOS & CATÉGORIES
+# ==========================================
 
 @bot.tree.command(name="creer_duos", description="Génère tous les salons duos privés avec accès Orgas & Spectateurs.")
 @app_commands.describe(
@@ -34,7 +133,7 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    # 1. Extraction des rôles mentionnés pour les candidats
+    # 1. Extraction des rôles candidats
     role_ids = [int(r.strip("<@&>")) for r in roles.split() if r.startswith("<@&") and r.endswith(">")]
     roles_list = [guild.get_role(r_id) for r_id in role_ids if guild.get_role(r_id) is not None]
 
@@ -62,7 +161,6 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
             channel_count_in_current_cat = 0
             await asyncio.sleep(1)
 
-        # Permissions : Seuls r1, r2, Spectateurs, Orgas et le Bot voient le salon
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False, view_channel=False),
             r1: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True),
@@ -79,7 +177,7 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
                 send_messages=False
             )
 
-        # Ajout Orgas (Lecture + Écriture pour modération)
+        # Ajout Orgas (Lecture + Écriture)
         if role_orgas:
             overwrites[role_orgas] = discord.PermissionOverwrite(
                 read_messages=True, 
@@ -149,24 +247,24 @@ async def purger_equipe_duos(interaction: discord.Interaction, prefixe: str):
                 pass
         await cat.delete(reason="Purge")
         await asyncio.sleep(0.5)
+
     await interaction.followup.send(f"🗑️ Nettoyage : **{len(categories_to_delete)} catégories** et **{total_channels} salons** supprimés !", ephemeral=True)
 
-# Initialisation du client Gemini avec la clé d'environnement
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+# ==========================================
+# 4. COMMANDES DE RÉSUMÉ IA
+# ==========================================
 
 @bot.tree.command(
     name="resumer", 
     description="Génère un résumé IA des derniers messages du salon (visible uniquement par vous)."
 )
-@app_commands.describe(
-    limite="Nombre de messages récents à analyser (par défaut: 100)"
-)
+@app_commands.describe(limite="Nombre de messages récents à analyser (par défaut: 100)")
 @app_commands.default_permissions(manage_messages=True)
 async def resumer(interaction: discord.Interaction, limite: int = 100):
     await interaction.response.defer(ephemeral=True)
     channel = interaction.channel
 
-    # 1. Récupérer l'historique des messages du salon
     messages = [msg async for msg in channel.history(limit=limite, oldest_first=True)]
     user_messages = [msg for msg in messages if not msg.author.bot and msg.content.strip()]
 
@@ -174,10 +272,8 @@ async def resumer(interaction: discord.Interaction, limite: int = 100):
         await interaction.followup.send("⚠️ Pas assez de messages pour générer un résumé pertinent.", ephemeral=True)
         return
 
-    # 2. Formater la transcription des échanges
     transcript = "\n".join([f"{msg.author.display_name}: {msg.content}" for msg in user_messages])
 
-    # 3. Prompt adapté à tout type de salon de jeu / stratégie
     prompt = (
         "Tu es l'arbitre et organisateur d'un jeu de stratégie/téléréalité (type Koh-Lanta/Survivor/Secret Story). "
         f"Voici la transcription des messages échangés dans le salon #{channel.name} :\n\n"
@@ -190,14 +286,12 @@ async def resumer(interaction: discord.Interaction, limite: int = 100):
     )
 
     try:
-        # 4. Appel à l'API Gemini
         response = gemini_client.models.generate_content(
             model="gemini-3.6-flash",
             contents=prompt
         )
         summary_text = response.text
 
-        # 5. Création de l'Embed de résultat
         embed = discord.Embed(
             title=f"📋 Résumé IA — #{channel.name}",
             description=summary_text,
@@ -209,4 +303,21 @@ async def resumer(interaction: discord.Interaction, limite: int = 100):
 
     except Exception as e:
         await interaction.followup.send(f"❌ Erreur lors de la génération du résumé : {e}", ephemeral=True)
-bot.run(os.getenv("DISCORD_TOKEN"))
+
+
+@bot.tree.command(
+    name="forcer_recap_jour",
+    description="Génère immédiatement le journal stratégique des duos des dernières 24h."
+)
+@app_commands.default_permissions(administrator=True)
+async def forcer_recap_jour(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    target_channel = bot.get_channel(RECAP_CHANNEL_ID) or interaction.channel
+    await interaction.followup.send(f"⏳ Génération du journal stratégique en cours dans {target_channel.mention}...", ephemeral=True)
+
+    await generer_et_envoyer_recap_quotidien(interaction.guild, target_channel)
+
+
+# --- DÉMARRAGE DU BOT ---
+bot.run(TOKEN)
