@@ -427,6 +427,81 @@ async def forcer_recap_jour(interaction: discord.Interaction):
 
     await generer_et_envoyer_recap_quotidien(interaction.guild, target_channel)
 
+@bot.tree.command(
+    name="resumer_conv_orga", 
+    description="Génère un résumé IA axé sur l'organisation et les décisions (pour le Staff)."
+)
+@app_commands.describe(
+    format="Choisissez entre un résumé synthétique ou un compte-rendu complet",
+    limite="Nombre de messages récents à analyser (par défaut: 100)"
+)
+@app_commands.choices(format=[
+    app_commands.Choice(name="⚡ Résumé Court (Décisions & Actions rapides)", value="court"),
+    app_commands.Choice(name="📖 Résumé Long (Compte-rendu détaillé)", value="long")
+])
+@app_commands.default_permissions(administrator=True)
+async def resumer_conv_orga(interaction: discord.Interaction, format: app_commands.Choice[str], limite: int = 100):
+    await interaction.response.defer(ephemeral=True)
+    channel = interaction.channel
 
+    messages = [msg async for msg in channel.history(limit=limite, oldest_first=True)]
+    user_messages = [msg for msg in messages if not msg.author.bot and msg.content.strip()]
+
+    if len(user_messages) < 3:
+        await interaction.followup.send("⚠️ Pas assez de messages pour générer un compte-rendu pertinent.", ephemeral=True)
+        return
+
+    transcript = "\n".join([f"{msg.author.display_name}: {msg.content}" for msg in user_messages])
+
+    if format.value == "court":
+        prompt = (
+            "Tu es l'assistant de direction d'une équipe d'organisation d'un événement / jeu. "
+            f"Voici la transcription de la réunion/discussion de l'équipe dans le salon #{channel.name} :\n\n"
+            f"{transcript}\n\n"
+            "Fais un résumé **TRÈS COURT, CONCIS ET DIRECT** en 3 à 5 bullet points maximum :\n"
+            "- 🎯 Objectif/Sujet principal de la discussion\n"
+            "- 🛠️ Décisions importantes actées\n"
+            "- 📋 Actions à faire (Qui fait quoi ?)\n"
+            "- 📅 Prochaines étapes"
+        )
+    else:
+        prompt = (
+            "Tu es l'assistant de direction d'une équipe d'organisation d'un jeu / événement. "
+            f"Voici la transcription des échanges du staff dans le salon #{channel.name} :\n\n"
+            f"{transcript}\n\n"
+            "Rédige un **COMPTE-RENDU DÉTAILLÉ ET PROFESSIONNEL** en français, structuré avec les sections suivantes :\n"
+            "1. 🎯 **Sujets abordés** (Quels ont été les thèmes de la discussion ?)\n"
+            "2. 🛠️ **Décisions prises** (Qu'est-ce qui a été validé ou refusé par l'équipe ?)\n"
+            "3. 📋 **Répartition des tâches** (Qui est en charge de quoi ?)\n"
+            "4. 💡 **Idées & Propositions en attente** (Ce qui doit encore être discuté ou creusé)\n"
+            "5. 📅 **Prochaines étapes & Deadlines** (Ce qu'il reste à faire dans l'immédiat)"
+        )
+
+    max_tentatives = 3
+    for tentative in range(max_tentatives):
+        try:
+            response = gemini_client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt
+            )
+            summary_text = response.text
+
+            badge_titre = "⚡ Compte-Rendu Flash" if format.value == "court" else "📖 Compte-Rendu Complet"
+            embed = discord.Embed(
+                title=f"{badge_titre} — #{channel.name}",
+                description=summary_text,
+                color=discord.Color.blue()  # Couleur bleue pour différencier de l'analyse stratégique (violet/or)
+            )
+            embed.set_footer(text=f"Analyse basée sur les {len(user_messages)} messages (Tentative {tentative + 1}).")
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        except Exception as e:
+            if "503" in str(e) and tentative < max_tentatives - 1:
+                await asyncio.sleep(2)
+            else:
+                await interaction.followup.send(f"❌ Les serveurs IA sont surchargés après {max_tentatives} tentatives. Réessayez plus tard.", ephemeral=True)
+                return
 # --- DÉMARRAGE DU BOT ---
 bot.run(TOKEN)
