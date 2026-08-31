@@ -1,29 +1,32 @@
+import os
+import itertools
+import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
-import itertools
-import asyncio
 
 intents = discord.Intents.default()
 intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+MAX_CHANNELS_PER_CATEGORY = 45  # Marge de sécurité sous la limite Discord de 50
+
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    print(f"Bot connecté en tant que {bot.user}")
+    print(f"🤖 Bot connecté en tant que : {bot.user}")
 
-@bot.tree.command(name="creer_duos", description="Génère tous les salons duos privés pour une liste de rôles.")
+@bot.tree.command(name="creer_duos", description="Génère tous les salons duos privés avec gestion multi-catégories.")
 @app_commands.describe(
-    nom_equipe="Nom de l'équipe / de la catégorie",
-    roles="Mentionne les rôles séparés par des espaces (ex: @Candidat1 @Candidat3 @Candidat4)"
+    nom_equipe="Nom de base pour les catégories (ex: Duos Rouge)",
+    roles="Mentionne les rôles séparés par des espaces (ex: @Candidat1 @Candidat2 ...)"
 )
 async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: str):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    # 1. Extraction des IDs de rôles mentionnés
+    # 1. Extraction des rôles mentionnés
     role_ids = [int(r.strip("<@&>")) for r in roles.split() if r.startswith("<@&") and r.endswith(">")]
     roles_list = [guild.get_role(r_id) for r_id in role_ids if guild.get_role(r_id) is not None]
 
@@ -31,26 +34,41 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
         await interaction.followup.send("❌ Veuillez mentionner au moins 2 rôles valides.", ephemeral=True)
         return
 
-    # 2. Création de la catégorie dédiée
-    category = await guild.create_category(nom_equipe)
-
-    # 3. Génération des paires uniques
+    # 2. Génération de toutes les combinaisons de duos
     duos = list(itertools.combinations(roles_list, 2))
-    
+    total_duos = len(duos)
+
+    # 3. Création des salons avec bascule automatique de catégorie
+    category_index = 1
+    current_category = await guild.create_category(f"{nom_equipe} - {category_index}")
+    channel_count_in_current_cat = 0
+
     for r1, r2 in duos:
-        # Permissions : invisible pour @everyone, visible uniquement pour r1 et r2
+        # Si la catégorie courante est pleine, on en crée une nouvelle
+        if channel_count_in_current_cat >= MAX_CHANNELS_PER_CATEGORY:
+            category_index += 1
+            current_category = await guild.create_category(f"{nom_equipe} - {category_index}")
+            channel_count_in_current_cat = 0
+            await asyncio.sleep(1)  # Pause anti-rate-limit
+
+        # Permissions strictes : seuls les 2 candidats concernés et le bot voient le salon
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False, view_channel=False),
             r1: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True),
             r2: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True),
             guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True)
         }
-        
+
         nom_salon = f"duo-{r1.name.lower().replace(' ', '-')}-{r2.name.lower().replace(' ', '-')}"
-        await guild.create_text_channel(name=nom_salon, category=category, overwrites=overwrites)
-        await asyncio.sleep(0.5) # Pause anti-rate-limit
+        await guild.create_text_channel(name=nom_salon, category=current_category, overwrites=overwrites)
+        channel_count_in_current_cat += 1
 
-    await interaction.followup.send(f"✅ {len(duos)} salons duos créés dans la catégorie **{nom_equipe}** !", ephemeral=True)
+        # Pause pour respecter les limites de requêtes de l'API Discord
+        await asyncio.sleep(0.6)
 
-import os
+    await interaction.followup.send(
+        f"✅ Succès : **{total_duos} salons duos** ont été créés et répartis sur **{category_index} catégorie(s)** !", 
+        ephemeral=True
+    )
+
 bot.run(os.getenv("DISCORD_TOKEN"))
