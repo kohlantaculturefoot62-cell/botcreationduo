@@ -13,8 +13,8 @@ from google import genai
 TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-# Salon secret pour le récapitulatif quotidien (Orgas / Spectateurs / Admins)
-# Définissez RECAP_CHANNEL_ID dans vos variables d'environnement
+# Salon secret pour le journal quotidien (Orgas / Spectateurs / Admins)
+# S'il n'est pas défini, il vaudra 0 et la tâche automatique ne plantera pas.
 RECAP_CHANNEL_ID = int(os.getenv("RECAP_CHANNEL_ID", 0))
 
 # Heure du récapitulatif automatique chaque soir (Fuseau Paris)
@@ -23,8 +23,9 @@ HEURE_RECAP = datetime.time(hour=23, minute=0, tzinfo=ZoneInfo("Europe/Paris"))
 MAX_CHANNELS_PER_CATEGORY = 45  # Marge de sécurité sous la limite Discord de 50
 ROLE_SPECTATEURS_NAME = "Spectateurs"
 ROLE_ORGAS_NAME = "Orgas"
+NOM_CATEGORIE_ARCHIVE = "📦 ARCHIVES DUOS"
 
-# Initialisation du client IA et du Bot Discord
+# Initialisation
 gemini_client = genai.Client(api_key=GEMINI_KEY)
 
 intents = discord.Intents.default()
@@ -39,14 +40,14 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # ==========================================
 
 async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channel: discord.TextChannel):
-    """Scanne tous les salons duos des dernières 24h et publie une synthèse IA."""
+    """Scanne tous les salons duos actifs des dernières 24h et publie une synthèse IA."""
     now = datetime.datetime.now(datetime.timezone.utc)
     depuis = now - datetime.timedelta(hours=24)
 
     duo_transcripts = []
 
-    # Scanner tous les salons de duos
     for channel in guild.text_channels:
+        # On ignore les salons archivés (qui commencent par 🔒arch-)
         if channel.name.startswith("duo-"):
             messages = [
                 msg async for msg in channel.history(after=depuis, oldest_first=True)
@@ -70,11 +71,11 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
         f"{full_context}\n\n"
         "Rédige le **Journal de Bord Stratégique de la Journée** pour l'équipe d'organisation (Orgas/Spectateurs).\n"
         "Structure ta réponse avec des titres clairs et des emojis :\n"
-        "1. 🌍 **Synthèse Générale de la Journée** (ambiance, intensité des complots, dynamiques)\n"
-        "2. 🤝 **Alliances & Pactes confirmés** (qui s'associe avec qui ?)\n"
-        "3. 🎯 **Cibles & Stratégies d'Élimination** (qui est en danger ? qui mène les votes ?)\n"
-        "4. ⚠️ **Trahisons & Double-Jeu** (incohérences, mensonges découverts, candidats en ballotage)\n"
-        "5. 📌 **Point rapide par duo actif** (1 ou 2 phrases résumant l'essentiel par salon)"
+        "1. 🌍 **Synthèse Générale de la Journée**\n"
+        "2. 🤝 **Alliances & Pactes confirmés**\n"
+        "3. 🎯 **Cibles & Stratégies d'Élimination**\n"
+        "4. ⚠️ **Trahisons & Double-Jeu**\n"
+        "5. 📌 **Point rapide par duo actif**"
     )
 
     try:
@@ -88,7 +89,7 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
         header = f"📰 **JOURNAL STRATÉGIQUE DU {date_str} — DUOS**\n*(Réservé aux Orgas, Spectateurs et Admins)*\n\n"
         full_message = header + recap_text
 
-        # Découpage si le texte dépasse 1900 caractères
+        # Découpage si le texte dépasse la limite de Discord (1900 caractères par sécurité)
         for chunk in [full_message[i:i + 1900] for i in range(0, len(full_message), 1900)]:
             await target_channel.send(chunk)
 
@@ -121,12 +122,15 @@ async def on_ready():
 
 
 # ==========================================
-# 3. COMMANDES SLASH DUOS & CATÉGORIES
+# 3. COMMANDES DUOS & GESTION DES ÉLIMINATIONS
 # ==========================================
 
-@bot.tree.command(name="creer_duos", description="Génère tous les salons duos privés avec accès Orgas & Spectateurs.")
+@bot.tree.command(
+    name="creer_duos", 
+    description="Génère tous les salons duos privés (utilise la catégorie existante si trouvée)."
+)
 @app_commands.describe(
-    nom_equipe="Nom de base pour les catégories (ex: Duos Rouge)",
+    nom_equipe="Nom de la catégorie existante ou à créer (ex: DUOS ROUGE)",
     roles="Mentionne les rôles séparés par des espaces (ex: @Candidat1 @Candidat2 ...)"
 )
 async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: str):
@@ -145,16 +149,24 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
     role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
     role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
 
-    # 3. Génération des paires
+    # 3. Récupération de la catégorie existante ou création
+    clean_target_name = nom_equipe.strip().lower()
+    existing_category = discord.utils.find(lambda c: c.name.lower() == clean_target_name, guild.categories)
+
+    category_index = 1
+    if existing_category:
+        current_category = existing_category
+        channel_count_in_current_cat = len(existing_category.channels)
+    else:
+        current_category = await guild.create_category(nom_equipe)
+        channel_count_in_current_cat = 0
+
+    # 4. Génération des paires
     duos = list(itertools.combinations(roles_list, 2))
     total_duos = len(duos)
 
-    category_index = 1
-    current_category = await guild.create_category(f"{nom_equipe} - {category_index}")
-    channel_count_in_current_cat = 0
-
     for r1, r2 in duos:
-        # Nouvelle catégorie si la courante est pleine
+        # Création d'une nouvelle catégorie numérotée si la limite de 45 est atteinte
         if channel_count_in_current_cat >= MAX_CHANNELS_PER_CATEGORY:
             category_index += 1
             current_category = await guild.create_category(f"{nom_equipe} - {category_index}")
@@ -193,10 +205,102 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
         await asyncio.sleep(0.6)  # Pause anti-rate-limit
 
     await interaction.followup.send(
-        f"✅ Succès : **{total_duos} salons duos** créés avec accès pour **{role_spectateurs.name if role_spectateurs else 'Spectateurs (non trouvé)'}** et **{role_orgas.name if role_orgas else 'Orgas (non trouvé)'}** !", 
+        f"✅ Succès : **{total_duos} salons duos** créés dans la catégorie **{current_category.name}** !", 
         ephemeral=True
     )
 
+
+@bot.tree.command(
+    name="eliminer_candidat", 
+    description="Archive tous les salons duos d'un candidat éliminé et retire les accès des 2 participants."
+)
+@app_commands.describe(
+    role_candidat="Le rôle du candidat éliminé (ex: @Lucas)"
+)
+@app_commands.default_permissions(manage_messages=True)
+async def eliminer_candidat(interaction: discord.Interaction, role_candidat: discord.Role):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+
+    # 1. Identifier tous les salons duos où ce rôle a un accès explicite
+    targeted_channels = []
+    for channel in guild.text_channels:
+        if channel.name.startswith("duo-") and role_candidat in channel.overwrites:
+            targeted_channels.append(channel)
+
+    if not targeted_channels:
+        await interaction.followup.send(
+            f"ℹ️ Aucun salon duo actif trouvé pour le rôle {role_candidat.mention}.", 
+            ephemeral=True
+        )
+        return
+
+    # 2. Récupérer ou créer la catégorie d'archive
+    archive_categories = [c for c in guild.categories if c.name.lower().startswith(NOM_CATEGORIE_ARCHIVE.lower())]
+    if archive_categories:
+        current_archive_cat = archive_categories[-1]
+    else:
+        current_archive_cat = await guild.create_category(NOM_CATEGORIE_ARCHIVE)
+
+    archived_count = 0
+    cat_index = len(archive_categories) or 1
+
+    # 3. Archiver et verrouiller chaque salon duo
+    for channel in targeted_channels:
+        # Créer une nouvelle catégorie d'archive si la précédente est pleine
+        if len(current_archive_cat.channels) >= MAX_CHANNELS_PER_CATEGORY:
+            cat_index += 1
+            current_archive_cat = await guild.create_category(f"{NOM_CATEGORIE_ARCHIVE} - {cat_index}")
+            await asyncio.sleep(1)
+
+        # Nouvelle configuration de permissions (retire les deux candidats, conserve Orgas/Spectateurs)
+        new_overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False, view_channel=False),
+            guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+        }
+
+        if role_spectateurs:
+            new_overwrites[role_spectateurs] = discord.PermissionOverwrite(
+                read_messages=True, 
+                view_channel=True, 
+                read_message_history=True, 
+                send_messages=False
+            )
+
+        if role_orgas:
+            new_overwrites[role_orgas] = discord.PermissionOverwrite(
+                read_messages=True, 
+                view_channel=True, 
+                read_message_history=True, 
+                send_messages=False
+            )
+
+        # Renommer et déplacer dans les archives
+        new_name = f"🔒arch-{channel.name.replace('duo-', '')}"
+        await channel.edit(
+            name=new_name,
+            category=current_archive_cat,
+            overwrites=new_overwrites,
+            reason=f"Élimination du candidat {role_candidat.name}"
+        )
+
+        archived_count += 1
+        await asyncio.sleep(0.6)
+
+    await interaction.followup.send(
+        f"🏆 **Élimination enregistrée :** {role_candidat.mention}\n"
+        f"📦 **{archived_count} salons duos** ont été archivés dans **{current_archive_cat.name}**.\n"
+        f"🔒 Les deux candidats de chaque duo n'ont plus accès à ces salons.",
+        ephemeral=True
+    )
+
+
+# ==========================================
+# 4. COMMANDES DE SUPPRESSION DE CATÉGORIES
+# ==========================================
 
 @bot.tree.command(name="supprimer_categorie", description="Supprime une catégorie entière et ses salons.")
 @app_commands.describe(nom_categorie="Nom exact de la catégorie (ex: Duos Rouge - 1)")
@@ -252,16 +356,23 @@ async def purger_equipe_duos(interaction: discord.Interaction, prefixe: str):
 
 
 # ==========================================
-# 4. COMMANDES DE RÉSUMÉ IA
+# 5. COMMANDES DE RÉSUMÉ IA
 # ==========================================
 
 @bot.tree.command(
     name="resumer", 
-    description="Génère un résumé IA des derniers messages du salon (visible uniquement par vous)."
+    description="Génère un résumé IA (court ou détaillé) des derniers messages du salon."
 )
-@app_commands.describe(limite="Nombre de messages récents à analyser (par défaut: 100)")
+@app_commands.describe(
+    format="Choisissez entre un résumé synthétique/rapide ou une analyse complète",
+    limite="Nombre de messages récents à analyser (par défaut: 100)"
+)
+@app_commands.choices(format=[
+    app_commands.Choice(name="⚡ Résumé Court (Points clés rapides)", value="court"),
+    app_commands.Choice(name="📖 Résumé Long (Analyse détaillée & stratégique)", value="long")
+])
 @app_commands.default_permissions(manage_messages=True)
-async def resumer(interaction: discord.Interaction, limite: int = 100):
+async def resumer(interaction: discord.Interaction, format: app_commands.Choice[str], limite: int = 100):
     await interaction.response.defer(ephemeral=True)
     channel = interaction.channel
 
@@ -274,16 +385,29 @@ async def resumer(interaction: discord.Interaction, limite: int = 100):
 
     transcript = "\n".join([f"{msg.author.display_name}: {msg.content}" for msg in user_messages])
 
-    prompt = (
-        "Tu es l'arbitre et organisateur d'un jeu de stratégie/téléréalité (type Koh-Lanta/Survivor/Secret Story). "
-        f"Voici la transcription des messages échangés dans le salon #{channel.name} :\n\n"
-        f"{transcript}\n\n"
-        "Fais un résumé clair, synthétique et structuré en français en précisant :\n"
-        "1. 🎯 **Sujets abordés**\n"
-        "2. 🤝 **Accords, Alliances ou Tensions** entre les participants\n"
-        "3. ⚠️ **Stratégies ou informations clés** (cibles de vote, plans, secrets partagés)\n"
-        "4. 🎭 **Ambiance générale / Dynamique du groupe**"
-    )
+    if format.value == "court":
+        prompt = (
+            "Tu es l'arbitre d'un jeu de stratégie. "
+            f"Voici la transcription des messages du salon #{channel.name} :\n\n"
+            f"{transcript}\n\n"
+            "Fais un résumé **TRÈS COURT, CONCIS ET DIRECT** en 3 à 5 bullet points maximum :\n"
+            "- 🎯 Sujet central en 1 phrase\n"
+            "- 🤝 Décisions / Alliances actées\n"
+            "- ⚠️ Cibles ou menaces identifiées\n"
+            "- 🎭 Statut général (Accord, Tensions, Faux-semblants)"
+        )
+    else:
+        prompt = (
+            "Tu es l'arbitre et organisateur d'un jeu de stratégie/téléréalité (type Koh-Lanta/Survivor/Secret Story). "
+            f"Voici la transcription des messages échangés dans le salon #{channel.name} :\n\n"
+            f"{transcript}\n\n"
+            "Fais un **RÉSUMÉ DÉTAILLÉ ET APPROFONDI** en français, structuré avec les sections suivantes :\n"
+            "1. 🎯 **Analyse Thématique** (détail complet des sujets abordés)\n"
+            "2. 🤝 **Alliances, Promesses et Accords** (qui propose quoi, qui accepte, les conditions)\n"
+            "3. ⚠️ **Stratégies, Votes & Cibles** (noms des cibles évoquées, justifications, plans A et B)\n"
+            "4. 🎭 **Psychologie & Dynamique** (qui manipule qui, niveau de sincérité, hésitations, rapport de force)\n"
+            "5. 💬 **Citations ou Moments Clés** (phrases marquantes échangées)"
+        )
 
     try:
         response = gemini_client.models.generate_content(
@@ -292,10 +416,11 @@ async def resumer(interaction: discord.Interaction, limite: int = 100):
         )
         summary_text = response.text
 
+        badge_titre = "⚡ Résumé Flash" if format.value == "court" else "📖 Résumé Détaillé"
         embed = discord.Embed(
-            title=f"📋 Résumé IA — #{channel.name}",
+            title=f"{badge_titre} — #{channel.name}",
             description=summary_text,
-            color=discord.Color.purple()
+            color=discord.Color.gold() if format.value == "court" else discord.Color.purple()
         )
         embed.set_footer(text=f"Analyse basée sur les {len(user_messages)} derniers messages.")
 
