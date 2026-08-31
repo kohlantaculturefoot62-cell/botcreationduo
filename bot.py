@@ -155,23 +155,18 @@ async def purger_equipe_duos(interaction: discord.Interaction, prefixe: str):
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 @bot.tree.command(
-    name="resumer_duo", 
-    description="Génère un résumé IA des échanges de ce salon duo (visible uniquement par vous)."
+    name="resumer", 
+    description="Génère un résumé IA des derniers messages du salon (visible uniquement par vous)."
 )
 @app_commands.describe(
     limite="Nombre de messages récents à analyser (par défaut: 100)"
 )
 @app_commands.default_permissions(manage_messages=True)
-async def resumer_duo(interaction: discord.Interaction, limite: int = 100):
+async def resumer(interaction: discord.Interaction, limite: int = 100):
     await interaction.response.defer(ephemeral=True)
     channel = interaction.channel
 
-    # 1. Vérifier qu'on est bien dans un salon duo
-    if not channel.name.startswith("duo-"):
-        await interaction.followup.send("❌ Cette commande ne fonctionne que dans un salon duo (`duo-...`).", ephemeral=True)
-        return
-
-    # 2. Récupérer les messages du salon
+    # 1. Récupérer l'historique des messages du salon
     messages = [msg async for msg in channel.history(limit=limite, oldest_first=True)]
     user_messages = [msg for msg in messages if not msg.author.bot and msg.content.strip()]
 
@@ -179,19 +174,19 @@ async def resumer_duo(interaction: discord.Interaction, limite: int = 100):
         await interaction.followup.send("⚠️ Pas assez de messages pour générer un résumé pertinent.", ephemeral=True)
         return
 
-    # 3. Formater la transcription
+    # 2. Formater la transcription
     transcript = "\n".join([f"{msg.author.display_name}: {msg.content}" for msg in user_messages])
 
-    # 4. Prompt pour l'IA
+    # 3. Prompt adapté à tout type de salon
     prompt = (
-        "Tu es l'arbitre/organisateur d'un jeu de stratégie et d'alliances (type Koh-Lanta/Survivor). "
-        "Voici la transcription d'une conversation privée entre deux candidats dans un salon duo :\n\n"
+        "Tu es l'arbitre et organisateur d'un jeu de stratégie/téléréalité (type Koh-Lanta/Survivor/Secret Story). "
+        f"Voici la transcription des messages échangés dans le salon #{channel.name} :\n\n"
         f"{transcript}\n\n"
-        "Fais-moi un résumé clair, synthétique et structuré en français en précisant :\n"
-        "1. 🎯 **Sujet principal** abordé\n"
-        "2. 🤝 **Accords / Alliances** convenus (ou désaccords)\n"
-        "3. ⚠️ **Stratégies / Cibles** mentionnées pour les éliminations\n"
-        "4. 🎭 **Ton / Dynamique** entre les deux joueurs (confiance, manipulation, méfiance...)"
+        "Fais un résumé clair, synthétique et structuré en français en précisant :\n"
+        "1. 🎯 **Sujets abordés**\n"
+        "2. 🤝 **Accords, Alliances ou Tensions** entre les participants\n"
+        "3. ⚠️ **Stratégies ou informations clés** (cibles de vote, plans, secrets partagés)\n"
+        "4. 🎭 **Ambiance générale / Dynamique du groupe**"
     )
 
     try:
@@ -202,7 +197,7 @@ async def resumer_duo(interaction: discord.Interaction, limite: int = 100):
         )
         summary_text = response.text
 
-        # Création de l'Embed de résultat
+        # Création de l'Embed
         embed = discord.Embed(
             title=f"📋 Résumé IA — #{channel.name}",
             description=summary_text,
