@@ -71,4 +71,84 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
         ephemeral=True
     )
 
+@bot.tree.command(
+    name="supprimer_categorie", 
+    description="Supprime une catégorie entière et tous les salons à l'intérieur."
+)
+@app_commands.describe(
+    nom_categorie="Nom exact de la catégorie à supprimer (ex: Duos Rouge - 1)"
+)
+@app_commands.default_permissions(administrator=True)
+async def supprimer_categorie(interaction: discord.Interaction, nom_categorie: str):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    # 1. Rechercher la catégorie par son nom (insensible à la casse)
+    category = discord.utils.find(
+        lambda c: c.name.lower() == nom_categorie.strip().lower(), 
+        guild.categories
+    )
+
+    if not category:
+        await interaction.followup.send(f"❌ La catégorie **{nom_categorie}** est introuvable.", ephemeral=True)
+        return
+
+    # 2. Supprimer tous les salons à l'intérieur un par un
+    channels_to_delete = category.channels
+    total_channels = len(channels_to_delete)
+
+    for channel in channels_to_delete:
+        try:
+            await channel.delete(reason="Nettoyage catégorie")
+            await asyncio.sleep(0.4)  # Pause anti-rate-limit
+        except Exception as e:
+            print(f"Erreur lors de la suppression de {channel.name}: {e}")
+
+    # 3. Supprimer la catégorie elle-même
+    await category.delete(reason="Nettoyage catégorie")
+
+    await interaction.followup.send(
+        f"🗑️ La catégorie **{nom_categorie}** et ses **{total_channels} salons** ont été supprimés avec succès !",
+        ephemeral=True
+    )
+
+@bot.tree.command(
+    name="purger_equipe_duos", 
+    description="Supprime toutes les catégories commençant par ce nom (ex: Duos Rouge - 1, Duos Rouge - 2...)"
+)
+@app_commands.describe(
+    prefixe="Début du nom des catégories à supprimer (ex: Duos Rouge)"
+)
+@app_commands.default_permissions(administrator=True)
+async def purger_equipe_duos(interaction: discord.Interaction, prefixe: str):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    categories_to_delete = [
+        c for c in guild.categories 
+        if c.name.lower().startswith(prefixe.strip().lower())
+    ]
+
+    if not categories_to_delete:
+        await interaction.followup.send(f"❌ Aucune catégorie ne commence par **{prefixe}**.", ephemeral=True)
+        return
+
+    total_channels_deleted = 0
+    total_cats_deleted = len(categories_to_delete)
+
+    for cat in categories_to_delete:
+        for ch in cat.channels:
+            try:
+                await ch.delete(reason="Purge complète")
+                total_channels_deleted += 1
+                await asyncio.sleep(0.4)
+            except Exception:
+                pass
+        await cat.delete(reason="Purge complète")
+        await asyncio.sleep(0.5)
+
+    await interaction.followup.send(
+        f"🗑️ Nettoyage terminé : **{total_cats_deleted} catégorie(s)** et **{total_channels_deleted} salon(s)** supprimés !",
+        ephemeral=True
+    )
 bot.run(os.getenv("DISCORD_TOKEN"))
