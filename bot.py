@@ -151,7 +151,7 @@ async def purger_equipe_duos(interaction: discord.Interaction, prefixe: str):
         await asyncio.sleep(0.5)
     await interaction.followup.send(f"🗑️ Nettoyage : **{len(categories_to_delete)} catégories** et **{total_channels} salons** supprimés !", ephemeral=True)
 
-# Initialisation du client Gemini
+# Initialisation du client Gemini avec la clé d'environnement
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 @bot.tree.command(
@@ -174,10 +174,10 @@ async def resumer(interaction: discord.Interaction, limite: int = 100):
         await interaction.followup.send("⚠️ Pas assez de messages pour générer un résumé pertinent.", ephemeral=True)
         return
 
-    # 2. Formater la transcription
+    # 2. Formater la transcription des échanges
     transcript = "\n".join([f"{msg.author.display_name}: {msg.content}" for msg in user_messages])
 
-    # 3. Prompt adapté à tout type de salon
+    # 3. Prompt adapté à tout type de salon de jeu / stratégie
     prompt = (
         "Tu es l'arbitre et organisateur d'un jeu de stratégie/téléréalité (type Koh-Lanta/Survivor/Secret Story). "
         f"Voici la transcription des messages échangés dans le salon #{channel.name} :\n\n"
@@ -190,14 +190,14 @@ async def resumer(interaction: discord.Interaction, limite: int = 100):
     )
 
     try:
-        # Appel à Gemini
+        # 4. Appel à l'API Gemini
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt
         )
         summary_text = response.text
 
-        # Création de l'Embed
+        # 5. Création de l'Embed de résultat
         embed = discord.Embed(
             title=f"📋 Résumé IA — #{channel.name}",
             description=summary_text,
