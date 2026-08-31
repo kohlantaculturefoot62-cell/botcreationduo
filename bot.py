@@ -14,7 +14,6 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
 # Salon secret pour le journal quotidien (Orgas / Spectateurs / Admins)
-# S'il n'est pas défini, il vaudra 0 et la tâche automatique ne plantera pas.
 RECAP_CHANNEL_ID = int(os.getenv("RECAP_CHANNEL_ID", 0))
 
 # Heure du récapitulatif automatique chaque soir (Fuseau Paris)
@@ -78,23 +77,31 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
         "5. 📌 **Point rapide par duo actif**"
     )
 
-    try:
-        response = gemini_client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=prompt
-        )
-        recap_text = response.text
+    max_tentatives = 3
+    for tentative in range(max_tentatives):
+        try:
+            response = gemini_client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt
+            )
+            recap_text = response.text
 
-        date_str = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y")
-        header = f"📰 **JOURNAL STRATÉGIQUE DU {date_str} — DUOS**\n*(Réservé aux Orgas, Spectateurs et Admins)*\n\n"
-        full_message = header + recap_text
+            date_str = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y")
+            header = f"📰 **JOURNAL STRATÉGIQUE DU {date_str} — DUOS**\n*(Réservé aux Orgas, Spectateurs et Admins)*\n\n"
+            full_message = header + recap_text
 
-        # Découpage si le texte dépasse la limite de Discord (1900 caractères par sécurité)
-        for chunk in [full_message[i:i + 1900] for i in range(0, len(full_message), 1900)]:
-            await target_channel.send(chunk)
+            # Découpage si le texte dépasse la limite de Discord
+            for chunk in [full_message[i:i + 1900] for i in range(0, len(full_message), 1900)]:
+                await target_channel.send(chunk)
+            
+            return # Succès, on sort
 
-    except Exception as e:
-        await target_channel.send(f"❌ Erreur lors de la génération du récapitulatif : {e}")
+        except Exception as e:
+            if "503" in str(e) and tentative < max_tentatives - 1:
+                await asyncio.sleep(3)
+            else:
+                await target_channel.send("❌ Impossible de générer le journal aujourd'hui (serveurs IA surchargés).")
+                return
 
 
 @tasks.loop(time=HEURE_RECAP)
@@ -137,7 +144,6 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    # 1. Extraction des rôles candidats
     role_ids = [int(r.strip("<@&>")) for r in roles.split() if r.startswith("<@&") and r.endswith(">")]
     roles_list = [guild.get_role(r_id) for r_id in role_ids if guild.get_role(r_id) is not None]
 
@@ -145,11 +151,9 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
         await interaction.followup.send("❌ Veuillez mentionner au moins 2 rôles valides.", ephemeral=True)
         return
 
-    # 2. Récupération des rôles Spectateurs et Orgas
     role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
     role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
 
-    # 3. Récupération de la catégorie existante ou création
     clean_target_name = nom_equipe.strip().lower()
     existing_category = discord.utils.find(lambda c: c.name.lower() == clean_target_name, guild.categories)
 
@@ -161,12 +165,10 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
         current_category = await guild.create_category(nom_equipe)
         channel_count_in_current_cat = 0
 
-    # 4. Génération des paires
     duos = list(itertools.combinations(roles_list, 2))
     total_duos = len(duos)
 
     for r1, r2 in duos:
-        # Création d'une nouvelle catégorie numérotée si la limite de 45 est atteinte
         if channel_count_in_current_cat >= MAX_CHANNELS_PER_CATEGORY:
             category_index += 1
             current_category = await guild.create_category(f"{nom_equipe} - {category_index}")
@@ -180,29 +182,21 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
             guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
         }
 
-        # Ajout Spectateurs (Lecture seule)
         if role_spectateurs:
             overwrites[role_spectateurs] = discord.PermissionOverwrite(
-                read_messages=True, 
-                view_channel=True, 
-                read_message_history=True, 
-                send_messages=False
+                read_messages=True, view_channel=True, read_message_history=True, send_messages=False
             )
 
-        # Ajout Orgas (Lecture + Écriture)
         if role_orgas:
             overwrites[role_orgas] = discord.PermissionOverwrite(
-                read_messages=True, 
-                view_channel=True, 
-                read_message_history=True, 
-                send_messages=True
+                read_messages=True, view_channel=True, read_message_history=True, send_messages=True
             )
 
         nom_salon = f"duo-{r1.name.lower().replace(' ', '-')}-{r2.name.lower().replace(' ', '-')}"
         await guild.create_text_channel(name=nom_salon, category=current_category, overwrites=overwrites)
         channel_count_in_current_cat += 1
 
-        await asyncio.sleep(0.6)  # Pause anti-rate-limit
+        await asyncio.sleep(0.6)
 
     await interaction.followup.send(
         f"✅ Succès : **{total_duos} salons duos** créés dans la catégorie **{current_category.name}** !", 
@@ -214,9 +208,7 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
     name="eliminer_candidat", 
     description="Archive tous les salons duos d'un candidat éliminé et retire les accès des 2 participants."
 )
-@app_commands.describe(
-    role_candidat="Le rôle du candidat éliminé (ex: @Lucas)"
-)
+@app_commands.describe(role_candidat="Le rôle du candidat éliminé (ex: @Lucas)")
 @app_commands.default_permissions(manage_messages=True)
 async def eliminer_candidat(interaction: discord.Interaction, role_candidat: discord.Role):
     await interaction.response.defer(ephemeral=True)
@@ -225,20 +217,15 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
     role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
     role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
 
-    # 1. Identifier tous les salons duos où ce rôle a un accès explicite
     targeted_channels = []
     for channel in guild.text_channels:
         if channel.name.startswith("duo-") and role_candidat in channel.overwrites:
             targeted_channels.append(channel)
 
     if not targeted_channels:
-        await interaction.followup.send(
-            f"ℹ️ Aucun salon duo actif trouvé pour le rôle {role_candidat.mention}.", 
-            ephemeral=True
-        )
+        await interaction.followup.send(f"ℹ️ Aucun salon duo actif trouvé pour le rôle {role_candidat.mention}.", ephemeral=True)
         return
 
-    # 2. Récupérer ou créer la catégorie d'archive
     archive_categories = [c for c in guild.categories if c.name.lower().startswith(NOM_CATEGORIE_ARCHIVE.lower())]
     if archive_categories:
         current_archive_cat = archive_categories[-1]
@@ -248,15 +235,12 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
     archived_count = 0
     cat_index = len(archive_categories) or 1
 
-    # 3. Archiver et verrouiller chaque salon duo
     for channel in targeted_channels:
-        # Créer une nouvelle catégorie d'archive si la précédente est pleine
         if len(current_archive_cat.channels) >= MAX_CHANNELS_PER_CATEGORY:
             cat_index += 1
             current_archive_cat = await guild.create_category(f"{NOM_CATEGORIE_ARCHIVE} - {cat_index}")
             await asyncio.sleep(1)
 
-        # Nouvelle configuration de permissions (retire les deux candidats, conserve Orgas/Spectateurs)
         new_overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False, view_channel=False),
             guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
@@ -264,21 +248,14 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
 
         if role_spectateurs:
             new_overwrites[role_spectateurs] = discord.PermissionOverwrite(
-                read_messages=True, 
-                view_channel=True, 
-                read_message_history=True, 
-                send_messages=False
+                read_messages=True, view_channel=True, read_message_history=True, send_messages=False
             )
 
         if role_orgas:
             new_overwrites[role_orgas] = discord.PermissionOverwrite(
-                read_messages=True, 
-                view_channel=True, 
-                read_message_history=True, 
-                send_messages=False
+                read_messages=True, view_channel=True, read_message_history=True, send_messages=False
             )
 
-        # Renommer et déplacer dans les archives
         new_name = f"🔒arch-{channel.name.replace('duo-', '')}"
         await channel.edit(
             name=new_name,
@@ -293,7 +270,7 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
     await interaction.followup.send(
         f"🏆 **Élimination enregistrée :** {role_candidat.mention}\n"
         f"📦 **{archived_count} salons duos** ont été archivés dans **{current_archive_cat.name}**.\n"
-        f"🔒 Les deux candidats de chaque duo n'ont plus accès à ces salons.",
+        f"🔒 Les deux candidats n'ont plus accès à ces salons.",
         ephemeral=True
     )
 
@@ -409,25 +386,32 @@ async def resumer(interaction: discord.Interaction, format: app_commands.Choice[
             "5. 💬 **Citations ou Moments Clés** (phrases marquantes échangées)"
         )
 
-    try:
-        response = gemini_client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=prompt
-        )
-        summary_text = response.text
+    max_tentatives = 3
+    for tentative in range(max_tentatives):
+        try:
+            response = gemini_client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt
+            )
+            summary_text = response.text
 
-        badge_titre = "⚡ Résumé Flash" if format.value == "court" else "📖 Résumé Détaillé"
-        embed = discord.Embed(
-            title=f"{badge_titre} — #{channel.name}",
-            description=summary_text,
-            color=discord.Color.gold() if format.value == "court" else discord.Color.purple()
-        )
-        embed.set_footer(text=f"Analyse basée sur les {len(user_messages)} derniers messages.")
+            badge_titre = "⚡ Résumé Flash" if format.value == "court" else "📖 Résumé Détaillé"
+            embed = discord.Embed(
+                title=f"{badge_titre} — #{channel.name}",
+                description=summary_text,
+                color=discord.Color.gold() if format.value == "court" else discord.Color.purple()
+            )
+            embed.set_footer(text=f"Analyse basée sur les {len(user_messages)} messages (Tentative {tentative + 1}).")
 
-        await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
 
-    except Exception as e:
-        await interaction.followup.send(f"❌ Erreur lors de la génération du résumé : {e}", ephemeral=True)
+        except Exception as e:
+            if "503" in str(e) and tentative < max_tentatives - 1:
+                await asyncio.sleep(2)
+            else:
+                await interaction.followup.send(f"❌ Les serveurs IA sont surchargés après {max_tentatives} tentatives. Réessayez plus tard.", ephemeral=True)
+                return
 
 
 @bot.tree.command(
