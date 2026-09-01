@@ -148,7 +148,7 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
     for tentative in range(max_tentatives):
         try:
             response = gemini_client.models.generate_content(
-                model="gemini-3.6-flash-lite",
+                model="gemini-3.5-flash-lite",
                 contents=prompt
             )
             recap_text = response.text
@@ -459,7 +459,7 @@ async def resumer(interaction: discord.Interaction, format: app_commands.Choice[
     for tentative in range(max_tentatives):
         try:
             response = gemini_client.models.generate_content(
-                model="gemini-3.6-flash-lite",
+                model="gemini-3.5-flash-lite",
                 contents=prompt
             )
             summary_text = response.text
@@ -537,7 +537,7 @@ async def resumer_conv_orga(interaction: discord.Interaction, format: app_comman
     for tentative in range(max_tentatives):
         try:
             response = gemini_client.models.generate_content(
-                model="gemini-3.6-flash-lite",
+                model="gemini-3.5-flash-lite",
                 contents=prompt
             )
             summary_text = response.text
