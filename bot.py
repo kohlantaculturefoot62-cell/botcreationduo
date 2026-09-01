@@ -58,14 +58,10 @@ def nettoyer_texte(texte: str) -> str:
     """
     if not texte:
         return ""
-    # Enlever les accents
     texte_norm = unicodedata.normalize("NFD", texte)
     sans_accents = "".join(c for c in texte_norm if unicodedata.category(c) != "Mn")
-    # Mettre en minuscules
     texte_min = sans_accents.lower()
-    # Retirer tout ce qui n'est pas lettre, chiffre ou espace (supprime les émojis)
     texte_propre = re.sub(r'[^a-z0-9\s]', '', texte_min)
-    # Supprimer les espaces multiples restants
     return re.sub(r'\s+', ' ', texte_propre).strip()
 
 
@@ -82,49 +78,70 @@ def est_categorie_candidate(category: discord.CategoryChannel) -> bool:
 # =======================================================
 
 async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channel: discord.TextChannel):
-    """Scanne tous les salons des catégories candidates des dernières 24h et publie une synthèse IA."""
+    """Scanne les salons cibles (et log-deplacements) des dernières 24h et publie une synthèse IA."""
     now = datetime.datetime.now(datetime.timezone.utc)
     depuis = now - datetime.timedelta(hours=24)
 
     salons_transcripts = []
 
     for channel in guild.text_channels:
-        # On vérifie si le salon appartient à l'une des catégories cibles
-        if est_categorie_candidate(channel.category):
+        est_salon_log = (channel.name.lower() == "log-deplacements")
+        
+        # On vérifie si le salon appartient aux catégories cibles OU s'il s'agit du salon log-deplacements
+        if est_categorie_candidate(channel.category) or est_salon_log:
             # Ignorer les salons archivés
             if channel.name.startswith("🔒arch-"):
                 continue
 
-            messages = [
-                msg async for msg in channel.history(after=depuis, oldest_first=True)
-                if not msg.author.bot and msg.content.strip()
-            ]
+            lines = []
+            async for msg in channel.history(after=depuis, oldest_first=True):
+                # On ignore les messages de bots, SAUF dans log-deplacements (si c'est géré par un bot)
+                if msg.author.bot and not est_salon_log:
+                    continue
 
-            if messages:
+                texte_msg = msg.content.strip()
+
+                # Vérifier s'il y a des fichiers .txt attachés
+                if msg.attachments:
+                    for att in msg.attachments:
+                        if att.filename.endswith(".txt"):
+                            try:
+                                # On télécharge et on lit le fichier texte
+                                file_bytes = await att.read()
+                                texte_fichier = file_bytes.decode('utf-8')
+                                texte_msg += f"\n\n--- 📄 CONTENU DU FICHIER {att.filename} ---\n{texte_fichier}\n---------------------------------------\n"
+                            except Exception as e:
+                                print(f"Impossible de lire le fichier {att.filename} : {e}")
+
+                if texte_msg.strip():
+                    lines.append(f"[{msg.created_at.strftime('%H:%M')}] {msg.author.display_name}: {texte_msg.strip()}")
+
+            if lines:
                 cat_nom = channel.category.name if channel.category else "Sans Catégorie"
-                lines = [f"[{msg.created_at.strftime('%H:%M')}] {msg.author.display_name}: {msg.content}" for msg in messages]
                 salons_transcripts.append(
-                    f"=== [{cat_nom.upper()}] #{channel.name} ({len(messages)} messages) ===\n" + "\n".join(lines)
+                    f"=== [{cat_nom.upper()}] #{channel.name} ({len(lines)} éléments) ===\n" + "\n".join(lines)
                 )
 
     if not salons_transcripts:
-        await target_channel.send("😴 **Journal du jour :** Aucun échange dans les salons candidats (Camps, Duos, Équipes, Confessionnaux) au cours des dernières 24 heures.")
+        await target_channel.send("😴 **Journal du jour :** Aucun échange dans les salons candidats ni de logs au cours des dernières 24 heures.")
         return
 
     full_context = "\n\n".join(salons_transcripts)
 
     prompt = (
         "Tu es l'arbitre en chef et showrunner d'un jeu de stratégie et de survie (type Koh-Lanta / Survivor / Secret Story).\n"
-        "Voici l'ensemble des discussions de la journée échangées dans les différents espaces de jeu (Camps, Duos, Trios, Quatuors, Équipes, Confessionnaux) :\n\n"
+        "Voici l'ensemble des discussions de la journée échangées dans les différents espaces de jeu (Camps, Duos, Équipes, Confessionnaux) "
+        "ainsi que les journaux de logs (déplacements, objets, événements) :\n\n"
         f"{full_context}\n\n"
         "Rédige le **Journal de Bord Stratégique Global de la Journée** pour l'équipe d'organisation (Orgas/Spectateurs).\n"
         "Structure ta réponse avec des titres clairs et des emojis :\n"
         "1. 🌍 **Synthèse Générale & Ambiance Globale** (ambiance sur les camps, moral des candidats, état d'esprit)\n"
         "2. 🤝 **Alliances, Pactes & Négociations** (qui se rapproche de qui ? quelles sous-alliances se forment ?)\n"
-        "3. 🎯 **Cibles, Votes & Stratégies d'Élimination** (qui est en danger ? qui mène les votes dans chaque camp/équipe ?)\n"
+        "3. 🎯 **Cibles, Votes & Stratégies d'Élimination** (qui est en danger ? qui mène les votes ?)\n"
         "4. ⚠️ **Trahisons, Secrets & Double-Jeu** (incohérences entre ce qui est dit en camp et en duo/confessionnal)\n"
         "5. 🎙️ **Points Clés des Confessionnaux & Duos** (révélations importantes, états d'âme, plans secrets)\n"
-        "6. 📌 **Résumé rapide par zone/salon actif** (1 ou 2 phrases synthétiques par salon marquant)"
+        "6. 🗺️ **Mouvements & Événements Importants** (analyse des déplacements, découvertes ou événements tirés des logs)\n"
+        "7. 📌 **Résumé rapide par zone/salon actif** (1 ou 2 phrases synthétiques par salon marquant)"
     )
 
     max_tentatives = 3
