@@ -1,7 +1,9 @@
 import os
+import re
 import itertools
 import asyncio
 import datetime
+import unicodedata
 from zoneinfo import ZoneInfo
 
 import discord
@@ -19,10 +21,25 @@ RECAP_CHANNEL_ID = int(os.getenv("RECAP_CHANNEL_ID", 0))
 # Heure du récapitulatif automatique chaque soir (Fuseau Paris)
 HEURE_RECAP = datetime.time(hour=23, minute=0, tzinfo=ZoneInfo("Europe/Paris"))
 
-MAX_CHANNELS_PER_CATEGORY = 45  # Marge de sécurité sous la limite Discord de 50
+MAX_CHANNELS_PER_CATEGORY = 45
 ROLE_SPECTATEURS_NAME = "Spectateurs"
 ROLE_ORGAS_NAME = "Orgas"
 NOM_CATEGORIE_ARCHIVE = "📦 ARCHIVES DUOS"
+
+# Mots-clés des catégories candidates à analyser
+# (Mettez tout en minuscules, sans accents)
+CATEGORIES_CIBLES = [
+    "confessional",
+    "confessionnal",
+    "camps",
+    "camp",
+    "duo jaune",
+    "duo rouge",
+    "trio",
+    "quatuor",
+    "equipe rouge",
+    "equipe jaune"
+]
 
 # Initialisation
 gemini_client = genai.Client(api_key=GEMINI_KEY)
@@ -34,47 +51,80 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
-# ==========================================
-# 1. FONCTIONS DE RÉCAPITULATIF JOURNALIER
-# ==========================================
+def nettoyer_texte(texte: str) -> str:
+    """
+    Retire les accents, les émojis, la ponctuation et met en minuscules.
+    Ne garde que les lettres (a-z), les chiffres et les espaces.
+    """
+    if not texte:
+        return ""
+    # Enlever les accents
+    texte_norm = unicodedata.normalize("NFD", texte)
+    sans_accents = "".join(c for c in texte_norm if unicodedata.category(c) != "Mn")
+    # Mettre en minuscules
+    texte_min = sans_accents.lower()
+    # Retirer tout ce qui n'est pas lettre, chiffre ou espace (supprime les émojis)
+    texte_propre = re.sub(r'[^a-z0-9\s]', '', texte_min)
+    # Supprimer les espaces multiples restants
+    return re.sub(r'\s+', ' ', texte_propre).strip()
+
+
+def est_categorie_candidate(category: discord.CategoryChannel) -> bool:
+    """Vérifie si le nom de la catégorie (nettoyé) contient l'un des mots-clés."""
+    if not category:
+        return False
+    cat_nom_propre = nettoyer_texte(category.name)
+    return any(cible in cat_nom_propre for cible in CATEGORIES_CIBLES)
+
+
+# =======================================================
+# 1. FONCTIONS DE RÉCAPITULATIF JOURNALIER GLOBAL CANDIDATS
+# =======================================================
 
 async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channel: discord.TextChannel):
-    """Scanne tous les salons duos actifs des dernières 24h et publie une synthèse IA."""
+    """Scanne tous les salons des catégories candidates des dernières 24h et publie une synthèse IA."""
     now = datetime.datetime.now(datetime.timezone.utc)
     depuis = now - datetime.timedelta(hours=24)
 
-    duo_transcripts = []
+    salons_transcripts = []
 
     for channel in guild.text_channels:
-        # On ignore les salons archivés (qui commencent par 🔒arch-)
-        if channel.name.startswith("duo-"):
+        # On vérifie si le salon appartient à l'une des catégories cibles
+        if est_categorie_candidate(channel.category):
+            # Ignorer les salons archivés
+            if channel.name.startswith("🔒arch-"):
+                continue
+
             messages = [
                 msg async for msg in channel.history(after=depuis, oldest_first=True)
                 if not msg.author.bot and msg.content.strip()
             ]
 
             if messages:
-                duo_name = channel.name.replace("duo-", "").replace("-", " & ")
+                cat_nom = channel.category.name if channel.category else "Sans Catégorie"
                 lines = [f"[{msg.created_at.strftime('%H:%M')}] {msg.author.display_name}: {msg.content}" for msg in messages]
-                duo_transcripts.append(f"=== DUO : {duo_name} ({len(messages)} messages) ===\n" + "\n".join(lines))
+                salons_transcripts.append(
+                    f"=== [{cat_nom.upper()}] #{channel.name} ({len(messages)} messages) ===\n" + "\n".join(lines)
+                )
 
-    if not duo_transcripts:
-        await target_channel.send("😴 **Journal du jour :** Aucun échange dans les salons duos au cours des dernières 24 heures.")
+    if not salons_transcripts:
+        await target_channel.send("😴 **Journal du jour :** Aucun échange dans les salons candidats (Camps, Duos, Équipes, Confessionnaux) au cours des dernières 24 heures.")
         return
 
-    full_context = "\n\n".join(duo_transcripts)
+    full_context = "\n\n".join(salons_transcripts)
 
     prompt = (
-        "Tu es l'arbitre en chef d'un jeu de stratégie et d'alliances (type Koh-Lanta / Survivor / Secret Story).\n"
-        "Voici l'ensemble des discussions privées échangées aujourd'hui dans les différents salons duos :\n\n"
+        "Tu es l'arbitre en chef et showrunner d'un jeu de stratégie et de survie (type Koh-Lanta / Survivor / Secret Story).\n"
+        "Voici l'ensemble des discussions de la journée échangées dans les différents espaces de jeu (Camps, Duos, Trios, Quatuors, Équipes, Confessionnaux) :\n\n"
         f"{full_context}\n\n"
-        "Rédige le **Journal de Bord Stratégique de la Journée** pour l'équipe d'organisation (Orgas/Spectateurs).\n"
+        "Rédige le **Journal de Bord Stratégique Global de la Journée** pour l'équipe d'organisation (Orgas/Spectateurs).\n"
         "Structure ta réponse avec des titres clairs et des emojis :\n"
-        "1. 🌍 **Synthèse Générale de la Journée**\n"
-        "2. 🤝 **Alliances & Pactes confirmés**\n"
-        "3. 🎯 **Cibles & Stratégies d'Élimination**\n"
-        "4. ⚠️ **Trahisons & Double-Jeu**\n"
-        "5. 📌 **Point rapide par duo actif**"
+        "1. 🌍 **Synthèse Générale & Ambiance Globale** (ambiance sur les camps, moral des candidats, état d'esprit)\n"
+        "2. 🤝 **Alliances, Pactes & Négociations** (qui se rapproche de qui ? quelles sous-alliances se forment ?)\n"
+        "3. 🎯 **Cibles, Votes & Stratégies d'Élimination** (qui est en danger ? qui mène les votes dans chaque camp/équipe ?)\n"
+        "4. ⚠️ **Trahisons, Secrets & Double-Jeu** (incohérences entre ce qui est dit en camp et en duo/confessionnal)\n"
+        "5. 🎙️ **Points Clés des Confessionnaux & Duos** (révélations importantes, états d'âme, plans secrets)\n"
+        "6. 📌 **Résumé rapide par zone/salon actif** (1 ou 2 phrases synthétiques par salon marquant)"
     )
 
     max_tentatives = 3
@@ -87,14 +137,13 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
             recap_text = response.text
 
             date_str = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y")
-            header = f"📰 **JOURNAL STRATÉGIQUE DU {date_str} — DUOS**\n*(Réservé aux Orgas, Spectateurs et Admins)*\n\n"
+            header = f"📰 **JOURNAL STRATÉGIQUE GLOBAL DU {date_str}**\n*(Réservé aux Orgas, Spectateurs et Admins)*\n\n"
             full_message = header + recap_text
 
-            # Découpage si le texte dépasse la limite de Discord
             for chunk in [full_message[i:i + 1900] for i in range(0, len(full_message), 1900)]:
                 await target_channel.send(chunk)
             
-            return # Succès, on sort
+            return
 
         except Exception as e:
             if "503" in str(e) and tentative < max_tentatives - 1:
@@ -137,7 +186,7 @@ async def on_ready():
     description="Génère tous les salons duos privés (utilise la catégorie existante si trouvée)."
 )
 @app_commands.describe(
-    nom_equipe="Nom de la catégorie existante ou à créer (ex: DUOS ROUGE)",
+    nom_equipe="Nom de la catégorie (ex: 🔴 DUOS ROUGE)",
     roles="Mentionne les rôles séparés par des espaces (ex: @Candidat1 @Candidat2 ...)"
 )
 async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: str):
@@ -154,8 +203,8 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
     role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
     role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
 
-    clean_target_name = nom_equipe.strip().lower()
-    existing_category = discord.utils.find(lambda c: c.name.lower() == clean_target_name, guild.categories)
+    clean_target_name = nettoyer_texte(nom_equipe)
+    existing_category = discord.utils.find(lambda c: nettoyer_texte(c.name) == clean_target_name, guild.categories)
 
     category_index = 1
     if existing_category:
@@ -226,7 +275,8 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
         await interaction.followup.send(f"ℹ️ Aucun salon duo actif trouvé pour le rôle {role_candidat.mention}.", ephemeral=True)
         return
 
-    archive_categories = [c for c in guild.categories if c.name.lower().startswith(NOM_CATEGORIE_ARCHIVE.lower())]
+    clean_arch_name = nettoyer_texte(NOM_CATEGORIE_ARCHIVE)
+    archive_categories = [c for c in guild.categories if clean_arch_name in nettoyer_texte(c.name)]
     if archive_categories:
         current_archive_cat = archive_categories[-1]
     else:
@@ -286,7 +336,8 @@ async def supprimer_categorie(interaction: discord.Interaction, nom_categorie: s
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    category = discord.utils.find(lambda c: c.name.lower() == nom_categorie.strip().lower(), guild.categories)
+    target_clean = nettoyer_texte(nom_categorie)
+    category = discord.utils.find(lambda c: nettoyer_texte(c.name) == target_clean, guild.categories)
     if not category:
         await interaction.followup.send(f"❌ Catégorie **{nom_categorie}** introuvable.", ephemeral=True)
         return
@@ -312,7 +363,8 @@ async def purger_equipe_duos(interaction: discord.Interaction, prefixe: str):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    categories_to_delete = [c for c in guild.categories if c.name.lower().startswith(prefixe.strip().lower())]
+    clean_pref = nettoyer_texte(prefixe)
+    categories_to_delete = [c for c in guild.categories if nettoyer_texte(c.name).startswith(clean_pref)]
     if not categories_to_delete:
         await interaction.followup.send(f"❌ Aucune catégorie ne commence par **{prefixe}**.", ephemeral=True)
         return
@@ -415,19 +467,6 @@ async def resumer(interaction: discord.Interaction, format: app_commands.Choice[
 
 
 @bot.tree.command(
-    name="forcer_recap_jour",
-    description="Génère immédiatement le journal stratégique des duos des dernières 24h."
-)
-@app_commands.default_permissions(administrator=True)
-async def forcer_recap_jour(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-
-    target_channel = bot.get_channel(RECAP_CHANNEL_ID) or interaction.channel
-    await interaction.followup.send(f"⏳ Génération du journal stratégique en cours dans {target_channel.mention}...", ephemeral=True)
-
-    await generer_et_envoyer_recap_quotidien(interaction.guild, target_channel)
-
-@bot.tree.command(
     name="resumer_conv_orga", 
     description="Génère un résumé IA axé sur l'organisation et les décisions (pour le Staff)."
 )
@@ -490,7 +529,7 @@ async def resumer_conv_orga(interaction: discord.Interaction, format: app_comman
             embed = discord.Embed(
                 title=f"{badge_titre} — #{channel.name}",
                 description=summary_text,
-                color=discord.Color.blue()  # Couleur bleue pour différencier de l'analyse stratégique (violet/or)
+                color=discord.Color.blue()
             )
             embed.set_footer(text=f"Analyse basée sur les {len(user_messages)} messages (Tentative {tentative + 1}).")
 
@@ -503,5 +542,21 @@ async def resumer_conv_orga(interaction: discord.Interaction, format: app_comman
             else:
                 await interaction.followup.send(f"❌ Les serveurs IA sont surchargés après {max_tentatives} tentatives. Réessayez plus tard.", ephemeral=True)
                 return
+
+
+@bot.tree.command(
+    name="forcer_recap_jour",
+    description="Génère immédiatement le journal stratégique global de tous les salons candidats des dernières 24h."
+)
+@app_commands.default_permissions(administrator=True)
+async def forcer_recap_jour(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    target_channel = bot.get_channel(RECAP_CHANNEL_ID) or interaction.channel
+    await interaction.followup.send(f"⏳ Analyse des salons candidats en cours pour {target_channel.mention}...", ephemeral=True)
+
+    await generer_et_envoyer_recap_quotidien(interaction.guild, target_channel)
+
+
 # --- DÉMARRAGE DU BOT ---
 bot.run(TOKEN)
