@@ -665,6 +665,172 @@ async def forcer_recap_jour(interaction: discord.Interaction):
 
     await generer_et_envoyer_recap_quotidien(interaction.guild, target_channel)
 
+# ==========================================
+# 7. COMMANDES DE NETTOYAGE (SALONS & MESSAGES)
+# ==========================================
 
+@bot.tree.command(
+    name="effacer_salon",
+    description="Supprime tous les messages d'un salon (clone et recrée le salon à neuf avec les mêmes permissions)."
+)
+@app_commands.describe(
+    salon="Optionnel : mentionnez le salon à vider (par défaut : le salon actuel)"
+)
+@app_commands.default_permissions(administrator=True)
+async def effacer_salon(interaction: discord.Interaction, salon: discord.TextChannel = None):
+    await interaction.response.defer(ephemeral=True)
+    target = salon or interaction.channel
+
+    if not isinstance(target, discord.TextChannel):
+        await interaction.followup.send("❌ Seuls les salons textuels peuvent être vidés.", ephemeral=True)
+        return
+
+    try:
+        # Clone le salon à l'identique (permissions, position, catégorie, sujet)
+        nouveau_salon = await target.clone(reason=f"Salon vidé par {interaction.user.display_name}")
+        await target.delete(reason=f"Salon vidé par {interaction.user.display_name}")
+        
+        # Message de confirmation dans le nouveau salon et en retour éphémère
+        await nouveau_salon.send("🧹 **Le salon a été réinitialisé et vidé avec succès.**")
+        if target.id != interaction.channel_id:
+            await interaction.followup.send(f"✅ Le salon {nouveau_salon.mention} a été vidé.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Erreur lors de la réinitialisation : {e}", ephemeral=True)
+
+
+@bot.tree.command(
+    name="vider_categorie",
+    description="Supprime tous les salons d'une catégorie tout en conservant la catégorie vide."
+)
+@app_commands.describe(
+    nom_categorie="Nom de la catégorie dont vous souhaitez supprimer les salons"
+)
+@app_commands.default_permissions(administrator=True)
+async def vider_categorie(interaction: discord.Interaction, nom_categorie: str):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    target_clean = nettoyer_texte(nom_categorie)
+    category = discord.utils.find(lambda c: nettoyer_texte(c.name) == target_clean, guild.categories)
+    
+    if not category:
+        await interaction.followup.send(f"❌ Catégorie **{nom_categorie}** introuvable.", ephemeral=True)
+        return
+
+    salons_a_supprimer = category.channels
+    total_salons = len(salons_a_supprimer)
+
+    if total_salons == 0:
+        await interaction.followup.send(f"ℹ️ La catégorie **{category.name}** est déjà vide.", ephemeral=True)
+        return
+
+    for channel in salons_a_supprimer:
+        try:
+            await channel.delete(reason=f"Nettoyage de catégorie par {interaction.user.display_name}")
+            await asyncio.sleep(0.4)  # Évite les ratelimits Discord
+        except Exception:
+            pass
+
+    await interaction.followup.send(
+        f"🧹 **{total_salons} salon(s)** supprimé(s) dans la catégorie **{category.name}** (la catégorie a été conservée).",
+        ephemeral=True
+    )
+
+# ========================================================
+# 8. COMMANDES D'AJOUT DES PERMISSIONS SPECTATEURS (STRICT)
+# ========================================================
+
+def get_spectateur_overwrites() -> discord.PermissionOverwrite:
+    """Définit les droits stricts en lecture seule pour les Spectateurs."""
+    return discord.PermissionOverwrite(
+        view_channel=True,
+        read_messages=True,
+        read_message_history=True,
+        send_messages=False,
+        send_messages_in_threads=False,
+        create_public_threads=False,
+        create_private_threads=False,
+        add_reactions=False,
+        use_external_emojis=False,
+        use_external_stickers=False,
+        send_voice_messages=False
+    )
+
+
+@bot.tree.command(
+    name="ajouter_spectateurs_salon",
+    description="Donne l'accès Spectateurs strict (lecture seule, zéro émoji/réaction) à un salon précis."
+)
+@app_commands.describe(
+    salon="Optionnel : mentionnez le salon à configurer (par défaut : le salon actuel)"
+)
+@app_commands.default_permissions(manage_channels=True)
+async def ajouter_spectateurs_salon(interaction: discord.Interaction, salon: discord.TextChannel = None):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    target_channel = salon or interaction.channel
+
+    if not isinstance(target_channel, discord.TextChannel):
+        await interaction.followup.send("❌ Cette commande ne s'applique qu'aux salons textuels.", ephemeral=True)
+        return
+
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    if not role_spectateurs:
+        await interaction.followup.send(f"❌ Rôle **{ROLE_SPECTATEURS_NAME}** introuvable sur le serveur.", ephemeral=True)
+        return
+
+    overwrites = get_spectateur_overwrites()
+    await target_channel.set_permissions(role_spectateurs, overwrite=overwrites, reason=f"Accès spectateur ajouté par {interaction.user.display_name}")
+
+    await interaction.followup.send(
+        f"👁️ Accès **Spectateurs** (lecture seule stricte) appliqué au salon {target_channel.mention} !",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="ajouter_spectateurs_categorie",
+    description="Donne l'accès Spectateurs strict à tous les salons d'une catégorie."
+)
+@app_commands.describe(
+    nom_categorie="Nom de la catégorie cible (ex: ⛺ CAMPS ou DUO ROUGE)"
+)
+@app_commands.default_permissions(manage_channels=True)
+async def ajouter_spectateurs_categorie(interaction: discord.Interaction, nom_categorie: str):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    if not role_spectateurs:
+        await interaction.followup.send(f"❌ Rôle **{ROLE_SPECTATEURS_NAME}** introuvable sur le serveur.", ephemeral=True)
+        return
+
+    target_clean = nettoyer_texte(nom_categorie)
+    category = discord.utils.find(lambda c: nettoyer_texte(c.name) == target_clean, guild.categories)
+
+    if not category:
+        await interaction.followup.send(f"❌ Catégorie **{nom_categorie}** introuvable.", ephemeral=True)
+        return
+
+    channels_list = [ch for ch in category.channels if isinstance(ch, discord.TextChannel)]
+    if not channels_list:
+        await interaction.followup.send(f"ℹ️ Aucun salon textuel trouvé dans **{category.name}**.", ephemeral=True)
+        return
+
+    overwrites = get_spectateur_overwrites()
+    mis_a_jour = 0
+
+    for ch in channels_list:
+        try:
+            await ch.set_permissions(role_spectateurs, overwrite=overwrites, reason=f"Accès spectateurs par lot ({interaction.user.display_name})")
+            mis_a_jour += 1
+            await asyncio.sleep(0.3)  # Respect des ratelimits de Discord
+        except Exception:
+            pass
+
+    await interaction.followup.send(
+        f"👁️ Accès **Spectateurs** appliqué avec succès sur **{mis_a_jour}/{len(channels_list)} salon(s)** de la catégorie **{category.name}** !",
+        ephemeral=True
+    )
 # --- DÉMARRAGE DU BOT ---
 bot.run(TOKEN)
