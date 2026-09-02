@@ -354,17 +354,20 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    # 1. Récupérer tous les membres ayant ce rôle d'équipe
-    membres = [m for m in role_equipe.members if not m.bot]
+    # Récupération en temps réel via l'API pour contourner le cache vide
+    membres = []
+    async for member in guild.fetch_members(limit=None):
+        if not member.bot and role_equipe in member.roles:
+            membres.append(member)
 
     if len(membres) < 2:
         await interaction.followup.send(
-            f"❌ Il n'y a pas assez de membres avec le rôle {role_equipe.mention} pour créer des duos (minimum 2 requis).", 
+            f"❌ Seulement {len(membres)} membre(s) trouvé(s) avec le rôle {role_equipe.mention} (minimum 2 requis).", 
             ephemeral=True
         )
         return
 
-    # 2. Associer chaque membre à son rôle personnel
+    # Associer chaque membre à son rôle personnel
     candidats_data = []
     for m in membres:
         r_perso = trouver_role_personnel(m, role_equipe)
@@ -374,7 +377,7 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
             "name": (r_perso.name if r_perso else m.display_name).lower().replace(" ", "-")
         })
 
-    # 3. Gestion de la catégorie
+    # Gestion de la catégorie
     role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
     role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
 
@@ -389,35 +392,33 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
         current_category = await guild.create_category(nom_categorie)
         channel_count_in_current_cat = 0
 
-    # 4. Génération de toutes les paires (combinaisons 2 à 2)
+    # Combinaisons de duos
     duos = list(itertools.combinations(candidats_data, 2))
     total_duos = len(duos)
 
     await interaction.followup.send(
-        f"⏳ Création de **{total_duos} salons duos** pour les **{len(membres)} membres** de l'équipe {role_equipe.mention} dans **{nom_categorie}** en cours...",
+        f"⏳ Création de **{total_duos} salons duos** pour les **{len(membres)} membres** de {role_equipe.mention} dans **{nom_categorie}**...",
         ephemeral=True
     )
 
     for c1, c2 in duos:
-        # Gestion de la limite des 50 salons par catégorie Discord
         if channel_count_in_current_cat >= MAX_CHANNELS_PER_CATEGORY:
             category_index += 1
             current_category = await guild.create_category(f"{nom_categorie} - {category_index}")
             channel_count_in_current_cat = 0
             await asyncio.sleep(1)
 
-        # Permissions : Default bloqué, Orgas / Spectateurs configurés
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False, view_channel=False),
             guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
         }
 
-        # Droits pour le Candidat 1 (sur le membre et sur son rôle perso s'il existe)
+        # Candidat 1
         overwrites[c1["member"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
         if c1["role"]:
             overwrites[c1["role"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
 
-        # Droits pour le Candidat 2 (sur le membre et sur son rôle perso s'il existe)
+        # Candidat 2
         overwrites[c2["member"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
         if c2["role"]:
             overwrites[c2["role"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
@@ -434,13 +435,10 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
         await guild.create_text_channel(name=nom_salon, category=current_category, overwrites=overwrites)
         channel_count_in_current_cat += 1
 
-        # Pause pour éviter d'être bloqué par le rate-limit de Discord
         await asyncio.sleep(0.6)
 
-    # Message final
-    channel = interaction.channel
     await interaction.followup.send(
-        f"✅ **Terminé !** **{total_duos} salons duos** ont été créés avec succès pour l'équipe {role_equipe.mention} dans la catégorie **{current_category.name}**.", 
+        f"✅ **Terminé !** **{total_duos} salons duos** créés dans la catégorie **{current_category.name}**.", 
         ephemeral=True
     )
 
