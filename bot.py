@@ -1023,5 +1023,172 @@ async def tirage_boules(
     )
     embed_final.set_footer(text="La sentence du tirage au sort est irrévocable.")
     await message_principal.edit(embed=embed_final)
+
+# ========================================================
+# 10. CRÉATION DRAMATIQUE DE BINÔMES (DESTINS LIÉS)
+# ========================================================
+
+@bot.tree.command(
+    name="tirage_binomes",
+    description="Tire au sort et crée les salons privés de binômes (1 joueur Equipe A + 1 joueur Equipe B)."
+)
+@app_commands.describe(
+    role_equipe_a="Premier rôle d'équipe (ex: @Jaune)",
+    role_equipe_b="Deuxième rôle d'équipe (ex: @Rouge)",
+    nom_categorie="Nom de la catégorie où créer les salons (ex: 🔥 DESTINS LIÉS)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def tirage_binomes(
+    interaction: discord.Interaction,
+    role_equipe_a: discord.Role,
+    role_equipe_b: discord.Role,
+    nom_categorie: str
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    channel = interaction.channel
+
+    # 1. Récupération des membres des deux équipes
+    membres_a = [m for m in role_equipe_a.members if not m.bot]
+    membres_b = [m for m in role_equipe_b.members if not m.bot]
+
+    if len(membres_a) == 0 or len(membres_b) == 0:
+        await interaction.followup.send("❌ Au moins une des deux équipes ne contient aucun membre.", ephemeral=True)
+        return
+
+    if len(membres_a) != len(membres_b):
+        await interaction.followup.send(
+            f"❌ Les équipes ne sont pas équilibrées : {len(membres_a)} membres dans {role_equipe_a.mention} contre {len(membres_b)} dans {role_equipe_b.mention}.",
+            ephemeral=True
+        )
+        return
+
+    total_binomes = len(membres_a)
+
+    # 2. Association avec leurs rôles personnels
+    candidats_a = []
+    for m in membres_a:
+        r_perso = trouver_role_personnel(m, role_equipe_a)
+        candidats_a.append({
+            "member": m,
+            "role": r_perso,
+            "name": (r_perso.name if r_perso else m.display_name).lower().replace(" ", "-")
+        })
+
+    candidats_b = []
+    for m in membres_b:
+        r_perso = trouver_role_personnel(m, role_equipe_b)
+        candidats_b.append({
+            "member": m,
+            "role": r_perso,
+            "name": (r_perso.name if r_perso else m.display_name).lower().replace(" ", "-")
+        })
+
+    # 3. Mélange aléatoire (Tirage au sort)
+    random.shuffle(candidats_a)
+    random.shuffle(candidats_b)
+
+    # 4. Préparation / Recherche de la catégorie cible
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+
+    clean_target_name = nettoyer_texte(nom_categorie)
+    existing_category = discord.utils.find(lambda c: nettoyer_texte(c.name) == clean_target_name, guild.categories)
+
+    category_index = 1
+    if existing_category:
+        current_category = existing_category
+        channel_count_in_current_cat = len(existing_category.channels)
+    else:
+        current_category = await guild.create_category(nom_categorie)
+        channel_count_in_current_cat = 0
+
+    await interaction.followup.send(f"🏺 Lancement du tirage au sort des **{total_binomes} binômes** en direct...", ephemeral=True)
+
+    # 5. Message public d'introduction dans le salon où la commande a été lancée
+    embed_intro = discord.Embed(
+        title="⚡ LE TIRAGE DES DESTINS LIÉS ⚡",
+        description=(
+            f"Les destins de **{role_equipe_a.mention}** et **{role_equipe_b.mention}** vont être scellés !\n\n"
+            f"**{total_binomes} binômes mixtes** vont être formés.\n"
+            "Le sort de chaque aventurier sera désormais lié à celui de son binôme...\n\n"
+            "*(Tirage au sort et création des espaces secrets en cours...)*"
+        ),
+        color=discord.Color.gold()
+    )
+    embed_intro.set_footer(text="Formation des duos par tirage aléatoire...")
+    message_principal = await channel.send(embed=embed_intro)
+
+    await asyncio.sleep(4)
+
+    texte_binomes = ""
+    salons_crees = []
+
+    # 6. Animation et création progressive
+    for i in range(total_binomes):
+        ca = candidats_a[i]
+        cb = candidats_b[i]
+
+        # Gestion de la limite des 50 salons Discord par catégorie
+        if channel_count_in_current_cat >= MAX_CHANNELS_PER_CATEGORY:
+            category_index += 1
+            current_category = await guild.create_category(f"{nom_categorie} - {category_index}")
+            channel_count_in_current_cat = 0
+            await asyncio.sleep(1)
+
+        # Configuration des permissions privées
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False, view_channel=False),
+            guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+        }
+
+        # Droits Membre A
+        overwrites[ca["member"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+        if ca["role"]:
+            overwrites[ca["role"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+
+        # Droits Membre B
+        overwrites[cb["member"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+        if cb["role"]:
+            overwrites[cb["role"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+
+        if role_spectateurs:
+            overwrites[role_spectateurs] = get_spectateur_overwrites()
+
+        if role_orgas:
+            overwrites[role_orgas] = discord.PermissionOverwrite(
+                read_messages=True, view_channel=True, read_message_history=True, send_messages=True
+            )
+
+        nom_salon = f"binome-{ca['name']}-{cb['name']}"
+        salon_cree = await guild.create_text_channel(name=nom_salon, category=current_category, overwrites=overwrites)
+        channel_count_in_current_cat += 1
+        salons_crees.append(salon_cree)
+
+        # Mise à jour du message en direct
+        texte_binomes += f"🔗 **Binôme #{i + 1} :** {ca['member'].mention} & {cb['member'].mention}\n➡️ Salon : {salon_cree.mention}\n\n"
+
+        embed_update = discord.Embed(
+            title="⚡ LE TIRAGE DES DESTINS LIÉS — EN COURS ⚡",
+            description=texte_binomes,
+            color=discord.Color.orange()
+        )
+        await message_principal.edit(embed=embed_update)
+
+        # Suspense de 3.5 secondes entre chaque binôme
+        await asyncio.sleep(3.5)
+
+    # 7. Verdict final
+    embed_final = discord.Embed(
+        title="⚡ DESTINS LIÉS — TOUS LES BINÔMES SONT SCELLÉS ⚡",
+        description=(
+            f"{texte_binomes}"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ **Les {total_binomes} salons de binômes ont été créés et sécurisés dans la catégorie {current_category.name} !**"
+        ),
+        color=discord.Color.green()
+    )
+    embed_final.set_footer(text="Que le meilleur binôme l'emporte.")
+    await message_principal.edit(embed=embed_final)
 # --- DÉMARRAGE DU BOT ---
 bot.run(TOKEN)
