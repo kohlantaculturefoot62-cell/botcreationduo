@@ -305,16 +305,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 # ==========================================
 # 4. COMMANDES DE GESTION DUOS & CANDIDATS
 # ==========================================
-
-@bot.tree.command(
-    name="creer_duos", 
-    description="Génère tous les salons duos privés (utilise la catégorie existante si trouvée)."
-)
-@app_commands.describe(
-    nom_equipe="Nom de la catégorie (ex: 🔴 DUOS ROUGE)",
-    roles="Mentionne les rôles séparés par des espaces (ex: @Candidat1 @Candidat2 ...)"
-)
-@app_commands.check(est_orga_ou_admin)
 # Rôles génériques à ignorer pour trouver le rôle personnel du joueur
 ROLES_GENERIQUES_A_IGNORER = [
     "everyone",
