@@ -15,6 +15,9 @@ from google import genai
 TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
+# Modèle économique et rapide Flash-Lite
+MODEL_NAME = "gemini-3.5-flash-lite"
+
 # Salon secret pour le journal quotidien et les fiches confessionnal (Orgas / Spectateurs / Admins)
 RECAP_CHANNEL_ID = int(os.getenv("RECAP_CHANNEL_ID", 0))
 
@@ -140,7 +143,7 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
     for tentative in range(max_tentatives):
         try:
             response = gemini_client.models.generate_content(
-                model="gemini-3.6-flash",
+                model=MODEL_NAME,
                 contents=prompt
             )
             recap_text = response.text
@@ -163,11 +166,11 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
 
 
 # =======================================================
-# 2. FONCTIONS DU BOT JOURNALISTE (CONFESSIONNAL)
+# 2. FONCTIONS DU BOT JOURNALISTE (CONFESSIONNAL OBJECTIF)
 # =======================================================
 
 async def generer_questions_confessionnal(target_recap_channel: discord.TextChannel, candidat_nom: str = None) -> str:
-    """Lit le dernier récapitulatif disponible et génère des questions journalistiques adaptées."""
+    """Lit le dernier récapitulatif disponible et génère des questions d'interview neutres et objectives."""
     recap_messages = [
         msg.content async for msg in target_recap_channel.history(limit=6, oldest_first=False)
         if not msg.content.startswith("😴") and "JOURNAL STRATÉGIQUE" in msg.content
@@ -181,27 +184,31 @@ async def generer_questions_confessionnal(target_recap_channel: discord.TextChan
     consigne_cible = (
         f"Concentre-toi UNIQUEMENT sur le candidat **{candidat_nom}**." 
         if candidat_nom else 
-        "Choisis librement les 3 ou 4 candidats les plus stratégiques, hésitants ou en danger aujourd'hui."
+        "Choisis librement 3 ou 4 candidats ayant des choix stratégiques majeurs à faire ou au cœur des dynamiques du jour."
     )
 
     prompt = (
-        "Tu es le journaliste en chef / interviewer en confessionnal d'une émission de téléréalité stratégique (type Koh-Lanta / Big Brother / Secret Story).\n"
-        "Ton rôle est d'aider les organisateurs à poser des questions subtiles, piquantes et déstabilisantes aux candidats lors de leur passage au confessionnal.\n"
-        "Tu dois les pousser à se confier, douter de leurs alliances ou justifier leurs choix SANS JAMAIS révéler explicitement ce que font les autres.\n\n"
+        "Tu es le journaliste/interviewer professionnel et IMPARTIAL d'un jeu de stratégie et d'aventure télévisé (type Koh-Lanta / Survivor / Big Brother).\n"
+        "Ton rôle est d'aider les organisateurs à préparer les entretiens individuels au confessionnal.\n\n"
+        "RÈGLES D'OR DE L'INTERVIEW :\n"
+        "- NEUTRALITÉ ABSOLUE : Tu ne juges jamais les actions (pas de morale, pas de reproches, pas d'expressions accusatrices comme 'trahison dans le dos', 'tu dors bien ?', etc.).\n"
+        "- OBJECTIVITÉ : Tu constates les faits et tu poses des questions ouvertes sur les choix, les réflexions, les dilemmes et la vision du candidat.\n"
+        "- NON-DIVULGATION : Tu ne révèles jamais ce que les autres candidats font ou disent en secret.\n"
+        "- POSTURE : L'organisation est un miroir neutre qui pousse le joueur à expliciter son propre raisonnement et son positionnement.\n\n"
         f"Voici le récapitulatif des derniers événements du jeu :\n\n{dernier_recap}\n\n"
         f"Consigne : {consigne_cible}\n\n"
-        "Pour chaque candidat traité, structure ta réponse ainsi :\n"
+        "Pour chaque candidat sélectionné, structure la fiche ainsi :\n"
         "👤 **Candidat : [Nom]**\n"
-        "🎯 **Contexte & Enjeu** (ce qu'il vit / sa situation du moment en 1-2 phrases)\n"
-        "❓ **3 Questions à lui poser** (au tutoiement, formulées sur un ton immersif et piquant)\n"
-        "💡 **Intention de l'interview** (ce qu'on cherche à comprendre ou déclencher chez lui)\n"
+        "🎯 **Situation constatée** (résumé neutre et factuel de sa position actuelle en 1 phrase)\n"
+        "❓ **3 Questions ouvertes** (au tutoiement, formulées de façon calme, professionnelle et stimulante)\n"
+        "💡 **Objectif de l'interview** (comprendre sa réflexion, ses priorités du moment ou sa gestion du risque)"
     )
 
     max_tentatives = 3
     for tentative in range(max_tentatives):
         try:
             response = gemini_client.models.generate_content(
-                model="gemini-3.6-flash",
+                model=MODEL_NAME,
                 contents=prompt
             )
             return response.text
@@ -235,7 +242,7 @@ async def tache_questions_matin():
     if channel:
         questions_text = await generer_questions_confessionnal(channel)
         date_str = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y")
-        header = f"🎙️ **FICHES CONFESSIONNAL DU {date_str} — SUGGESTIONS JOURNALISTIQUES**\n*(Pour les Orgas)*\n\n"
+        header = f"🎙️ **FICHES CONFESSIONNAL DU {date_str} — SUGGESTIONS D'INTERVIEWS**\n*(Pour les Orgas)*\n\n"
         full_msg = header + questions_text
         for chunk in [full_msg[i:i + 1900] for i in range(0, len(full_msg), 1900)]:
             await channel.send(chunk)
@@ -252,7 +259,7 @@ async def on_ready():
 
 
 # ==========================================
-# 4. COMMANDES DE GESTION DES DUOS & JOUEURS
+# 4. COMMANDES DE GESTION DES DUOS & CANDIDATS
 # ==========================================
 
 @bot.tree.command(
@@ -495,28 +502,28 @@ async def resumer(interaction: discord.Interaction, format: app_commands.Choice[
             f"{transcript}\n\n"
             "Fais un résumé **TRÈS COURT, CONCIS ET DIRECT** en 3 à 5 bullet points maximum :\n"
             "- 🎯 Sujet central en 1 phrase\n"
-            "- 🤝 Décisions / Alliances actées\n"
-            "- ⚠️ Cibles ou menaces identifiées\n"
-            "- 🎭 Statut général (Accord, Tensions, Faux-semblants)"
+            "- 🤝 Décisions / Alliances évoquées\n"
+            "- ⚠️ Orientations stratégiques ou cibles mentionnées\n"
+            "- 🎭 Dynamique des échanges (Accord, Réserves, Négociation)"
         )
     else:
         prompt = (
-            "Tu es l'arbitre et organisateur d'un jeu de stratégie/téléréalité (type Koh-Lanta/Survivor/Secret Story). "
+            "Tu es l'analyste stratégique d'un jeu d'aventure/téléréalité (type Koh-Lanta/Survivor/Secret Story). "
             f"Voici la transcription des messages échangés dans le salon #{channel.name} :\n\n"
             f"{transcript}\n\n"
-            "Fais un **RÉSUMÉ DÉTAILLÉ ET APPROFONDI** en français, structuré avec les sections suivantes :\n"
-            "1. 🎯 **Analyse Thématique**\n"
-            "2. 🤝 **Alliances, Promesses et Accords**\n"
-            "3. ⚠️ **Stratégies, Votes & Cibles**\n"
-            "4. 🎭 **Psychologie & Dynamique**\n"
-            "5. 💬 **Citations ou Moments Clés**"
+            "Fais un **RÉSUMÉ DÉTAILLÉ ET STRUCTURÉ** en français, avec les sections suivantes :\n"
+            "1. 🎯 **Analyse Thématique** (synthèse factuelle des sujets abordés)\n"
+            "2. 🤝 **Accords & Propositions** (qui propose quoi, points de convergence ou de divergence)\n"
+            "3. ⚠️ **Scénarios & Votes évoqués** (noms mentionnés, arguments avancés, alternatives)\n"
+            "4. 🎭 **Dynamique relationnelle** (postures observées, équilibre de la discussion)\n"
+            "5. 💬 **Citations ou Moments Clés** (phrases structurantes de l'échange)"
         )
 
     max_tentatives = 3
     for tentative in range(max_tentatives):
         try:
             response = gemini_client.models.generate_content(
-                model="gemini-3.6-flash",
+                model=MODEL_NAME,
                 contents=prompt
             )
             summary_text = response.text
@@ -583,18 +590,18 @@ async def resumer_conv_orga(interaction: discord.Interaction, format: app_comman
             f"Voici la transcription des échanges du staff dans le salon #{channel.name} :\n\n"
             f"{transcript}\n\n"
             "Rédige un **COMPTE-RENDU DÉTAILLÉ ET PROFESSIONNEL** en français, structuré avec les sections suivantes :\n"
-            "1. 🎯 **Sujets abordés**\n"
-            "2. 🛠️ **Décisions prises**\n"
-            "3. 📋 **Répartition des tâches**\n"
-            "4. 💡 **Idées & Propositions en attente**\n"
-            "5. 📅 **Prochaines étapes & Deadlines**"
+            "1. 🎯 **Sujets abordés** (Quels ont été les thèmes de la discussion ?)\n"
+            "2. 🛠️ **Décisions prises** (Qu'est-ce qui a été validé ou refusé par l'équipe ?)\n"
+            "3. 📋 **Répartition des tâches** (Qui est en charge de quoi ?)\n"
+            "4. 💡 **Idées & Propositions en attente** (Ce qui doit encore être discuté ou creusé)\n"
+            "5. 📅 **Prochaines étapes & Deadlines** (Ce qu'il reste à faire dans l'immédiat)"
         )
 
     max_tentatives = 3
     for tentative in range(max_tentatives):
         try:
             response = gemini_client.models.generate_content(
-                model="gemini-3.6-flash",
+                model=MODEL_NAME,
                 contents=prompt
             )
             summary_text = response.text
@@ -620,7 +627,7 @@ async def resumer_conv_orga(interaction: discord.Interaction, format: app_comman
 
 @bot.tree.command(
     name="questions_confessionnal",
-    description="Génère des questions journalistiques piquantes pour les confessionnaux (sur-mesure ou global)."
+    description="Génère des questions journalistiques objectives pour les confessionnaux (sur-mesure ou global)."
 )
 @app_commands.describe(
     candidat="Optionnel : mentionnez le rôle d'un candidat précis (laisser vide pour les profils clés du jour)"
