@@ -315,21 +315,80 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     roles="Mentionne les rôles séparés par des espaces (ex: @Candidat1 @Candidat2 ...)"
 )
 @app_commands.check(est_orga_ou_admin)
-async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: str):
+# Rôles génériques à ignorer pour trouver le rôle personnel du joueur
+ROLES_GENERIQUES_A_IGNORER = [
+    "everyone",
+    "@everyone",
+    "candidat",
+    "candidats",
+    "spectateur",
+    "spectateurs",
+    "orga",
+    "orgas",
+    "admin",
+    "administrateur",
+    "bot",
+    "booster"
+]
+
+
+def trouver_role_personnel(member: discord.Member, role_equipe: discord.Role) -> discord.Role:
+    """Trouve le rôle spécifique/personnel du joueur (ex: @Lucas)."""
+    roles_equipe_clean = nettoyer_texte(role_equipe.name)
+    
+    for r in member.roles:
+        r_clean = nettoyer_texte(r.name)
+        # On ignore @everyone, le rôle de l'équipe (ex: Jaune), et les rôles génériques
+        if r.is_default() or r.id == role_equipe.id:
+            continue
+        if r_clean == roles_equipe_clean:
+            continue
+        if any(ignore in r_clean for ignore in ROLES_GENERIQUES_A_IGNORER):
+            continue
+        
+        # Le premier rôle spécifique trouvé est son rôle perso
+        return r
+    return None
+
+
+@bot.tree.command(
+    name="creer_duos", 
+    description="Génère tous les salons duos possibles pour tous les membres possédant un rôle d'équipe."
+)
+@app_commands.describe(
+    role_equipe="Le rôle de l'équipe à diviser en duos (ex: @Jaune ou @Rouge)",
+    nom_categorie="Nom de la catégorie où créer les salons (ex: 🟡 DUOS JAUNE)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role, nom_categorie: str):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    role_ids = [int(r.strip("<@&>")) for r in roles.split() if r.startswith("<@&") and r.endswith(">")]
-    roles_list = [guild.get_role(r_id) for r_id in role_ids if guild.get_role(r_id) is not None]
+    # 1. Récupérer tous les membres ayant ce rôle d'équipe
+    membres = [m for m in role_equipe.members if not m.bot]
 
-    if len(roles_list) < 2:
-        await interaction.followup.send("❌ Veuillez mentionner au moins 2 rôles valides.", ephemeral=True)
+    if len(membres) < 2:
+        await interaction.followup.send(
+            f"❌ Il n'y a pas assez de membres avec le rôle {role_equipe.mention} pour créer des duos (minimum 2 requis).", 
+            ephemeral=True
+        )
         return
 
+    # 2. Associer chaque membre à son rôle personnel
+    candidats_data = []
+    for m in membres:
+        r_perso = trouver_role_personnel(m, role_equipe)
+        candidats_data.append({
+            "member": m,
+            "role": r_perso,
+            "name": (r_perso.name if r_perso else m.display_name).lower().replace(" ", "-")
+        })
+
+    # 3. Gestion de la catégorie
     role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
     role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
 
-    clean_target_name = nettoyer_texte(nom_equipe)
+    clean_target_name = nettoyer_texte(nom_categorie)
     existing_category = discord.utils.find(lambda c: nettoyer_texte(c.name) == clean_target_name, guild.categories)
 
     category_index = 1
@@ -337,25 +396,41 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
         current_category = existing_category
         channel_count_in_current_cat = len(existing_category.channels)
     else:
-        current_category = await guild.create_category(nom_equipe)
+        current_category = await guild.create_category(nom_categorie)
         channel_count_in_current_cat = 0
 
-    duos = list(itertools.combinations(roles_list, 2))
+    # 4. Génération de toutes les paires (combinaisons 2 à 2)
+    duos = list(itertools.combinations(candidats_data, 2))
     total_duos = len(duos)
 
-    for r1, r2 in duos:
+    await interaction.followup.send(
+        f"⏳ Création de **{total_duos} salons duos** pour les **{len(membres)} membres** de l'équipe {role_equipe.mention} dans **{nom_categorie}** en cours...",
+        ephemeral=True
+    )
+
+    for c1, c2 in duos:
+        # Gestion de la limite des 50 salons par catégorie Discord
         if channel_count_in_current_cat >= MAX_CHANNELS_PER_CATEGORY:
             category_index += 1
-            current_category = await guild.create_category(f"{nom_equipe} - {category_index}")
+            current_category = await guild.create_category(f"{nom_categorie} - {category_index}")
             channel_count_in_current_cat = 0
             await asyncio.sleep(1)
 
+        # Permissions : Default bloqué, Orgas / Spectateurs configurés
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False, view_channel=False),
-            r1: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True),
-            r2: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True),
             guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
         }
+
+        # Droits pour le Candidat 1 (sur le membre et sur son rôle perso s'il existe)
+        overwrites[c1["member"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+        if c1["role"]:
+            overwrites[c1["role"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+
+        # Droits pour le Candidat 2 (sur le membre et sur son rôle perso s'il existe)
+        overwrites[c2["member"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+        if c2["role"]:
+            overwrites[c2["role"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
 
         if role_spectateurs:
             overwrites[role_spectateurs] = get_spectateur_overwrites()
@@ -365,17 +440,19 @@ async def creer_duos(interaction: discord.Interaction, nom_equipe: str, roles: s
                 read_messages=True, view_channel=True, read_message_history=True, send_messages=True
             )
 
-        nom_salon = f"duo-{r1.name.lower().replace(' ', '-')}-{r2.name.lower().replace(' ', '-')}"
+        nom_salon = f"duo-{c1['name']}-{c2['name']}"
         await guild.create_text_channel(name=nom_salon, category=current_category, overwrites=overwrites)
         channel_count_in_current_cat += 1
 
+        # Pause pour éviter d'être bloqué par le rate-limit de Discord
         await asyncio.sleep(0.6)
 
+    # Message final
+    channel = interaction.channel
     await interaction.followup.send(
-        f"✅ Succès : **{total_duos} salons duos** créés dans la catégorie **{current_category.name}** !", 
+        f"✅ **Terminé !** **{total_duos} salons duos** ont été créés avec succès pour l'équipe {role_equipe.mention} dans la catégorie **{current_category.name}**.", 
         ephemeral=True
     )
-
 
 @bot.tree.command(
     name="eliminer_candidat", 
