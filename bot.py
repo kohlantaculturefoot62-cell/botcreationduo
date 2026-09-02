@@ -50,6 +50,7 @@ gemini_client = genai.Client(api_key=GEMINI_KEY)
 intents = discord.Intents.default()
 intents.guilds = True
 intents.message_content = True
+intents.members = True  # <-- AJOUTER CETTE LIGNE
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
