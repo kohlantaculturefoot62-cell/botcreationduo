@@ -844,5 +844,117 @@ async def forcer_recap_jour(interaction: discord.Interaction):
     await generer_et_envoyer_recap_quotidien(interaction.guild, target_channel)
 
 
+import random
+
+# ==========================================
+# 9. ANIMATION DE TIRAGE AU SORT (BOULE NOIRE)
+# ==========================================
+
+@bot.tree.command(
+    name="tirage_boules",
+    description="Lance le tirage au sort des boules (blanches / noires) avec animation et suspense."
+)
+@app_commands.describe(
+    participants="Mentionne les candidats participant au tirage (ex: @Sarah @Lucas @Maxime ...)",
+    nombre_boules_noires="Nombre de boules noires dans le sac (par défaut : 1)",
+    couleur_sauveur="Couleur des boules sécurisées (ex: Blanche ⚪, Rouge 🔴, Jaune 🟡)"
+)
+@app_commands.choices(couleur_sauveur=[
+    app_commands.Choice(name="⚪ Boule Blanche (Classique)", value="⚪ Blanche"),
+    app_commands.Choice(name="🔴 Boule Rouge (Équipe Rouge)", value="🔴 Rouge"),
+    app_commands.Choice(name="🟡 Boule Jaune (Équipe Jaune)", value="🟡 Jaune")
+])
+@app_commands.check(est_orga_ou_admin)
+async def tirage_boules(
+    interaction: discord.Interaction, 
+    participants: str, 
+    nombre_boules_noires: int = 1,
+    couleur_sauveur: app_commands.Choice[str] = None
+):
+    guild = interaction.guild
+    channel = interaction.channel
+
+    # Extraction des rôles/membres mentionnés
+    role_ids = [int(r.strip("<@&>")) for r in participants.split() if r.startswith("<@&") and r.endswith(">")]
+    candidats = [guild.get_role(r_id) for r_id in role_ids if guild.get_role(r_id) is not None]
+
+    if len(candidats) < 2:
+        await interaction.response.send_message("❌ Mentionnez au moins 2 rôles de candidats pour le tirage.", ephemeral=True)
+        return
+
+    if nombre_boules_noires >= len(candidats) or nombre_boules_noires < 1:
+        await interaction.response.send_message("❌ Le nombre de boules noires doit être compris entre 1 et le nombre de candidats - 1.", ephemeral=True)
+        return
+
+    # Message de confirmation discret pour l'orga
+    await interaction.response.send_message("🏺 Lancement du tirage au sort dans le salon...", ephemeral=True)
+
+    symbole_sauve = couleur_sauveur.value if couleur_sauveur else "⚪ Blanche"
+
+    # Message d'ambiance public dans le salon
+    embed_intro = discord.Embed(
+        title="🏺 LE TIRAGE DES BOULES",
+        description=(
+            f"**{len(candidats)} aventuriers** s'avancent vers le sac pour sceller leur destin.\n\n"
+            f"📦 **Composition du sac :**\n"
+            f"- {len(candidats) - nombre_boules_noires}x {symbole_sauve}\n"
+            f"- {nombre_boules_noires}x ⚫ **Boule Noire**\n\n"
+            "*(Chaque aventurier va plonger sa main dans le sac...)*"
+        ),
+        color=discord.Color.dark_grey()
+    )
+    embed_intro.set_footer(text="Le destin est en marche...")
+    message_principal = await channel.send(embed=embed_intro)
+
+    await asyncio.sleep(4)
+
+    # Préparation du tirage aléatoire
+    sac = (["⚫ Noire"] * nombre_boules_noires) + ([symbole_sauve] * (len(candidats) - nombre_boules_noires))
+    random.shuffle(sac)
+
+    # Ordre de passage mélangé
+    ordre_passage = list(candidats)
+    random.shuffle(ordre_passage)
+
+    victimes_boule_noire = []
+    texte_revelations = ""
+
+    for i, candidat in enumerate(ordre_passage, 1):
+        boule_tiree = sac.pop()
+
+        if "Noire" in boule_tiree:
+            victimes_boule_noire.append(candidat)
+            symbole_affichage = "⚫ **BOULE NOIRE !**"
+        else:
+            symbole_affichage = f"{symbole_sauve} *(Sauf !)*"
+
+        texte_revelations += f"**{i}.** {candidat.mention} plonge sa main dans le sac...\n➡️ Résultat : {symbole_affichage}\n\n"
+
+        embed_update = discord.Embed(
+            title="🏺 LE TIRAGE DES BOULES — EN COURS",
+            description=texte_revelations,
+            color=discord.Color.orange() if not victimes_boule_noire else discord.Color.red()
+        )
+        await message_principal.edit(embed=embed_update)
+        
+        # Suspense de 3.5 secondes entre chaque tirage
+        await asyncio.sleep(3.5)
+
+    # Annonce du verdict final
+    mentions_victimes = ", ".join([v.mention for v in victimes_boule_noire])
+    verdict_text = (
+        f"{texte_revelations}"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"☠️ **VERDICT DU DESTIN :**\n"
+        f"{mentions_victimes} {'ont' if len(victimes_boule_noire) > 1 else 'a'} tiré la **Boule Noire** !"
+    )
+
+    embed_final = discord.Embed(
+        title="🏺 LE TIRAGE DES BOULES — VERDICT FINAL",
+        description=verdict_text,
+        color=discord.Color.dark_red()
+    )
+    embed_final.set_footer(text="La sentence du tirage au sort est irrévocable.")
+    await message_principal.edit(embed=embed_final)
 # --- DÉMARRAGE DU BOT ---
 bot.run(TOKEN)
