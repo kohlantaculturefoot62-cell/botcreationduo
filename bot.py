@@ -15,11 +15,12 @@ from google import genai
 TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-# Salon secret pour le journal quotidien (Orgas / Spectateurs / Admins)
+# Salon secret pour le journal quotidien et les fiches confessionnal (Orgas / Spectateurs / Admins)
 RECAP_CHANNEL_ID = int(os.getenv("RECAP_CHANNEL_ID", 0))
 
-# Heure du récapitulatif automatique chaque soir (Fuseau Paris)
+# Planification des tâches automatiques (Fuseau Paris)
 HEURE_RECAP = datetime.time(hour=23, minute=0, tzinfo=ZoneInfo("Europe/Paris"))
+HEURE_QUESTIONS = datetime.time(hour=9, minute=0, tzinfo=ZoneInfo("Europe/Paris"))
 
 MAX_CHANNELS_PER_CATEGORY = 45
 ROLE_SPECTATEURS_NAME = "Spectateurs"
@@ -27,7 +28,6 @@ ROLE_ORGAS_NAME = "Orgas"
 NOM_CATEGORIE_ARCHIVE = "📦 ARCHIVES DUOS"
 
 # Mots-clés des catégories candidates à analyser
-# (Mettez tout en minuscules, sans accents)
 CATEGORIES_CIBLES = [
     "confessional",
     "confessionnal",
@@ -52,10 +52,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 
 def nettoyer_texte(texte: str) -> str:
-    """
-    Retire les accents, les émojis, la ponctuation et met en minuscules.
-    Ne garde que les lettres (a-z), les chiffres et les espaces.
-    """
+    """Retire les accents, les émojis, la ponctuation et met en minuscules."""
     if not texte:
         return ""
     texte_norm = unicodedata.normalize("NFD", texte)
@@ -74,7 +71,7 @@ def est_categorie_candidate(category: discord.CategoryChannel) -> bool:
 
 
 # =======================================================
-# 1. FONCTIONS DE RÉCAPITULATIF JOURNALIER GLOBAL CANDIDATS
+# 1. FONCTIONS DE RÉCAPITULATIF JOURNALIER GLOBAL
 # =======================================================
 
 async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channel: discord.TextChannel):
@@ -87,26 +84,21 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
     for channel in guild.text_channels:
         est_salon_log = (channel.name.lower() == "log-deplacements")
         
-        # On vérifie si le salon appartient aux catégories cibles OU s'il s'agit du salon log-deplacements
         if est_categorie_candidate(channel.category) or est_salon_log:
-            # Ignorer les salons archivés
             if channel.name.startswith("🔒arch-"):
                 continue
 
             lines = []
             async for msg in channel.history(after=depuis, oldest_first=True):
-                # On ignore les messages de bots, SAUF dans log-deplacements (si c'est géré par un bot)
                 if msg.author.bot and not est_salon_log:
                     continue
 
                 texte_msg = msg.content.strip()
 
-                # Vérifier s'il y a des fichiers .txt attachés
                 if msg.attachments:
                     for att in msg.attachments:
                         if att.filename.endswith(".txt"):
                             try:
-                                # On télécharge et on lit le fichier texte
                                 file_bytes = await att.read()
                                 texte_fichier = file_bytes.decode('utf-8')
                                 texte_msg += f"\n\n--- 📄 CONTENU DU FICHIER {att.filename} ---\n{texte_fichier}\n---------------------------------------\n"
@@ -135,20 +127,20 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
         f"{full_context}\n\n"
         "Rédige le **Journal de Bord Stratégique Global de la Journée** pour l'équipe d'organisation (Orgas/Spectateurs).\n"
         "Structure ta réponse avec des titres clairs et des emojis :\n"
-        "1. 🌍 **Synthèse Générale & Ambiance Globale** (ambiance sur les camps, moral des candidats, état d'esprit)\n"
-        "2. 🤝 **Alliances, Pactes & Négociations** (qui se rapproche de qui ? quelles sous-alliances se forment ?)\n"
-        "3. 🎯 **Cibles, Votes & Stratégies d'Élimination** (qui est en danger ? qui mène les votes ?)\n"
-        "4. ⚠️ **Trahisons, Secrets & Double-Jeu** (incohérences entre ce qui est dit en camp et en duo/confessionnal)\n"
-        "5. 🎙️ **Points Clés des Confessionnaux & Duos** (révélations importantes, états d'âme, plans secrets)\n"
-        "6. 🗺️ **Mouvements & Événements Importants** (analyse des déplacements, découvertes ou événements tirés des logs)\n"
-        "7. 📌 **Résumé rapide par zone/salon actif** (1 ou 2 phrases synthétiques par salon marquant)"
+        "1. 🌍 **Synthèse Générale & Ambiance Globale**\n"
+        "2. 🤝 **Alliances, Pactes & Négociations**\n"
+        "3. 🎯 **Cibles, Votes & Stratégies d'Élimination**\n"
+        "4. ⚠️ **Trahisons, Secrets & Double-Jeu**\n"
+        "5. 🎙️ **Points Clés des Confessionnaux & Duos**\n"
+        "6. 🗺️ **Mouvements & Événements Importants (Logs)**\n"
+        "7. 📌 **Résumé rapide par zone/salon actif**"
     )
 
     max_tentatives = 3
     for tentative in range(max_tentatives):
         try:
             response = gemini_client.models.generate_content(
-                model="gemini-3.5-flash-lite",
+                model="gemini-3.6-flash",
                 contents=prompt
             )
             recap_text = response.text
@@ -170,6 +162,60 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
                 return
 
 
+# =======================================================
+# 2. FONCTIONS DU BOT JOURNALISTE (CONFESSIONNAL)
+# =======================================================
+
+async def generer_questions_confessionnal(target_recap_channel: discord.TextChannel, candidat_nom: str = None) -> str:
+    """Lit le dernier récapitulatif disponible et génère des questions journalistiques adaptées."""
+    recap_messages = [
+        msg.content async for msg in target_recap_channel.history(limit=6, oldest_first=False)
+        if not msg.content.startswith("😴") and "JOURNAL STRATÉGIQUE" in msg.content
+    ]
+
+    if not recap_messages:
+        return "⚠️ Aucun journal stratégique récent trouvé dans le salon dédié."
+
+    dernier_recap = "\n---\n".join(reversed(recap_messages))
+
+    consigne_cible = (
+        f"Concentre-toi UNIQUEMENT sur le candidat **{candidat_nom}**." 
+        if candidat_nom else 
+        "Choisis librement les 3 ou 4 candidats les plus stratégiques, hésitants ou en danger aujourd'hui."
+    )
+
+    prompt = (
+        "Tu es le journaliste en chef / interviewer en confessionnal d'une émission de téléréalité stratégique (type Koh-Lanta / Big Brother / Secret Story).\n"
+        "Ton rôle est d'aider les organisateurs à poser des questions subtiles, piquantes et déstabilisantes aux candidats lors de leur passage au confessionnal.\n"
+        "Tu dois les pousser à se confier, douter de leurs alliances ou justifier leurs choix SANS JAMAIS révéler explicitement ce que font les autres.\n\n"
+        f"Voici le récapitulatif des derniers événements du jeu :\n\n{dernier_recap}\n\n"
+        f"Consigne : {consigne_cible}\n\n"
+        "Pour chaque candidat traité, structure ta réponse ainsi :\n"
+        "👤 **Candidat : [Nom]**\n"
+        "🎯 **Contexte & Enjeu** (ce qu'il vit / sa situation du moment en 1-2 phrases)\n"
+        "❓ **3 Questions à lui poser** (au tutoiement, formulées sur un ton immersif et piquant)\n"
+        "💡 **Intention de l'interview** (ce qu'on cherche à comprendre ou déclencher chez lui)\n"
+    )
+
+    max_tentatives = 3
+    for tentative in range(max_tentatives):
+        try:
+            response = gemini_client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt
+            )
+            return response.text
+        except Exception as e:
+            if "503" in str(e) and tentative < max_tentatives - 1:
+                await asyncio.sleep(2)
+            else:
+                return f"❌ Erreur IA lors de la génération des questions : {e}"
+
+
+# ==========================================
+# 3. TÂCHES AUTOMATIQUES PLANIFIÉES
+# ==========================================
+
 @tasks.loop(time=HEURE_RECAP)
 async def tache_recap_quotidien():
     """Tâche automatique planifiée chaque soir à 23h00."""
@@ -178,24 +224,35 @@ async def tache_recap_quotidien():
     channel = bot.get_channel(RECAP_CHANNEL_ID)
     if channel:
         await generer_et_envoyer_recap_quotidien(channel.guild, channel)
-    else:
-        print(f"⚠️ Salon de récapitulatif (ID: {RECAP_CHANNEL_ID}) introuvable.")
 
 
-# ==========================================
-# 2. ÉVÉNEMENT ON_READY
-# ==========================================
+@tasks.loop(time=HEURE_QUESTIONS)
+async def tache_questions_matin():
+    """Tâche automatique planifiée chaque matin à 09h00."""
+    if RECAP_CHANNEL_ID == 0:
+        return
+    channel = bot.get_channel(RECAP_CHANNEL_ID)
+    if channel:
+        questions_text = await generer_questions_confessionnal(channel)
+        date_str = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y")
+        header = f"🎙️ **FICHES CONFESSIONNAL DU {date_str} — SUGGESTIONS JOURNALISTIQUES**\n*(Pour les Orgas)*\n\n"
+        full_msg = header + questions_text
+        for chunk in [full_msg[i:i + 1900] for i in range(0, len(full_msg), 1900)]:
+            await channel.send(chunk)
+
 
 @bot.event
 async def on_ready():
     await bot.tree.sync()
     if not tache_recap_quotidien.is_running() and RECAP_CHANNEL_ID != 0:
         tache_recap_quotidien.start()
+    if not tache_questions_matin.is_running() and RECAP_CHANNEL_ID != 0:
+        tache_questions_matin.start()
     print(f"🤖 Bot connecté en tant que : {bot.user}")
 
 
 # ==========================================
-# 3. COMMANDES DUOS & GESTION DES ÉLIMINATIONS
+# 4. COMMANDES DE GESTION DES DUOS & JOUEURS
 # ==========================================
 
 @bot.tree.command(
@@ -343,7 +400,7 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
 
 
 # ==========================================
-# 4. COMMANDES DE SUPPRESSION DE CATÉGORIES
+# 5. COMMANDES DE SUPPRESSION DE CATÉGORIES
 # ==========================================
 
 @bot.tree.command(name="supprimer_categorie", description="Supprime une catégorie entière et ses salons.")
@@ -402,7 +459,7 @@ async def purger_equipe_duos(interaction: discord.Interaction, prefixe: str):
 
 
 # ==========================================
-# 5. COMMANDES DE RÉSUMÉ IA
+# 6. COMMANDES DE RÉSUMÉ IA & JOURNALISME
 # ==========================================
 
 @bot.tree.command(
@@ -448,18 +505,18 @@ async def resumer(interaction: discord.Interaction, format: app_commands.Choice[
             f"Voici la transcription des messages échangés dans le salon #{channel.name} :\n\n"
             f"{transcript}\n\n"
             "Fais un **RÉSUMÉ DÉTAILLÉ ET APPROFONDI** en français, structuré avec les sections suivantes :\n"
-            "1. 🎯 **Analyse Thématique** (détail complet des sujets abordés)\n"
-            "2. 🤝 **Alliances, Promesses et Accords** (qui propose quoi, qui accepte, les conditions)\n"
-            "3. ⚠️ **Stratégies, Votes & Cibles** (noms des cibles évoquées, justifications, plans A et B)\n"
-            "4. 🎭 **Psychologie & Dynamique** (qui manipule qui, niveau de sincérité, hésitations, rapport de force)\n"
-            "5. 💬 **Citations ou Moments Clés** (phrases marquantes échangées)"
+            "1. 🎯 **Analyse Thématique**\n"
+            "2. 🤝 **Alliances, Promesses et Accords**\n"
+            "3. ⚠️ **Stratégies, Votes & Cibles**\n"
+            "4. 🎭 **Psychologie & Dynamique**\n"
+            "5. 💬 **Citations ou Moments Clés**"
         )
 
     max_tentatives = 3
     for tentative in range(max_tentatives):
         try:
             response = gemini_client.models.generate_content(
-                model="gemini-3.5-flash-lite",
+                model="gemini-3.6-flash",
                 contents=prompt
             )
             summary_text = response.text
@@ -526,18 +583,18 @@ async def resumer_conv_orga(interaction: discord.Interaction, format: app_comman
             f"Voici la transcription des échanges du staff dans le salon #{channel.name} :\n\n"
             f"{transcript}\n\n"
             "Rédige un **COMPTE-RENDU DÉTAILLÉ ET PROFESSIONNEL** en français, structuré avec les sections suivantes :\n"
-            "1. 🎯 **Sujets abordés** (Quels ont été les thèmes de la discussion ?)\n"
-            "2. 🛠️ **Décisions prises** (Qu'est-ce qui a été validé ou refusé par l'équipe ?)\n"
-            "3. 📋 **Répartition des tâches** (Qui est en charge de quoi ?)\n"
-            "4. 💡 **Idées & Propositions en attente** (Ce qui doit encore être discuté ou creusé)\n"
-            "5. 📅 **Prochaines étapes & Deadlines** (Ce qu'il reste à faire dans l'immédiat)"
+            "1. 🎯 **Sujets abordés**\n"
+            "2. 🛠️ **Décisions prises**\n"
+            "3. 📋 **Répartition des tâches**\n"
+            "4. 💡 **Idées & Propositions en attente**\n"
+            "5. 📅 **Prochaines étapes & Deadlines**"
         )
 
     max_tentatives = 3
     for tentative in range(max_tentatives):
         try:
             response = gemini_client.models.generate_content(
-                model="gemini-3.5-flash-lite",
+                model="gemini-3.6-flash",
                 contents=prompt
             )
             summary_text = response.text
@@ -559,6 +616,33 @@ async def resumer_conv_orga(interaction: discord.Interaction, format: app_comman
             else:
                 await interaction.followup.send(f"❌ Les serveurs IA sont surchargés après {max_tentatives} tentatives. Réessayez plus tard.", ephemeral=True)
                 return
+
+
+@bot.tree.command(
+    name="questions_confessionnal",
+    description="Génère des questions journalistiques piquantes pour les confessionnaux (sur-mesure ou global)."
+)
+@app_commands.describe(
+    candidat="Optionnel : mentionnez le rôle d'un candidat précis (laisser vide pour les profils clés du jour)"
+)
+@app_commands.default_permissions(manage_messages=True)
+async def questions_confessionnal(interaction: discord.Interaction, candidat: discord.Role = None):
+    await interaction.response.defer(ephemeral=True)
+
+    target_channel = bot.get_channel(RECAP_CHANNEL_ID) or interaction.channel
+    candidat_nom = candidat.name if candidat else None
+
+    resultat_text = await generer_questions_confessionnal(target_channel, candidat_nom)
+
+    titre = f"🎙️ Interview Confessionnal — {candidat.name}" if candidat else "🎙️ Suggestions Confessionnal du Jour"
+    embed = discord.Embed(
+        title=titre,
+        description=resultat_text,
+        color=discord.Color.red()
+    )
+    embed.set_footer(text="Généré par l'IA Journaliste • Réservé aux Orgas")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(
