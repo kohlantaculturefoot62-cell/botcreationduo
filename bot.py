@@ -308,6 +308,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 # ==========================================
 # Rôles génériques à ignorer pour trouver le rôle personnel du joueur
 ROLES_GENERIQUES_A_IGNORER = [
+    "arrivants",
     "everyone",
     "@everyone",
     "candidat",
