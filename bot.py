@@ -1412,24 +1412,25 @@ async def chrono_stop(
     embed.set_footer(text="Performance enregistrée par les Orgas.")
     await interaction.response.send_message(embed=embed)
 
+import time
+
 # ========================================================
 # 13. QUIZ & ÉPREUVE AUTOMATISÉE (AUTONOMIE JOUEUR)
 # ========================================================
 
 class QuizLancementView(discord.ui.View):
-    def __init__(self, source_channel: discord.TextChannel, candidat: discord.Member):
-        super().__init__(timeout=600)  # Le bouton expire après 10 min
+    def __init__(self, source_channel: discord.TextChannel, candidat: discord.Member, temps_override: int = None):
+        super().__init__(timeout=900)
         self.source_channel = source_channel
         self.candidat = candidat
+        self.temps_override = temps_override
 
     @discord.ui.button(label="🚀 DÉMARRER MON ÉPREUVE", style=discord.ButtonStyle.green, custom_id="btn_quiz_start")
     async def demarrer_quiz(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Sécurité : seul le candidat ciblé peut déclencher son épreuve
         if interaction.user.id != self.candidat.id:
             await interaction.response.send_message("⛔ Seul le candidat concerné peut lancer ce quiz.", ephemeral=True)
             return
 
-        # Désactive le bouton immédiatement pour éviter les double-clics
         button.disabled = True
         button.label = "⏳ ÉPREUVE EN COURS..."
         button.style = discord.ButtonStyle.grey
@@ -1437,26 +1438,38 @@ class QuizLancementView(discord.ui.View):
 
         channel = interaction.channel
 
-        # 1. Récupération des questions depuis le salon source
+        # 1. Extraction des questions
         questions = []
-        async for msg in self.source_channel.history(limit=10, oldest_first=False):
-            if not msg.author.bot and "|" in msg.content:
+        async for msg in self.source_channel.history(limit=20, oldest_first=False):
+            if not msg.author.bot and ("|" in msg.content or msg.content.strip()):
                 for ligne in msg.content.strip().split("\n"):
+                    ligne = ligne.strip()
+                    if not ligne:
+                        continue
+                    
                     if "|" in ligne:
                         parties = ligne.split("|")
                         q_texte = parties[0].strip()
                         try:
-                            t_secondes = int(parties[1].strip())
+                            t_doc = int(parties[1].strip())
                         except ValueError:
-                            t_secondes = 15
-                        questions.append({"question": q_texte, "secondes": t_secondes})
-                break
+                            t_doc = 15
+                    else:
+                        q_texte = ligne
+                        t_doc = 15
+
+                    # Si un temps a été forcé dans la commande, il écrase celui du document
+                    duree_finale = self.temps_override if self.temps_override else t_doc
+                    questions.append({"question": q_texte, "secondes": duree_finale})
+                
+                if questions:
+                    break
 
         if not questions:
-            await channel.send("❌ Erreur : Aucune question trouvée dans le salon de configuration.")
+            await channel.send("❌ Erreur : Aucune question trouvée dans le salon source.")
             return
 
-        # 2. Compte à rebours de lancement
+        # 2. Compte à rebours initial
         msg_decompte = await channel.send("⚠️ **Attention... L'épreuve commence dans : 3**")
         for k in range(2, 0, -1):
             await asyncio.sleep(1)
@@ -1464,7 +1477,7 @@ class QuizLancementView(discord.ui.View):
         await asyncio.sleep(1)
         await msg_decompte.delete()
 
-        # 3. Déroulement séquentiel des questions
+        # 3. Déroulement du quiz
         resultats = []
 
         for i, q in enumerate(questions, 1):
@@ -1485,17 +1498,20 @@ class QuizLancementView(discord.ui.View):
             def check_reponse(m: discord.Message):
                 return m.channel.id == channel.id and m.author.id == self.candidat.id
 
-            debut = datetime.datetime.now()
+            # Mesure précise du temps écoulé
+            start_perf = time.perf_counter()
+
             try:
                 reponse_msg = await bot.wait_for("message", timeout=secondes, check=check_reponse)
-                temps_pris = round((datetime.datetime.now() - debut).total_seconds(), 2)
+                temps_ecoule = round(time.perf_counter() - start_perf, 2)
+                temps_restant = round(max(0, secondes - temps_ecoule), 2)
                 reponse_texte = reponse_msg.content
 
                 embed_fige = discord.Embed(
                     description=(
                         f"# Question {i}/{len(questions)}\n\n"
                         f"# **{q['question']}**\n\n"
-                        f"## ⏱️ Répondu en `{temps_pris}s`"
+                        f"## ⏱️ Répondu en `{temps_ecoule}s` *(restait {temps_restant}s)*"
                     ),
                     color=discord.Color.green()
                 )
@@ -1505,7 +1521,7 @@ class QuizLancementView(discord.ui.View):
                     "index": i,
                     "question": q["question"],
                     "reponse": reponse_texte,
-                    "temps": f"{temps_pris}s",
+                    "temps_pris": f"{temps_ecoule}s",
                     "statut": "✅ Répondu"
                 })
 
@@ -1524,19 +1540,22 @@ class QuizLancementView(discord.ui.View):
                     "index": i,
                     "question": q["question"],
                     "reponse": "*Aucune réponse*",
-                    "temps": f"{secondes}s",
+                    "temps_pris": f"{secondes}s",
                     "statut": "❌ Hors délai"
                 })
 
-            # Petite pause de 2.5 secondes entre chaque question
-            await asyncio.sleep(2.5)
+            # Pause confortable de 5.5 secondes entre chaque question
+            if i < len(questions):
+                msg_pause = await channel.send(f"⏳ *Prochaine question dans 5 secondes... ({i}/{len(questions)})*")
+                await asyncio.sleep(5.5)
+                await msg_pause.delete()
 
-        # 4. Publication de la fiche récapitulative finale
+        # 4. Fiche récapitulative finale
         lignes_recap = []
         for r in resultats:
             lignes_recap.append(
                 f"**Q{r['index']}. {r['question']}**\n"
-                f"💬 Réponse : `{r['reponse']}` ({r['statut']} en `{r['temps']}`)\n"
+                f"💬 Réponse : `{r['reponse']}` ({r['statut']} en `{r['temps_pris']}`)\n"
             )
 
         embed_recap = discord.Embed(
@@ -1550,37 +1569,44 @@ class QuizLancementView(discord.ui.View):
 
 @bot.tree.command(
     name="preparer_epreuve_quiz",
-    description="Prépare le bouton de lancement de l'épreuve pour le candidat dans son salon."
+    description="Prépare l'épreuve avec option pour écraser la durée par question."
 )
 @app_commands.describe(
     candidat="Le candidat qui passera l'épreuve",
-    salon_questions="Le salon secret d'où extraire les questions"
+    salon_questions="Le salon secret d'où extraire les questions",
+    temps_par_defaut="Optionnel : forcer le temps par question en secondes (écrase le doc)"
 )
 @app_commands.check(est_orga_ou_admin)
 async def preparer_epreuve_quiz(
     interaction: discord.Interaction,
     candidat: discord.Member,
-    salon_questions: discord.TextChannel
+    salon_questions: discord.TextChannel,
+    temps_par_defaut: int = None
 ):
     await interaction.response.defer(ephemeral=True)
 
-    view = QuizLancementView(source_channel=salon_questions, candidat=candidat)
+    view = QuizLancementView(
+        source_channel=salon_questions, 
+        candidat=candidat, 
+        temps_override=temps_par_defaut
+    )
+
+    info_temps = f"\n⏱️ **Temps par question :** `{temps_par_defaut}s`" if temps_par_defaut else "\n⏱️ **Temps :** Défini selon chaque question"
 
     embed_invit = discord.Embed(
         title="🏺 ÉPREUVE INDIVIDUELLE DE RAPIDITÉ",
         description=(
-            f"Bienvenue {candidat.mention} pour ton épreuve.\n\n"
+            f"Bienvenue {candidat.mention} pour ton épreuve.{info_temps}\n\n"
             f"📌 **Consignes :**\n"
-            f"- Les questions vont s'enchaîner automatiquement.\n"
-            f"- Tu as un temps limité par question pour envoyer ta réponse dans ce salon.\n"
-            f"- Dès que tu es prêt, clique sur le bouton ci-dessous pour lancer le compte à rebours."
+            f"- Les questions vont s'enchaîner avec un temps de pause entre chacune.\n"
+            f"- Écris ta réponse directement dans ce salon.\n"
+            f"- Dès que tu es prêt, clique sur le bouton ci-dessous pour lancer l'épreuve."
         ),
         color=discord.Color.dark_gold()
     )
 
-    # Envoi public dans le salon actuel (le confessionnal du joueur)
     await interaction.channel.send(embed=embed_invit, view=view)
-    await interaction.followup.send("✅ Module d'épreuve déployé avec succès !", ephemeral=True)
+    await interaction.followup.send("✅ Épreuve prête et déployée !", ephemeral=True)
     
 # --- DÉMARRAGE DU BOT ---
 bot.run(TOKEN)
