@@ -1438,10 +1438,10 @@ class QuizLancementView(discord.ui.View):
 
         channel = interaction.channel
 
-        # 1. Extraction des questions
+        # 1. Extraction des questions (avec ou sans le pipe '|')
         questions = []
         async for msg in self.source_channel.history(limit=20, oldest_first=False):
-            if not msg.author.bot and ("|" in msg.content or msg.content.strip()):
+            if not msg.author.bot and msg.content.strip():
                 for ligne in msg.content.strip().split("\n"):
                     ligne = ligne.strip()
                     if not ligne:
@@ -1458,7 +1458,6 @@ class QuizLancementView(discord.ui.View):
                         q_texte = ligne
                         t_doc = 15
 
-                    # Si un temps a été forcé dans la commande, il écrase celui du document
                     duree_finale = self.temps_override if self.temps_override else t_doc
                     questions.append({"question": q_texte, "secondes": duree_finale})
                 
@@ -1477,20 +1476,30 @@ class QuizLancementView(discord.ui.View):
         await asyncio.sleep(1)
         await msg_decompte.delete()
 
-        # 3. Déroulement du quiz
+        # 3. Déroulement séquentiel des questions
         resultats = []
 
         for i, q in enumerate(questions, 1):
             secondes = q["secondes"]
-            now = datetime.datetime.now(datetime.timezone.utc)
-            fin_timestamp = int((now + datetime.timedelta(seconds=secondes)).timestamp())
 
-            embed_q = discord.Embed(
-                description=(
+            def build_description(secondes_restantes: int, fige_msg: str = None):
+                if fige_msg:
+                    return f"# Question {i}/{len(questions)}\n\n# **{q['question']}**\n\n## {fige_msg}"
+                
+                # Barre visuelle de progression
+                pourcentage = max(0, min(1, secondes_restantes / secondes))
+                blocs_pleins = int(pourcentage * 10)
+                barre = "🟩" * blocs_pleins + "⬛" * (10 - blocs_pleins)
+
+                return (
                     f"# Question {i}/{len(questions)}\n\n"
                     f"# **{q['question']}**\n\n"
-                    f"## ⏳ Fin du temps : <t:{fin_timestamp}:R>"
-                ),
+                    f"## ⏳ Temps restant : **{secondes_restantes}s** / {secondes}s\n"
+                    f"{barre}"
+                )
+
+            embed_q = discord.Embed(
+                description=build_description(secondes),
                 color=discord.Color.from_rgb(255, 69, 0)
             )
             q_msg = await channel.send(embed=embed_q)
@@ -1498,43 +1507,69 @@ class QuizLancementView(discord.ui.View):
             def check_reponse(m: discord.Message):
                 return m.channel.id == channel.id and m.author.id == self.candidat.id
 
-            # Mesure précise du temps écoulé
             start_perf = time.perf_counter()
+            tache_reponse = asyncio.create_task(bot.wait_for("message", check=check_reponse))
 
-            try:
-                reponse_msg = await bot.wait_for("message", timeout=secondes, check=check_reponse)
-                temps_ecoule = round(time.perf_counter() - start_perf, 2)
+            reponse_recue = False
+            temps_ecoule = secondes
+
+            # Boucle d'actualisation par pas de 3s (évite le rate-limit et reste synchro)
+            while not tache_reponse.done():
+                ecoule_live = time.perf_counter() - start_perf
+                restant_live = int(secondes - ecoule_live)
+
+                if restant_live <= 0:
+                    break
+
+                try:
+                    reponse_msg = await asyncio.wait_for(asyncio.shield(tache_reponse), timeout=3.0)
+                    reponse_recue = True
+                    temps_ecoule = round(time.perf_counter() - start_perf, 2)
+                    break
+                except asyncio.TimeoutError:
+                    sec_rest = max(0, int(secondes - (time.perf_counter() - start_perf)))
+                    embed_maj = discord.Embed(
+                        description=build_description(sec_rest),
+                        color=discord.Color.from_rgb(255, 69, 0)
+                    )
+                    try:
+                        await q_msg.edit(embed=embed_maj)
+                    except Exception:
+                        pass
+
+            if not reponse_recue and not tache_reponse.done():
+                tache_reponse.cancel()
+
+            if reponse_recue:
                 temps_restant = round(max(0, secondes - temps_ecoule), 2)
-                reponse_texte = reponse_msg.content
-
                 embed_fige = discord.Embed(
-                    description=(
-                        f"# Question {i}/{len(questions)}\n\n"
-                        f"# **{q['question']}**\n\n"
-                        f"## ⏱️ Répondu en `{temps_ecoule}s` *(restait {temps_restant}s)*"
+                    description=build_description(
+                        0, 
+                        fige_msg=f"⏱️ Répondu en `{temps_ecoule}s` *(restait {temps_restant}s)*"
                     ),
                     color=discord.Color.green()
                 )
-                await q_msg.edit(embed=embed_fige)
+                try:
+                    await q_msg.edit(embed=embed_fige)
+                except Exception:
+                    pass
 
                 resultats.append({
                     "index": i,
                     "question": q["question"],
-                    "reponse": reponse_texte,
+                    "reponse": reponse_msg.content,
                     "temps_pris": f"{temps_ecoule}s",
                     "statut": "✅ Répondu"
                 })
-
-            except asyncio.TimeoutError:
+            else:
                 embed_fige = discord.Embed(
-                    description=(
-                        f"# Question {i}/{len(questions)}\n\n"
-                        f"# **{q['question']}**\n\n"
-                        f"## 🛑 TEMPS ÉCOULÉ"
-                    ),
+                    description=build_description(0, fige_msg="🛑 TEMPS ÉCOULÉ"),
                     color=discord.Color.dark_red()
                 )
-                await q_msg.edit(embed=embed_fige)
+                try:
+                    await q_msg.edit(embed=embed_fige)
+                except Exception:
+                    pass
 
                 resultats.append({
                     "index": i,
@@ -1544,11 +1579,14 @@ class QuizLancementView(discord.ui.View):
                     "statut": "❌ Hors délai"
                 })
 
-            # Pause confortable de 5.5 secondes entre chaque question
+            # Pause confortable entre chaque question
             if i < len(questions):
                 msg_pause = await channel.send(f"⏳ *Prochaine question dans 5 secondes... ({i}/{len(questions)})*")
-                await asyncio.sleep(5.5)
-                await msg_pause.delete()
+                await asyncio.sleep(5.0)
+                try:
+                    await msg_pause.delete()
+                except Exception:
+                    pass
 
         # 4. Fiche récapitulative finale
         lignes_recap = []
@@ -1591,14 +1629,14 @@ async def preparer_epreuve_quiz(
         temps_override=temps_par_defaut
     )
 
-    info_temps = f"\n⏱️ **Temps par question :** `{temps_par_defaut}s`" if temps_par_defaut else "\n⏱️ **Temps :** Défini selon chaque question"
+    info_temps = f"\n⏱️ **Temps par question :** `{temps_par_defaut}s`" if temps_par_defaut else "\n⏱️ **Temps :** Défini selon chaque question (ou 15s par défaut)"
 
     embed_invit = discord.Embed(
         title="🏺 ÉPREUVE INDIVIDUELLE DE RAPIDITÉ",
         description=(
             f"Bienvenue {candidat.mention} pour ton épreuve.{info_temps}\n\n"
             f"📌 **Consignes :**\n"
-            f"- Les questions vont s'enchaîner avec un temps de pause entre chacune.\n"
+            f"- Les questions vont s'enchaîner avec une pause entre chacune.\n"
             f"- Écris ta réponse directement dans ce salon.\n"
             f"- Dès que tu es prêt, clique sur le bouton ci-dessous pour lancer l'épreuve."
         ),
