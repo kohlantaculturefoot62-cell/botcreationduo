@@ -1149,6 +1149,100 @@ async def desactiver_conseil(interaction: discord.Interaction, role_equipe: disc
         ephemeral=True
     )
 
+def get_spectateur_voice_overwrites() -> discord.PermissionOverwrite:
+    """Définit les droits stricts en écoute seule pour les Spectateurs en salon vocal."""
+    return discord.PermissionOverwrite(
+        view_channel=True,
+        connect=True,
+        speak=False,
+        stream=False,
+        use_voice_activation=False,
+        use_soundboard=False,
+        use_external_sounds=False,
+        add_reactions=False
+    )
 
+
+@bot.tree.command(
+    name="creer_vocal",
+    description="Crée un salon vocal privé pour 2 à 5 candidats (Spectateurs en écoute seule & Orgas inclus)."
+)
+@app_commands.describe(
+    nom_categorie="Nom de la catégorie où placer le salon vocal",
+    role_1="Premier candidat obligatoire",
+    role_2="Deuxième candidat obligatoire",
+    role_3="Troisième candidat optionnel",
+    role_4="Quatrième candidat optionnel",
+    role_5="Cinquième candidat optionnel"
+)
+@app_commands.check(est_orga_ou_admin)
+async def creer_vocal(
+    interaction: discord.Interaction,
+    nom_categorie: str,
+    role_1: discord.Role,
+    role_2: discord.Role,
+    role_3: discord.Role = None,
+    role_4: discord.Role = None,
+    role_5: discord.Role = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    target_clean = nettoyer_texte(nom_categorie)
+    category = discord.utils.find(lambda c: nettoyer_texte(c.name) == target_clean, guild.categories)
+    if not category:
+        await interaction.followup.send(f"❌ Catégorie **{nom_categorie}** introuvable.", ephemeral=True)
+        return
+
+    roles_fournis = [r for r in [role_1, role_2, role_3, role_4, role_5] if r is not None]
+    if len(set(roles_fournis)) < len(roles_fournis):
+        await interaction.followup.send("❌ Veuillez ne pas sélectionner deux fois le même rôle.", ephemeral=True)
+        return
+
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True, mute_members=True)
+    }
+
+    # Permissions vocales complètes pour les candidats
+    for r in roles_fournis:
+        overwrites[r] = discord.PermissionOverwrite(
+            view_channel=True,
+            connect=True,
+            speak=True,
+            stream=True,
+            use_voice_activation=True
+        )
+
+    # Spectateurs : connexion et écoute uniquement
+    if role_spectateurs:
+        overwrites[role_spectateurs] = get_spectateur_voice_overwrites()
+
+    # Orgas : accès complet et modération vocale
+    if role_orgas:
+        overwrites[role_orgas] = discord.PermissionOverwrite(
+            view_channel=True,
+            connect=True,
+            speak=True,
+            mute_members=True,
+            deafen_members=True,
+            move_members=True
+        )
+
+    noms = [formater_nom_salon(r.name) for r in roles_fournis]
+    nom_vocal = f"🔊・{'-'.join(noms)}"
+
+    salon_vocal = await guild.create_voice_channel(name=nom_vocal, category=category, overwrites=overwrites)
+    
+    mentions_roles = ", ".join([r.mention for r in roles_fournis])
+    await interaction.followup.send(
+        f"✅ **Salon vocal créé :** {salon_vocal.mention} dans **{category.name}**\n"
+        f"👥 Candidats autorisés : {mentions_roles}\n"
+        f"👁️ Spectateurs configurés en écoute seule (micro & partage coupés).",
+        ephemeral=True
+    )
 # --- DÉMARRAGE DU BOT ---
 bot.run(TOKEN)
