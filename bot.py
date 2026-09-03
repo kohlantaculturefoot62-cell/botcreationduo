@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import itertools
 import asyncio
 import datetime
@@ -12,7 +13,10 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from google import genai
 
-# --- CONFIGURATION & ENVIRONNEMENT ---
+# ==========================================
+# CONFIGURATION & ENVIRONNEMENT
+# ==========================================
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -23,6 +27,7 @@ MODEL_NAME = "gemini-3.5-flash-lite"
 RECAP_CHANNEL_ID = int(os.getenv("RECAP_CHANNEL_ID", 0))
 CATEGORY_TRIO_ID = 1541397070898921482
 CATEGORY_QUATUOR_ID = 1541397227744927835
+RESULTATS_CHANNEL_ID = 1545186500960985148
 
 # Planification des tâches automatiques (Fuseau Paris)
 HEURE_RECAP = datetime.time(hour=23, minute=0, tzinfo=ZoneInfo("Europe/Paris"))
@@ -67,19 +72,27 @@ ROLES_GENERIQUES_A_IGNORER = [
     "booster"
 ]
 
-# Initialisation
+# Initialisation du client IA et du Bot Discord
 gemini_client = genai.Client(api_key=GEMINI_KEY)
 
 intents = discord.Intents.default()
 intents.guilds = True
 intents.message_content = True
 intents.members = True
+intents.voice_states = True # Pour l'anti-triche vocal
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Variables globales en mémoire
 DERNIERS_BINOMES_TIRES = []
 ROLES_PERSO_EN_PAUSE = {}  # {member_id: role_id}
+CHRONOS_EN_COURS = {}      # {key: start_datetime}
+
+CONFIG_EPREUVE_GLOBALE = {
+    "questions": [],
+    "temps_par_defaut": 15,
+    "active": False
+}
 
 
 # ==========================================
@@ -122,7 +135,7 @@ def est_categorie_candidate(category: discord.CategoryChannel) -> bool:
 
 
 def get_spectateur_overwrites() -> discord.PermissionOverwrite:
-    """Définit les droits stricts en lecture seule pour les Spectateurs."""
+    """Définit les droits stricts en lecture seule pour les Spectateurs (Textuel)."""
     return discord.PermissionOverwrite(
         view_channel=True,
         read_messages=True,
@@ -135,6 +148,20 @@ def get_spectateur_overwrites() -> discord.PermissionOverwrite:
         use_external_emojis=False,
         use_external_stickers=False,
         send_voice_messages=False
+    )
+
+
+def get_spectateur_voice_overwrites() -> discord.PermissionOverwrite:
+    """Définit les droits stricts en écoute seule pour les Spectateurs (Vocal)."""
+    return discord.PermissionOverwrite(
+        view_channel=True,
+        connect=True,
+        speak=False,
+        stream=False,
+        use_voice_activation=False,
+        use_soundboard=False,
+        use_external_sounds=False,
+        add_reactions=False
     )
 
 
@@ -152,7 +179,7 @@ def trouver_role_personnel(member: discord.Member, role_equipe: discord.Role = N
         if r_clean in (nom_membre_clean, pseudo_global_clean):
             return r
 
-    # 2. Sinon, premier rôle valide non générique
+    # 2. Premier rôle valide non générique
     for r in member.roles:
         r_clean = nettoyer_texte(r.name)
         if r.is_default() or (role_equipe and r.id == role_equipe.id):
@@ -313,7 +340,7 @@ async def generer_questions_confessionnal(target_recap_channel: discord.TextChan
 
 
 # ==========================================
-# 3. TÂCHES AUTOMATIQUES PLANIFIÉES
+# 3. TÂCHES AUTOMATIQUES & ÉVÉNEMENTS
 # ==========================================
 
 @tasks.loop(time=HEURE_RECAP)
@@ -351,6 +378,24 @@ async def on_ready():
     print(f"🤖 Bot connecté en tant que : {bot.user}")
 
 
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    """Anti-triche vocal : Alerte en console si un joueur quitte ou se mute en pleine épreuve."""
+    if member.bot:
+        return
+
+    # Détection déconnexion vocale
+    if before.channel and not after.channel:
+        print(f"⚠️ ALERTE TRICHE : {member.display_name} a QUITTÉ le salon vocal {before.channel.name} !")
+
+    # Détection mute / deafen (s'il coupe le son pour écouter quelqu'un à côté)
+    if not before.self_deaf and after.self_deaf:
+        print(f"⚠️ ALERTE : {member.display_name} a COUPÉ SON CASQUE (Deafen).")
+
+    if not before.self_mute and after.self_mute:
+        print(f"⚠️ INFO : {member.display_name} s'est MUTÉ.")
+
+
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
@@ -364,7 +409,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 
 # ==========================================
-# 4. COMMANDES DE GESTION DUOS & CANDIDATS
+# 4. GESTION DES DUOS & CANDIDATS
 # ==========================================
 
 @bot.tree.command(
@@ -436,7 +481,6 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
             guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
         }
 
-        # Permissions : Rôles perso UNIQUEMENT
         if c1["role"]:
             overwrites[c1["role"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
 
@@ -535,7 +579,7 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
 
 
 # ========================================================
-# 5. CRÉATION DE SALONS SPÉCIFIQUES (TRIOS & QUATUORS)
+# 5. SALONS SPÉCIFIQUES (TRIOS, QUATUORS & VOCAUX)
 # ========================================================
 
 @bot.tree.command(
@@ -591,7 +635,7 @@ async def creer_trio(
 
     salon = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=overwrites)
     await interaction.followup.send(
-        f"✅ **Trio créé avec succès :** {salon.mention} dans **{categorie.name}**\n"
+        f"✅ **Trio créé :** {salon.mention} dans **{categorie.name}**\n"
         f"👥 Rôles autorisés : {role_1.mention}, {role_2.mention}, {role_3.mention}",
         ephemeral=True
     )
@@ -652,14 +696,94 @@ async def creer_quatuor(
 
     salon = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=overwrites)
     await interaction.followup.send(
-        f"✅ **Quatuor créé avec succès :** {salon.mention} dans **{categorie.name}**\n"
+        f"✅ **Quatuor créé :** {salon.mention} dans **{categorie.name}**\n"
         f"👥 Rôles autorisés : {role_1.mention}, {role_2.mention}, {role_3.mention}, {role_4.mention}",
         ephemeral=True
     )
 
 
+@bot.tree.command(
+    name="creer_vocal",
+    description="Crée un salon vocal privé pour 2 à 5 candidats (Spectateurs en écoute seule & Orgas inclus)."
+)
+@app_commands.describe(
+    nom_categorie="Nom de la catégorie où placer le salon vocal",
+    role_1="Premier candidat obligatoire",
+    role_2="Deuxième candidat obligatoire",
+    role_3="Troisième candidat optionnel",
+    role_4="Quatrième candidat optionnel",
+    role_5="Cinquième candidat optionnel"
+)
+@app_commands.check(est_orga_ou_admin)
+async def creer_vocal(
+    interaction: discord.Interaction,
+    nom_categorie: str,
+    role_1: discord.Role,
+    role_2: discord.Role,
+    role_3: discord.Role = None,
+    role_4: discord.Role = None,
+    role_5: discord.Role = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    target_clean = nettoyer_texte(nom_categorie)
+    category = discord.utils.find(lambda c: nettoyer_texte(c.name) == target_clean, guild.categories)
+    if not category:
+        await interaction.followup.send(f"❌ Catégorie **{nom_categorie}** introuvable.", ephemeral=True)
+        return
+
+    roles_fournis = [r for r in [role_1, role_2, role_3, role_4, role_5] if r is not None]
+    if len(set(roles_fournis)) < len(roles_fournis):
+        await interaction.followup.send("❌ Veuillez ne pas sélectionner deux fois le même rôle.", ephemeral=True)
+        return
+
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True, mute_members=True)
+    }
+
+    for r in roles_fournis:
+        overwrites[r] = discord.PermissionOverwrite(
+            view_channel=True,
+            connect=True,
+            speak=True,
+            stream=True,
+            use_voice_activation=True
+        )
+
+    if role_spectateurs:
+        overwrites[role_spectateurs] = get_spectateur_voice_overwrites()
+
+    if role_orgas:
+        overwrites[role_orgas] = discord.PermissionOverwrite(
+            view_channel=True,
+            connect=True,
+            speak=True,
+            mute_members=True,
+            deafen_members=True,
+            move_members=True
+        )
+
+    noms = [formater_nom_salon(r.name) for r in roles_fournis]
+    nom_vocal = f"🔊・{'-'.join(noms)}"
+
+    salon_vocal = await guild.create_voice_channel(name=nom_vocal, category=category, overwrites=overwrites)
+    
+    mentions_roles = ", ".join([r.mention for r in roles_fournis])
+    await interaction.followup.send(
+        f"✅ **Salon vocal créé :** {salon_vocal.mention} dans **{category.name}**\n"
+        f"👥 Candidats autorisés : {mentions_roles}\n"
+        f"👁️ Spectateurs configurés en écoute seule.",
+        ephemeral=True
+    )
+
+
 # ==========================================
-# 6. COMMANDES DE SUPPRESSION & NETTOYAGE
+# 6. SUPPRESSION & NETTOYAGE
 # ==========================================
 
 @bot.tree.command(name="supprimer_categorie", description="Supprime une catégorie entière et ses salons.")
@@ -780,7 +904,7 @@ async def vider_categorie(interaction: discord.Interaction, nom_categorie: str):
 
 
 # ========================================================
-# 7. COMMANDES DE PERMISSIONS SPECTATEURS
+# 7. PERMISSIONS SPECTATEURS
 # ========================================================
 
 @bot.tree.command(
@@ -857,8 +981,349 @@ async def ajouter_spectateurs_categorie(interaction: discord.Interaction, nom_ca
 
 
 # ==========================================
-# 8. GESTION DES BINÔMES (DESTINS LIÉS EN 2 ÉTAPES)
+# 8. RÉSUMÉS IA & JOURNALISME
 # ==========================================
+
+@bot.tree.command(
+    name="resumer", 
+    description="Génère un résumé IA (court ou détaillé) des derniers messages du salon."
+)
+@app_commands.describe(
+    format="Choisissez entre un résumé synthétique/rapide ou une analyse complète",
+    limite="Nombre de messages récents à analyser (par défaut: 100)"
+)
+@app_commands.choices(format=[
+    app_commands.Choice(name="⚡ Résumé Court (Points clés rapides)", value="court"),
+    app_commands.Choice(name="📖 Résumé Long (Analyse détaillée & stratégique)", value="long")
+])
+@app_commands.check(est_orga_ou_admin)
+async def resumer(interaction: discord.Interaction, format: app_commands.Choice[str], limite: int = 100):
+    await interaction.response.defer(ephemeral=True)
+    channel = interaction.channel
+
+    messages = [msg async for msg in channel.history(limit=limite, oldest_first=True)]
+    user_messages = [msg for msg in messages if not msg.author.bot and msg.content.strip()]
+
+    if len(user_messages) < 3:
+        await interaction.followup.send("⚠️ Pas assez de messages pour générer un résumé pertinent.", ephemeral=True)
+        return
+
+    transcript = "\n".join([f"{msg.author.display_name}: {msg.content}" for msg in user_messages])
+
+    if format.value == "court":
+        prompt = (
+            "Tu es l'arbitre d'un jeu de stratégie. "
+            f"Voici la transcription des messages du salon #{channel.name} :\n\n"
+            f"{transcript}\n\n"
+            "Fais un résumé **TRÈS COURT, CONCIS ET DIRECT** en 3 à 5 bullet points maximum :\n"
+            "- 🎯 Sujet central en 1 phrase\n"
+            "- 🤝 Décisions / Alliances évoquées\n"
+            "- ⚠️ Orientations stratégiques ou cibles mentionnées\n"
+            "- 🎭 Dynamique des échanges (Accord, Réserves, Négociation)"
+        )
+    else:
+        prompt = (
+            "Tu es l'analyste stratégique d'un jeu d'aventure/téléréalité (type Koh-Lanta/Survivor/Secret Story). "
+            f"Voici la transcription des messages échangés dans le salon #{channel.name} :\n\n"
+            f"{transcript}\n\n"
+            "Fais un **RÉSUMÉ DÉTAILLÉ ET STRUCTURÉ** en français, avec les sections suivantes :\n"
+            "1. 🎯 **Analyse Thématique** (synthèse factuelle des sujets abordés)\n"
+            "2. 🤝 **Accords & Propositions** (qui propose quoi, points de convergence ou de divergence)\n"
+            "3. ⚠️ **Scénarios & Votes évoqués** (noms mentionnés, arguments avancés, alternatives)\n"
+            "4. 🎭 **Dynamique relationnelle** (postures observées, équilibre de la discussion)\n"
+            "5. 💬 **Citations ou Moments Clés** (phrases structurantes de l'échange)"
+        )
+
+    max_tentatives = 3
+    for tentative in range(max_tentatives):
+        try:
+            response = gemini_client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt
+            )
+            summary_text = response.text
+
+            badge_titre = "⚡ Résumé Flash" if format.value == "court" else "📖 Résumé Détaillé"
+            embed = discord.Embed(
+                title=f"{badge_titre} — #{channel.name}",
+                description=summary_text,
+                color=discord.Color.gold() if format.value == "court" else discord.Color.purple()
+            )
+            embed.set_footer(text=f"Analyse basée sur les {len(user_messages)} messages (Tentative {tentative + 1}).")
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        except Exception as e:
+            if "503" in str(e) and tentative < max_tentatives - 1:
+                await asyncio.sleep(2)
+            else:
+                await interaction.followup.send(f"❌ Les serveurs IA sont surchargés après {max_tentatives} tentatives. Réessayez plus tard.", ephemeral=True)
+                return
+
+
+@bot.tree.command(
+    name="resumer_conv_orga", 
+    description="Génère un résumé IA axé sur l'organisation et les décisions (pour le Staff)."
+)
+@app_commands.describe(
+    format="Choisissez entre un résumé synthétique ou un compte-rendu complet",
+    limite="Nombre de messages récents à analyser (par défaut: 100)"
+)
+@app_commands.choices(format=[
+    app_commands.Choice(name="⚡ Résumé Court (Décisions & Actions rapides)", value="court"),
+    app_commands.Choice(name="📖 Résumé Long (Compte-rendu détaillé)", value="long")
+])
+@app_commands.check(est_orga_ou_admin)
+async def resumer_conv_orga(interaction: discord.Interaction, format: app_commands.Choice[str], limite: int = 100):
+    await interaction.response.defer(ephemeral=True)
+    channel = interaction.channel
+
+    messages = [msg async for msg in channel.history(limit=limite, oldest_first=True)]
+    user_messages = [msg for msg in messages if not msg.author.bot and msg.content.strip()]
+
+    if len(user_messages) < 3:
+        await interaction.followup.send("⚠️ Pas assez de messages pour générer un compte-rendu pertinent.", ephemeral=True)
+        return
+
+    transcript = "\n".join([f"{msg.author.display_name}: {msg.content}" for msg in user_messages])
+
+    if format.value == "court":
+        prompt = (
+            "Tu es l'assistant de direction d'une équipe d'organisation d'un événement / jeu. "
+            f"Voici la transcription de la réunion/discussion de l'équipe dans le salon #{channel.name} :\n\n"
+            f"{transcript}\n\n"
+            "Fais un résumé **TRÈS COURT, CONCIS ET DIRECT** en 3 à 5 bullet points maximum :\n"
+            "- 🎯 Objectif/Sujet principal de la discussion\n"
+            "- 🛠️ Décisions importantes actées\n"
+            "- 📋 Actions à faire (Qui fait quoi ?)\n"
+            "- 📅 Prochaines étapes"
+        )
+    else:
+        prompt = (
+            "Tu es l'assistant de direction d'une équipe d'organisation d'un jeu / événement. "
+            f"Voici la transcription des échanges du staff dans le salon #{channel.name} :\n\n"
+            f"{transcript}\n\n"
+            "Rédige un **COMPTE-RENDU DÉTAILLÉ ET PROFESSIONNEL** en français, structuré avec les sections suivantes :\n"
+            "1. 🎯 **Sujets abordés** (Quels ont été les thèmes de la discussion ?)\n"
+            "2. 🛠️ **Décisions prises** (Qu'est-ce qui a été validé ou refusé par l'équipe ?)\n"
+            "3. 📋 **Répartition des tâches** (Qui est en charge de quoi ?)\n"
+            "4. 💡 **Idées & Propositions en attente** (Ce qui doit encore être discuté ou creusé)\n"
+            "5. 📅 **Prochaines étapes & Deadlines** (Ce qu'il reste à faire dans l'immédiat)"
+        )
+
+    max_tentatives = 3
+    for tentative in range(max_tentatives):
+        try:
+            response = gemini_client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt
+            )
+            summary_text = response.text
+
+            badge_titre = "⚡ Compte-Rendu Flash" if format.value == "court" else "📖 Compte-Rendu Complet"
+            embed = discord.Embed(
+                title=f"{badge_titre} — #{channel.name}",
+                description=summary_text,
+                color=discord.Color.blue()
+            )
+            embed.set_footer(text=f"Analyse basée sur les {len(user_messages)} messages (Tentative {tentative + 1}).")
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        except Exception as e:
+            if "503" in str(e) and tentative < max_tentatives - 1:
+                await asyncio.sleep(2)
+            else:
+                await interaction.followup.send(f"❌ Les serveurs IA sont surchargés après {max_tentatives} tentatives. Réessayez plus tard.", ephemeral=True)
+                return
+
+
+@bot.tree.command(
+    name="questions_confessionnal",
+    description="Génère des questions journalistiques objectives pour les confessionnaux (sur-mesure ou global)."
+)
+@app_commands.describe(candidat="Optionnel : mentionnez le rôle d'un candidat précis (laisser vide pour les profils clés du jour)")
+@app_commands.check(est_orga_ou_admin)
+async def questions_confessionnal(interaction: discord.Interaction, candidat: discord.Role = None):
+    await interaction.response.defer(ephemeral=True)
+
+    target_channel = bot.get_channel(RECAP_CHANNEL_ID) or interaction.channel
+    candidat_nom = candidat.name if candidat else None
+
+    resultat_text = await generer_questions_confessionnal(target_channel, candidat_nom)
+
+    titre = f"🎙️ Interview Confessionnal — {candidat.name}" if candidat else "🎙️ Suggestions Confessionnal du Jour"
+    embed = discord.Embed(
+        title=titre,
+        description=resultat_text,
+        color=discord.Color.red()
+    )
+    embed.set_footer(text="Généré par l'IA Journaliste • Réservé aux Orgas")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(
+    name="forcer_recap_jour",
+    description="Génère immédiatement le journal stratégique global de tous les salons candidats des dernières 24h."
+)
+@app_commands.check(est_orga_ou_admin)
+async def forcer_recap_jour(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    target_channel = bot.get_channel(RECAP_CHANNEL_ID) or interaction.channel
+    await interaction.followup.send(f"⏳ Analyse des salons candidats en cours pour {target_channel.mention}...", ephemeral=True)
+
+    await generer_et_envoyer_recap_quotidien(interaction.guild, target_channel)
+
+
+# ==========================================
+# 9. CONTRÔLE DES TÂCHES PLANIFIÉES
+# ==========================================
+
+@bot.tree.command(
+    name="pause_taches",
+    description="Met en pause l'envoi automatique du récap du soir et des questions du matin."
+)
+@app_commands.check(est_orga_ou_admin)
+async def pause_taches(interaction: discord.Interaction):
+    if tache_recap_quotidien.is_running():
+        tache_recap_quotidien.stop()
+    if tache_questions_matin.is_running():
+        tache_questions_matin.stop()
+
+    await interaction.response.send_message(
+        "⏸️ **Tâches automatiques mises en pause :**\n- 🌙 Récap du soir (23h00) : **Arrêté**\n- 🎙️ Questions du matin (09h00) : **Arrêté**",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="reprendre_taches",
+    description="Réactive l'envoi automatique du récap du soir et des questions du matin."
+)
+@app_commands.check(est_orga_ou_admin)
+async def reprendre_taches(interaction: discord.Interaction):
+    if not tache_recap_quotidien.is_running():
+        tache_recap_quotidien.start()
+    if not tache_questions_matin.is_running():
+        tache_questions_matin.start()
+
+    await interaction.response.send_message(
+        "▶️ **Tâches automatiques réactivées :**\n- 🌙 Récap du soir (23h00) : **Actif**\n- 🎙️ Questions du matin (09h00) : **Actif**",
+        ephemeral=True
+    )
+
+
+# ==========================================
+# 10. ANIMATION DE TIRAGE AU SORT (BOULE NOIRE)
+# ==========================================
+
+@bot.tree.command(
+    name="tirage_boules",
+    description="Lance le tirage au sort des boules (blanches / noires) avec animation et suspense."
+)
+@app_commands.describe(
+    participants="Mentionne les candidats participant au tirage (ex: @Sarah @Lucas @Maxime ...)",
+    nombre_boules_noires="Nombre de boules noires dans le sac (par défaut : 1)",
+    couleur_sauveur="Couleur des boules sécurisées (ex: Blanche ⚪, Rouge 🔴, Jaune 🟡)"
+)
+@app_commands.choices(couleur_sauveur=[
+    app_commands.Choice(name="⚪ Boule Blanche (Classique)", value="⚪ Blanche"),
+    app_commands.Choice(name="🔴 Boule Rouge (Équipe Rouge)", value="🔴 Rouge"),
+    app_commands.Choice(name="🟡 Boule Jaune (Équipe Jaune)", value="🟡 Jaune")
+])
+@app_commands.check(est_orga_ou_admin)
+async def tirage_boules(
+    interaction: discord.Interaction, 
+    participants: str, 
+    nombre_boules_noires: int = 1,
+    couleur_sauveur: app_commands.Choice[str] = None
+):
+    guild = interaction.guild
+    channel = interaction.channel
+
+    role_ids = [int(r.strip("<@&>")) for r in participants.split() if r.startswith("<@&") and r.endswith(">")]
+    candidats = [guild.get_role(r_id) for r_id in role_ids if guild.get_role(r_id) is not None]
+
+    if len(candidats) < 2:
+        await interaction.response.send_message("❌ Mentionnez au moins 2 rôles de candidats pour le tirage.", ephemeral=True)
+        return
+
+    if nombre_boules_noires >= len(candidats) or nombre_boules_noires < 1:
+        await interaction.response.send_message("❌ Le nombre de boules noires doit être compris entre 1 et le nombre de candidats - 1.", ephemeral=True)
+        return
+
+    await interaction.response.send_message("🏺 Lancement du tirage au sort dans le salon...", ephemeral=True)
+
+    symbole_sauve = couleur_sauveur.value if couleur_sauveur else "⚪ Blanche"
+
+    embed_intro = discord.Embed(
+        title="🏺 LE TIRAGE DES BOULES",
+        description=(
+            f"**{len(candidats)} aventuriers** s'avancent vers le sac pour sceller leur destin.\n\n"
+            f"📦 **Composition du sac :**\n"
+            f"- {len(candidats) - nombre_boules_noires}x {symbole_sauve}\n"
+            f"- {nombre_boules_noires}x ⚫ **Boule Noire**\n\n"
+            "*(Chaque aventurier va plonger sa main dans le sac...)*"
+        ),
+        color=discord.Color.dark_grey()
+    )
+    embed_intro.set_footer(text="Le destin est en marche...")
+    message_principal = await channel.send(embed=embed_intro)
+
+    await asyncio.sleep(4)
+
+    sac = (["⚫ Noire"] * nombre_boules_noires) + ([symbole_sauve] * (len(candidats) - nombre_boules_noires))
+    random.shuffle(sac)
+
+    ordre_passage = list(candidats)
+    random.shuffle(ordre_passage)
+
+    victimes_boule_noire = []
+    texte_revelations = ""
+
+    for i, candidat in enumerate(ordre_passage, 1):
+        boule_tiree = sac.pop()
+
+        if "Noire" in boule_tiree:
+            victimes_boule_noire.append(candidat)
+            symbole_affichage = "⚫ **BOULE NOIRE !**"
+        else:
+            symbole_affichage = f"{symbole_sauve} *(Sauf !)*"
+
+        texte_revelations += f"**{i}.** {candidat.mention} plonge sa main dans le sac...\n➡️ Résultat : {symbole_affichage}\n\n"
+
+        embed_update = discord.Embed(
+            title="🏺 LE TIRAGE DES BOULES — EN COURS",
+            description=texte_revelations,
+            color=discord.Color.orange() if not victimes_boule_noire else discord.Color.red()
+        )
+        await message_principal.edit(embed=embed_update)
+        await asyncio.sleep(3.5)
+
+    mentions_victimes = ", ".join([v.mention for v in victimes_boule_noire])
+    verdict_text = (
+        f"{texte_revelations}"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"☠️ **VERDICT DU DESTIN :**\n"
+        f"{mentions_victimes} {'ont' if len(victimes_boule_noire) > 1 else 'a'} tiré la **Boule Noire** !"
+    )
+
+    embed_final = discord.Embed(
+        title="🏺 LE TIRAGE DES BOULES — VERDICT FINAL",
+        description=verdict_text,
+        color=discord.Color.dark_red()
+    )
+    embed_final.set_footer(text="La sentence du tirage au sort est irrévocable.")
+    await message_principal.edit(embed=embed_final)
+
+
+# ========================================================
+# 11. GESTION DES BINÔMES (DESTINS LIÉS EN 2 ÉTAPES)
+# ========================================================
 
 @bot.tree.command(
     name="tirer_binomes",
@@ -1048,7 +1513,7 @@ async def creer_salons_binomes(interaction: discord.Interaction, nom_categorie: 
 
 
 # ========================================================
-# 9. GESTION DU CONSEIL (ISOLATION & RESTAURATION)
+# 12. GESTION DU CONSEIL (ISOLATION & RESTAURATION)
 # ========================================================
 
 @bot.tree.command(
@@ -1149,114 +1614,14 @@ async def desactiver_conseil(interaction: discord.Interaction, role_equipe: disc
         ephemeral=True
     )
 
-def get_spectateur_voice_overwrites() -> discord.PermissionOverwrite:
-    """Définit les droits stricts en écoute seule pour les Spectateurs en salon vocal."""
-    return discord.PermissionOverwrite(
-        view_channel=True,
-        connect=True,
-        speak=False,
-        stream=False,
-        use_voice_activation=False,
-        use_soundboard=False,
-        use_external_sounds=False,
-        add_reactions=False
-    )
-
-
-@bot.tree.command(
-    name="creer_vocal",
-    description="Crée un salon vocal privé pour 2 à 5 candidats (Spectateurs en écoute seule & Orgas inclus)."
-)
-@app_commands.describe(
-    nom_categorie="Nom de la catégorie où placer le salon vocal",
-    role_1="Premier candidat obligatoire",
-    role_2="Deuxième candidat obligatoire",
-    role_3="Troisième candidat optionnel",
-    role_4="Quatrième candidat optionnel",
-    role_5="Cinquième candidat optionnel"
-)
-@app_commands.check(est_orga_ou_admin)
-async def creer_vocal(
-    interaction: discord.Interaction,
-    nom_categorie: str,
-    role_1: discord.Role,
-    role_2: discord.Role,
-    role_3: discord.Role = None,
-    role_4: discord.Role = None,
-    role_5: discord.Role = None
-):
-    await interaction.response.defer(ephemeral=True)
-    guild = interaction.guild
-
-    target_clean = nettoyer_texte(nom_categorie)
-    category = discord.utils.find(lambda c: nettoyer_texte(c.name) == target_clean, guild.categories)
-    if not category:
-        await interaction.followup.send(f"❌ Catégorie **{nom_categorie}** introuvable.", ephemeral=True)
-        return
-
-    roles_fournis = [r for r in [role_1, role_2, role_3, role_4, role_5] if r is not None]
-    if len(set(roles_fournis)) < len(roles_fournis):
-        await interaction.followup.send("❌ Veuillez ne pas sélectionner deux fois le même rôle.", ephemeral=True)
-        return
-
-    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
-    role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
-
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False),
-        guild.me: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True, mute_members=True)
-    }
-
-    # Permissions vocales complètes pour les candidats
-    for r in roles_fournis:
-        overwrites[r] = discord.PermissionOverwrite(
-            view_channel=True,
-            connect=True,
-            speak=True,
-            stream=True,
-            use_voice_activation=True
-        )
-
-    # Spectateurs : connexion et écoute uniquement
-    if role_spectateurs:
-        overwrites[role_spectateurs] = get_spectateur_voice_overwrites()
-
-    # Orgas : accès complet et modération vocale
-    if role_orgas:
-        overwrites[role_orgas] = discord.PermissionOverwrite(
-            view_channel=True,
-            connect=True,
-            speak=True,
-            mute_members=True,
-            deafen_members=True,
-            move_members=True
-        )
-
-    noms = [formater_nom_salon(r.name) for r in roles_fournis]
-    nom_vocal = f"🔊・{'-'.join(noms)}"
-
-    salon_vocal = await guild.create_voice_channel(name=nom_vocal, category=category, overwrites=overwrites)
-    
-    mentions_roles = ", ".join([r.mention for r in roles_fournis])
-    await interaction.followup.send(
-        f"✅ **Salon vocal créé :** {salon_vocal.mention} dans **{category.name}**\n"
-        f"👥 Candidats autorisés : {mentions_roles}\n"
-        f"👁️ Spectateurs configurés en écoute seule (micro & partage coupés).",
-        ephemeral=True
-    )
 
 # ========================================================
-# 12. CHRONOMÈTRES & ANTI-TRICHE
+# 13. CHRONOMÈTRES, QUESTION FLASH ET ANTI-TRICHE
 # ========================================================
-
-# Dictionnaire pour stocker les départs des épreuves de recherche
-# {channel_id_or_target_id: start_datetime}
-CHRONOS_EN_COURS = {}
-
 
 @bot.tree.command(
     name="poser_question_flash",
-    description="Pose une question ultra-lisible avec compte à rebours dynamique."
+    description="Pose une seule question flash ultra-lisible avec chrono dynamique Discord."
 )
 @app_commands.describe(
     question="La question à poser au candidat",
@@ -1292,7 +1657,6 @@ async def poser_question_flash(
         reponse_msg = await bot.wait_for("message", timeout=secondes, check=check)
         temps_pris = round((datetime.datetime.now() - debut_time).total_seconds(), 2)
 
-        # Fige l'embed initial pour stopper le compte à rebours
         embed_fige = discord.Embed(
             description=(
                 f"# {question}\n\n"
@@ -1313,7 +1677,6 @@ async def poser_question_flash(
         await channel.send(embed=embed_reponse)
 
     except asyncio.TimeoutError:
-        # Fige l'embed initial à la fin du temps
         embed_timeout_fige = discord.Embed(
             description=(
                 f"# {question}\n\n"
@@ -1328,6 +1691,7 @@ async def poser_question_flash(
             color=discord.Color.dark_red()
         )
         await channel.send(embed=embed_fin)
+
 
 @bot.tree.command(
     name="chrono_go",
@@ -1346,7 +1710,6 @@ async def chrono_go(
     channel = interaction.channel
     now = datetime.datetime.now(datetime.timezone.utc)
     
-    # On indexe le chrono par le salon et la cible pour éviter les collisions
     cle = f"{channel.id}_{cible.id}"
     CHRONOS_EN_COURS[cle] = datetime.datetime.now()
 
@@ -1412,23 +1775,24 @@ async def chrono_stop(
     embed.set_footer(text="Performance enregistrée par les Orgas.")
     await interaction.response.send_message(embed=embed)
 
-import time
 
 # ========================================================
-# 13. QUIZ & ÉPREUVE AUTOMATISÉE (AUTONOMIE JOUEUR)
+# 14. QUIZ & ÉPREUVES AUTOMATISÉES (CONFIDENTIALITÉ TOTALE)
 # ========================================================
 
-class QuizLancementView(discord.ui.View):
-    def __init__(self, source_channel: discord.TextChannel, candidat: discord.Member, temps_override: int = None):
-        super().__init__(timeout=900)
-        self.source_channel = source_channel
+class GlobalQuizLancementView(discord.ui.View):
+    def __init__(self, candidat: discord.Member):
+        super().__init__(timeout=1800)  # 30 minutes de validité
         self.candidat = candidat
-        self.temps_override = temps_override
 
-    @discord.ui.button(label="🚀 DÉMARRER MON ÉPREUVE", style=discord.ButtonStyle.green, custom_id="btn_quiz_start")
+    @discord.ui.button(label="🚀 DÉMARRER MON ÉPREUVE", style=discord.ButtonStyle.green, custom_id="btn_global_quiz_start")
     async def demarrer_quiz(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not CONFIG_EPREUVE_GLOBALE["active"]:
+            await interaction.response.send_message("⛔ L'épreuve est actuellement clôturée ou non configurée.", ephemeral=True)
+            return
+
         if interaction.user.id != self.candidat.id:
-            await interaction.response.send_message("⛔ Seul le candidat concerné peut lancer ce quiz.", ephemeral=True)
+            await interaction.response.send_message("⛔ Seul le candidat concerné peut lancer son épreuve.", ephemeral=True)
             return
 
         button.disabled = True
@@ -1437,38 +1801,13 @@ class QuizLancementView(discord.ui.View):
         await interaction.response.edit_message(view=self)
 
         channel = interaction.channel
-
-        # 1. Extraction des questions (avec ou sans le pipe '|')
-        questions = []
-        async for msg in self.source_channel.history(limit=20, oldest_first=False):
-            if not msg.author.bot and msg.content.strip():
-                for ligne in msg.content.strip().split("\n"):
-                    ligne = ligne.strip()
-                    if not ligne:
-                        continue
-                    
-                    if "|" in ligne:
-                        parties = ligne.split("|")
-                        q_texte = parties[0].strip()
-                        try:
-                            t_doc = int(parties[1].strip())
-                        except ValueError:
-                            t_doc = 15
-                    else:
-                        q_texte = ligne
-                        t_doc = 15
-
-                    duree_finale = self.temps_override if self.temps_override else t_doc
-                    questions.append({"question": q_texte, "secondes": duree_finale})
-                
-                if questions:
-                    break
+        questions = CONFIG_EPREUVE_GLOBALE["questions"]
 
         if not questions:
-            await channel.send("❌ Erreur : Aucune question trouvée dans le salon source.")
+            await channel.send("❌ Erreur : Aucune question chargée dans la configuration.")
             return
 
-        # 2. Compte à rebours initial
+        # Décompte initial avant la première question
         msg_decompte = await channel.send("⚠️ **Attention... L'épreuve commence dans : 3**")
         for k in range(2, 0, -1):
             await asyncio.sleep(1)
@@ -1476,7 +1815,6 @@ class QuizLancementView(discord.ui.View):
         await asyncio.sleep(1)
         await msg_decompte.delete()
 
-        # 3. Déroulement séquentiel des questions
         resultats = []
 
         for i, q in enumerate(questions, 1):
@@ -1486,7 +1824,7 @@ class QuizLancementView(discord.ui.View):
                 if fige_msg:
                     return f"# Question {i}/{len(questions)}\n\n# **{q['question']}**\n\n## {fige_msg}"
                 
-                # Barre visuelle de progression
+                # Barre visuelle de progression universelle
                 pourcentage = max(0, min(1, secondes_restantes / secondes))
                 blocs_pleins = int(pourcentage * 10)
                 barre = "🟩" * blocs_pleins + "⬛" * (10 - blocs_pleins)
@@ -1511,9 +1849,10 @@ class QuizLancementView(discord.ui.View):
             tache_reponse = asyncio.create_task(bot.wait_for("message", check=check_reponse))
 
             reponse_recue = False
+            reponse_msg = None
             temps_ecoule = secondes
 
-            # Boucle d'actualisation par pas de 3s (évite le rate-limit et reste synchro)
+            # Boucle d'actualisation fluide
             while not tache_reponse.done():
                 ecoule_live = time.perf_counter() - start_perf
                 restant_live = int(secondes - ecoule_live)
@@ -1540,13 +1879,10 @@ class QuizLancementView(discord.ui.View):
             if not reponse_recue and not tache_reponse.done():
                 tache_reponse.cancel()
 
-            if reponse_recue:
+            if reponse_recue and reponse_msg:
                 temps_restant = round(max(0, secondes - temps_ecoule), 2)
                 embed_fige = discord.Embed(
-                    description=build_description(
-                        0, 
-                        fige_msg=f"⏱️ Répondu en `{temps_ecoule}s` *(restait {temps_restant}s)*"
-                    ),
+                    description=build_description(0, fige_msg=f"⏱️ Répondu en `{temps_ecoule}s` *(restait {temps_restant}s)*"),
                     color=discord.Color.green()
                 )
                 try:
@@ -1579,72 +1915,231 @@ class QuizLancementView(discord.ui.View):
                     "statut": "❌ Hors délai"
                 })
 
-            # Pause confortable entre chaque question
-            if i < len(questions):
-                msg_pause = await channel.send(f"⏳ *Prochaine question dans 5 secondes... ({i}/{len(questions)})*")
-                await asyncio.sleep(5.0)
-                try:
-                    await msg_pause.delete()
-                except Exception:
-                    pass
+            # Pause et suppression de la question & de la réponse pour ne laisser aucune trace
+            await asyncio.sleep(4.0)
+            try:
+                await q_msg.delete()
+                if reponse_msg:
+                    await reponse_msg.delete()
+            except Exception:
+                pass
 
-        # 4. Fiche récapitulative finale
-        lignes_recap = []
-        for r in resultats:
-            lignes_recap.append(
-                f"**Q{r['index']}. {r['question']}**\n"
-                f"💬 Réponse : `{r['reponse']}` ({r['statut']} en `{r['temps_pris']}`)\n"
-            )
-
-        embed_recap = discord.Embed(
-            title=f"📊 RÉCAPITULATIF DE L'ÉPREUVE — {self.candidat.display_name}",
-            description="\n".join(lignes_recap),
-            color=discord.Color.gold()
+        # 1. Message discret pour le joueur dans son confessionnal
+        embed_fin_joueur = discord.Embed(
+            title="🏁 ÉPREUVE TERMINÉE",
+            description="Tes réponses et tes temps ont bien été transmis aux Organisateurs. Merci !",
+            color=discord.Color.green()
         )
-        embed_recap.set_footer(text="Épreuve terminée • Réservé à l'arbitrage des Orgas.")
-        await channel.send(embed=embed_recap)
+        await channel.send(embed=embed_fin_joueur)
+
+        # 2. Envoi du récapitulatif complet dans le salon ORGA dédié
+        result_channel = bot.get_channel(RESULTATS_CHANNEL_ID)
+        if result_channel:
+            lignes_recap = []
+            for r in resultats:
+                lignes_recap.append(
+                    f"**Q{r['index']}. {r['question']}**\n"
+                    f"💬 `{r['reponse']}` ({r['statut']} en `{r['temps_pris']}`)\n"
+                )
+
+            embed_recap_orga = discord.Embed(
+                title=f"📊 RÉSULTATS ÉPREUVE — {self.candidat.display_name}",
+                description="\n".join(lignes_recap),
+                color=discord.Color.gold()
+            )
+            embed_recap_orga.set_footer(text=f"ID Candidat : {self.candidat.id} • Confessionnal : #{channel.name}")
+            
+            recap_str = "\n".join(lignes_recap)
+            if len(recap_str) > 3900:
+                await result_channel.send(f"📊 **RÉSULTATS DE L'ÉPREUVE — {self.candidat.mention}**")
+                for chunk in [recap_str[j:j+1900] for j in range(0, len(recap_str), 1900)]:
+                    await result_channel.send(chunk)
+            else:
+                await result_channel.send(embed=embed_recap_orga)
 
 
 @bot.tree.command(
-    name="preparer_epreuve_quiz",
-    description="Prépare l'épreuve avec option pour écraser la durée par question."
+    name="configurer_epreuve",
+    description="Étape 1 : Charge et enregistre la banque de questions pour tous les candidats."
 )
 @app_commands.describe(
-    candidat="Le candidat qui passera l'épreuve",
-    salon_questions="Le salon secret d'où extraire les questions",
-    temps_par_defaut="Optionnel : forcer le temps par question en secondes (écrase le doc)"
+    salon_questions="Le salon secret où se trouvent les questions",
+    temps_par_defaut="Temps par défaut en secondes si non spécifié (ex: 15)"
 )
 @app_commands.check(est_orga_ou_admin)
-async def preparer_epreuve_quiz(
+async def configurer_epreuve(
     interaction: discord.Interaction,
-    candidat: discord.Member,
     salon_questions: discord.TextChannel,
-    temps_par_defaut: int = None
+    temps_par_defaut: int = 15
 ):
     await interaction.response.defer(ephemeral=True)
+    global CONFIG_EPREUVE_GLOBALE
 
-    view = QuizLancementView(
-        source_channel=salon_questions, 
-        candidat=candidat, 
-        temps_override=temps_par_defaut
+    questions = []
+    async for msg in salon_questions.history(limit=25, oldest_first=False):
+        if not msg.author.bot and msg.content.strip():
+            for ligne in msg.content.strip().split("\n"):
+                ligne = ligne.strip()
+                if not ligne:
+                    continue
+                if "|" in ligne:
+                    parties = ligne.split("|")
+                    q_txt = parties[0].strip()
+                    try:
+                        t_sec = int(parties[1].strip())
+                    except ValueError:
+                        t_sec = temps_par_defaut
+                else:
+                    q_txt = ligne
+                    t_sec = temps_par_defaut
+                
+                questions.append({"question": q_txt, "secondes": t_sec})
+            if questions:
+                break
+
+    if not questions:
+        await interaction.followup.send("❌ Aucune question valide trouvée dans le salon source.", ephemeral=True)
+        return
+
+    CONFIG_EPREUVE_GLOBALE["questions"] = questions
+    CONFIG_EPREUVE_GLOBALE["temps_par_defaut"] = temps_par_defaut
+    CONFIG_EPREUVE_GLOBALE["active"] = True
+
+    await interaction.followup.send(
+        f"✅ **Configuration enregistrée avec succès !**\n"
+        f"- 📝 **{len(questions)} questions** chargées depuis {salon_questions.mention}.\n"
+        f"- ⏱️ **Temps de base :** `{temps_par_defaut}s` par question.\n"
+        f"- 📬 Les récaps seront envoyés sur <#{RESULTATS_CHANNEL_ID}>.\n\n"
+        f"👉 *Lance maintenant `/lancer_epreuve`.*",
+        ephemeral=True
     )
 
-    info_temps = f"\n⏱️ **Temps par question :** `{temps_par_defaut}s`" if temps_par_defaut else "\n⏱️ **Temps :** Défini selon chaque question (ou 15s par défaut)"
 
-    embed_invit = discord.Embed(
-        title="🏺 ÉPREUVE INDIVIDUELLE DE RAPIDITÉ",
-        description=(
-            f"Bienvenue {candidat.mention} pour ton épreuve.{info_temps}\n\n"
-            f"📌 **Consignes :**\n"
-            f"- Les questions vont s'enchaîner avec une pause entre chacune.\n"
-            f"- Écris ta réponse directement dans ce salon.\n"
-            f"- Dès que tu es prêt, clique sur le bouton ci-dessous pour lancer l'épreuve."
-        ),
-        color=discord.Color.dark_gold()
+@bot.tree.command(
+    name="lancer_epreuve",
+    description="Étape 2 : Déploie l'épreuve pour un candidat précis (ou en masse sur une catégorie)."
+)
+@app_commands.describe(
+    candidat="Optionnel : le candidat ciblé pour qui déployer l'épreuve",
+    salon_cible="Optionnel : le salon où déployer (par défaut : le salon actuel)",
+    nom_categorie="Optionnel : nom de la catégorie pour déployer dans tous les confessionnaux en masse"
+)
+@app_commands.check(est_orga_ou_admin)
+async def lancer_epreuve(
+    interaction: discord.Interaction,
+    candidat: discord.Member = None,
+    salon_cible: discord.TextChannel = None,
+    nom_categorie: str = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    if not CONFIG_EPREUVE_GLOBALE["active"] or not CONFIG_EPREUVE_GLOBALE["questions"]:
+        await interaction.followup.send("❌ Aucune épreuve n'est configurée. Lance d'abord `/configurer_epreuve`.", ephemeral=True)
+        return
+
+    # CAS 1 : Déploiement individuel
+    if candidat:
+        target_ch = salon_cible or interaction.channel
+        if not isinstance(target_ch, discord.TextChannel):
+            await interaction.followup.send("❌ Le salon cible doit être un salon textuel.", ephemeral=True)
+            return
+
+        view = GlobalQuizLancementView(candidat=candidat)
+        embed_invit = discord.Embed(
+            title="🏺 ÉPREUVE DE RAPIDITÉ",
+            description=(
+                f"Bienvenue {candidat.mention} pour ton épreuve.\n\n"
+                f"📌 **Consignes :**\n"
+                f"- Les questions s'enchaînent automatiquement.\n"
+                f"- Écris ta réponse directement ici.\n"
+                f"- Les questions et réponses s'effaceront au fur et à mesure pour la confidentialité.\n\n"
+                f"👉 **Clique sur le bouton vert ci-dessous dès que tu es prêt :**"
+            ),
+            color=discord.Color.dark_gold()
+        )
+
+        await target_ch.send(embed=embed_invit, view=view)
+        await interaction.followup.send(
+            f"🚀 **Épreuve déployée pour {candidat.mention}** dans {target_ch.mention} !",
+            ephemeral=True
+        )
+        return
+
+    # CAS 2 : Déploiement en masse par catégorie
+    if nom_categorie:
+        cat_clean = nettoyer_texte(nom_categorie)
+        category = discord.utils.find(lambda c: nettoyer_texte(c.name) == cat_clean, guild.categories)
+        if not category:
+            await interaction.followup.send(f"❌ Catégorie **{nom_categorie}** introuvable.", ephemeral=True)
+            return
+
+        salons_cibles = [ch for ch in category.channels if isinstance(ch, discord.TextChannel)]
+        deplois = 0
+
+        for ch in salons_cibles:
+            candidat_trouve = None
+            for cible, overwrite in ch.overwrites.items():
+                if isinstance(cible, discord.Member) and not cible.bot:
+                    candidat_trouve = cible
+                    break
+                elif isinstance(cible, discord.Role) and cible.name not in [ROLE_ORGAS_NAME, ROLE_SPECTATEURS_NAME, "@everyone"]:
+                    for m in ch.guild.members:
+                        if cible in m.roles and not m.bot:
+                            candidat_trouve = m
+                            break
+                    if candidat_trouve:
+                        break
+
+            if not candidat_trouve:
+                continue
+
+            view = GlobalQuizLancementView(candidat=candidat_trouve)
+            embed_invit = discord.Embed(
+                title="🏺 ÉPREUVE DE RAPIDITÉ",
+                description=(
+                    f"Bienvenue {candidat_trouve.mention} pour ton épreuve.\n\n"
+                    f"📌 **Consignes :**\n"
+                    f"- Les questions s'enchaînent automatiquement.\n"
+                    f"- Écris ta réponse directement ici.\n"
+                    f"- Les questions et réponses s'effaceront au fur et à mesure pour la confidentialité.\n\n"
+                    f"👉 **Clique sur le bouton vert ci-dessous dès que tu es prêt :**"
+                ),
+                color=discord.Color.dark_gold()
+            )
+
+            await ch.send(embed=embed_invit, view=view)
+            deplois += 1
+            await asyncio.sleep(0.4)
+
+        await interaction.followup.send(
+            f"🚀 **Épreuve déployée sur {deplois} salon(s)** de la catégorie **{category.name}** !",
+            ephemeral=True
+        )
+        return
+
+    await interaction.followup.send("❌ Veuillez renseigner un `candidat` ou un `nom_categorie`.", ephemeral=True)
+
+
+@bot.tree.command(
+    name="terminer_epreuve",
+    description="Étape 3 : Clôture définitivement l'épreuve en cours et réinitialise la configuration."
+)
+@app_commands.check(est_orga_ou_admin)
+async def terminer_epreuve(interaction: discord.Interaction):
+    global CONFIG_EPREUVE_GLOBALE
+    CONFIG_EPREUVE_GLOBALE["active"] = False
+    CONFIG_EPREUVE_GLOBALE["questions"] = []
+
+    await interaction.response.send_message(
+        "🛑 **Épreuve clôturée !**\n"
+        "- Les boutons encore actifs ne peuvent plus lancer de questions.\n"
+        "- La configuration en mémoire a été réinitialisée.",
+        ephemeral=True
     )
 
-    await interaction.channel.send(embed=embed_invit, view=view)
-    await interaction.followup.send("✅ Épreuve prête et déployée !", ephemeral=True)
-    
-# --- DÉMARRAGE DU BOT ---
+
+# ==========================================
+# DÉMARRAGE DU BOT
+# ==========================================
 bot.run(TOKEN)
