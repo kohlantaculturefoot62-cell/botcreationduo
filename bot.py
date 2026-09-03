@@ -1256,7 +1256,7 @@ CHRONOS_EN_COURS = {}
 
 @bot.tree.command(
     name="poser_question_flash",
-    description="Pose une question au confessionnal avec affichage XXL et compte à rebours dynamique."
+    description="Pose une question ultra-lisible avec compte à rebours dynamique."
 )
 @app_commands.describe(
     question="La question à poser au candidat",
@@ -1272,25 +1272,16 @@ async def poser_question_flash(
     now = datetime.datetime.now(datetime.timezone.utc)
     fin_timestamp = int((now + datetime.timedelta(seconds=secondes)).timestamp())
 
-    # Format ultra-visible avec titres géants Discord (# et ##)
-    description_visuelle = (
-        f"# ❓ QUESTION FLASH\n\n"
-        f"# **{question}**\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"### ⏳ Fin du temps imparti : <t:{fin_timestamp}:R>\n"
-        f"```yaml\n"
-        f"⏱️ DÉLAI STRICT : {secondes} SECONDES\n"
-        f"👉 RÉPONDS DIRECTEMENT SOUS CE MESSAGE\n"
-        f"```"
-    )
-
     embed_question = discord.Embed(
-        description=description_visuelle,
-        color=discord.Color.from_rgb(255, 69, 0)  # Rouge / Orange vif très visible
+        description=(
+            f"# {question}\n\n"
+            f"## ⏳ Fin du temps : <t:{fin_timestamp}:R>"
+        ),
+        color=discord.Color.from_rgb(255, 69, 0)
     )
-    embed_question.set_footer(text="Anti-triche actif • La 1ère réponse texte sera prise en compte.")
 
     await interaction.response.send_message(embed=embed_question)
+    original_msg = await interaction.original_response()
 
     def check(m: discord.Message):
         return m.channel.id == channel.id and not m.author.bot
@@ -1301,24 +1292,39 @@ async def poser_question_flash(
         reponse_msg = await bot.wait_for("message", timeout=secondes, check=check)
         temps_pris = round((datetime.datetime.now() - debut_time).total_seconds(), 2)
 
+        # Fige l'embed initial pour stopper le compte à rebours
+        embed_fige = discord.Embed(
+            description=(
+                f"# {question}\n\n"
+                f"## ⏱️ Répondu en `{temps_pris}s`"
+            ),
+            color=discord.Color.green()
+        )
+        await original_msg.edit(embed=embed_fige)
+
         embed_reponse = discord.Embed(
             description=(
-                f"# ✅ RÉPONSE ENREGISTRÉE\n\n"
-                f"👤 **Candidat :** {reponse_msg.author.mention}\n"
+                f"# ✅ RÉPONSE VALIDÉE\n\n"
                 f"💬 **Réponse :** `{reponse_msg.content}`\n"
-                f"⚡ **Temps de réaction :** `{temps_pris}s` / `{secondes}s`"
+                f"⚡ **Temps :** `{temps_pris}s`"
             ),
             color=discord.Color.green()
         )
         await channel.send(embed=embed_reponse)
 
     except asyncio.TimeoutError:
-        embed_fin = discord.Embed(
+        # Fige l'embed initial à la fin du temps
+        embed_timeout_fige = discord.Embed(
             description=(
-                f"# 🛑 TEMPS ÉCOULÉ !\n\n"
-                f"⏰ Les **{secondes} secondes** sont écoulées.\n"
-                f"❌ **Aucune réponse validée dans les temps.**"
+                f"# {question}\n\n"
+                f"## 🛑 TEMPS ÉCOULÉ"
             ),
+            color=discord.Color.dark_red()
+        )
+        await original_msg.edit(embed=embed_timeout_fige)
+
+        embed_fin = discord.Embed(
+            description="# 🛑 TEMPS ÉCOULÉ !",
             color=discord.Color.dark_red()
         )
         await channel.send(embed=embed_fin)
