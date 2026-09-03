@@ -1190,5 +1190,37 @@ async def tirage_binomes(
     )
     embed_final.set_footer(text="Que le meilleur binôme l'emporte.")
     await message_principal.edit(embed=embed_final)
+@bot.tree.command(
+    name="pause_taches",
+    description="Met en pause l'envoi automatique du récap du soir et des questions du matin."
+)
+@app_commands.check(est_orga_ou_admin)
+async def pause_taches(interaction: discord.Interaction):
+    if tache_recap_quotidien.is_running():
+        tache_recap_quotidien.stop()
+    if tache_questions_matin.is_running():
+        tache_questions_matin.stop()
+
+    await interaction.response.send_message(
+        "⏸️ **Tâches automatiques mises en pause :**\n- 🌙 Récap du soir (23h00) : **Arrêté**\n- 🎙️ Questions du matin (09h00) : **Arrêté**",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="reprendre_taches",
+    description="Réactive l'envoi automatique du récap du soir et des questions du matin."
+)
+@app_commands.check(est_orga_ou_admin)
+async def reprendre_taches(interaction: discord.Interaction):
+    if not tache_recap_quotidien.is_running():
+        tache_recap_quotidien.start()
+    if not tache_questions_matin.is_running():
+        tache_questions_matin.start()
+
+    await interaction.response.send_message(
+        "▶️ **Tâches automatiques réactivées :**\n- 🌙 Récap du soir (23h00) : **Actif**\n- 🎙️ Questions du matin (09h00) : **Actif**",
+        ephemeral=True
+    )
 # --- DÉMARRAGE DU BOT ---
 bot.run(TOKEN)
