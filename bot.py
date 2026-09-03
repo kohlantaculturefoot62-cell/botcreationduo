@@ -1244,5 +1244,162 @@ async def creer_vocal(
         f"👁️ Spectateurs configurés en écoute seule (micro & partage coupés).",
         ephemeral=True
     )
+
+# ========================================================
+# 12. CHRONOMÈTRES & ANTI-TRICHE
+# ========================================================
+
+# Dictionnaire pour stocker les départs des épreuves de recherche
+# {channel_id_or_target_id: start_datetime}
+CHRONOS_EN_COURS = {}
+
+
+@bot.tree.command(
+    name="poser_question_flash",
+    description="Pose une question au confessionnal avec compte à rebours dynamique en direct."
+)
+@app_commands.describe(
+    question="La question à poser au candidat",
+    secondes="Temps limite en secondes (ex: 15)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def poser_question_flash(
+    interaction: discord.Interaction,
+    question: str,
+    secondes: int = 15
+):
+    channel = interaction.channel
+    now = datetime.datetime.now(datetime.timezone.utc)
+    fin_timestamp = int((now + datetime.timedelta(seconds=secondes)).timestamp())
+
+    # Format timestamp Discord dynamique (<t:timestamp:R> s'actualise tout seul chez le joueur)
+    embed_question = discord.Embed(
+        title="⏱️ QUESTION FLASH — CHRONO EN COURS",
+        description=(
+            f"❓ **Question :**\n> **{question}**\n\n"
+            f"⏳ **Temps restant :** <t:{fin_timestamp}:R> *(soit {secondes}s max)*\n"
+            f"⚠️ *Écris ta réponse directement dans ce salon avant la fin du temps !*"
+        ),
+        color=discord.Color.gold()
+    )
+    embed_question.set_footer(text="Anti-triche actif • Seule la première réponse est prise en compte.")
+
+    # Envoi direct dans le salon pour que tout le monde voie le top départ
+    await interaction.response.send_message(embed=embed_question)
+
+    def check(m: discord.Message):
+        return m.channel.id == channel.id and not m.author.bot
+
+    debut_time = datetime.datetime.now()
+
+    try:
+        reponse_msg = await bot.wait_for("message", timeout=secondes, check=check)
+        temps_pris = round((datetime.datetime.now() - debut_time).total_seconds(), 2)
+
+        embed_reponse = discord.Embed(
+            title="📥 RÉPONSE ENREGISTRÉE !",
+            description=(
+                f"👤 **Candidat :** {reponse_msg.author.mention}\n"
+                f"💬 **Réponse donnée :** `{reponse_msg.content}`\n"
+                f"⚡ **Temps de réaction :** `{temps_pris}s` / `{secondes}s`"
+            ),
+            color=discord.Color.green()
+        )
+        await channel.send(embed=embed_reponse)
+
+    except asyncio.TimeoutError:
+        embed_fin = discord.Embed(
+            title="🛑 TEMPS ÉCOULÉ !",
+            description=(
+                f"⏰ Les **{secondes} secondes** sont écoulées !\n"
+                f"❌ Aucune réponse n'a été validée dans les temps."
+            ),
+            color=discord.Color.red()
+        )
+        await channel.send(embed=embed_fin)
+
+
+@bot.tree.command(
+    name="chrono_go",
+    description="Lance le top départ d'une épreuve de recherche/fouille et démarre le chronomètre."
+)
+@app_commands.describe(
+    cible="Le candidat ou l'équipe (ex: @Lucas ou @Jaune)",
+    epreuve="Nom ou objectif de l'épreuve"
+)
+@app_commands.check(est_orga_ou_admin)
+async def chrono_go(
+    interaction: discord.Interaction,
+    cible: discord.Role,
+    epreuve: str = "Épreuve de recherche"
+):
+    channel = interaction.channel
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
+    # On indexe le chrono par le salon et la cible pour éviter les collisions
+    cle = f"{channel.id}_{cible.id}"
+    CHRONOS_EN_COURS[cle] = datetime.datetime.now()
+
+    timestamp_actuel = int(now.timestamp())
+
+    embed = discord.Embed(
+        title="🟢 TOP DÉPART — CHRONOMÈTRE LANCÉ !",
+        description=(
+            f"🎯 **Épreuve :** {epreuve}\n"
+            f"👤 **Candidat / Équipe :** {cible.mention}\n\n"
+            f"⏱️ **Chronomètre en cours :** <t:{timestamp_actuel}:R>\n"
+            f"*(L'orga utilisera `/chrono_stop` dès validation de la trouvaille)*"
+        ),
+        color=discord.Color.green()
+    )
+    embed.set_footer(text="Que le meilleur gagne !")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(
+    name="chrono_stop",
+    description="Stoppe le chronomètre de l'épreuve et calcule le temps total exact."
+)
+@app_commands.describe(
+    cible="Le candidat ou l'équipe concernée (ex: @Lucas ou @Jaune)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def chrono_stop(
+    interaction: discord.Interaction,
+    cible: discord.Role
+):
+    channel = interaction.channel
+    cle = f"{channel.id}_{cible.id}"
+
+    if cle not in CHRONOS_EN_COURS:
+        await interaction.response.send_message(
+            f"❌ Aucun chronomètre en cours pour {cible.mention} dans ce salon.",
+            ephemeral=True
+        )
+        return
+
+    debut = CHRONOS_EN_COURS.pop(cle)
+    fin = datetime.datetime.now()
+    duree_totale = (fin - debut).total_seconds()
+
+    minutes = int(duree_totale // 60)
+    secondes = round(duree_totale % 60, 2)
+
+    if minutes > 0:
+        temps_affiche = f"{minutes} min {secondes} s"
+    else:
+        temps_affiche = f"{secondes} secondes"
+
+    embed = discord.Embed(
+        title="🏁 FIN DE L'ÉPREUVE — TEMPS VALIDÉ !",
+        description=(
+            f"👤 **Candidat / Équipe :** {cible.mention}\n\n"
+            f"⏱️ **Temps réalisé :** `{temps_affiche}`\n"
+            f"*(Précision brute : {round(duree_totale, 2)}s)*"
+        ),
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="Performance enregistrée par les Orgas.")
+    await interaction.response.send_message(embed=embed)
 # --- DÉMARRAGE DU BOT ---
 bot.run(TOKEN)
