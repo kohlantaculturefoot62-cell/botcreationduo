@@ -3,6 +3,7 @@ import re
 import itertools
 import asyncio
 import datetime
+import random
 import unicodedata
 from zoneinfo import ZoneInfo
 
@@ -47,15 +48,36 @@ CATEGORIES_CIBLES = [
     "destin lie"
 ]
 
+# Rôles génériques à ignorer pour trouver le rôle personnel du joueur
+ROLES_GENERIQUES_A_IGNORER = [
+    "arrivants",
+    "everyone",
+    "@everyone",
+    "candidat",
+    "candidats",
+    "spectateur",
+    "spectateurs",
+    "orga",
+    "orgas",
+    "admin",
+    "administrateur",
+    "bot",
+    "booster"
+]
+
 # Initialisation
 gemini_client = genai.Client(api_key=GEMINI_KEY)
 
 intents = discord.Intents.default()
 intents.guilds = True
 intents.message_content = True
-intents.members = True  # <-- AJOUTER CETTE LIGNE
+intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Variables globales en mémoire
+DERNIERS_BINOMES_TIRES = []
+ROLES_PERSO_EN_PAUSE = {}  # {member_id: role_id}
 
 
 # ==========================================
@@ -83,6 +105,12 @@ def nettoyer_texte(texte: str) -> str:
     return re.sub(r'\s+', ' ', texte_propre).strip()
 
 
+def formater_nom_salon(nom: str) -> str:
+    """Nettoie et formate un pseudo de serveur pour un nom de salon Discord valide."""
+    nom_clean = nettoyer_texte(nom)
+    return re.sub(r"[^a-z0-9_-]", "", nom_clean.replace(" ", "-"))
+
+
 def est_categorie_candidate(category: discord.CategoryChannel) -> bool:
     """Vérifie si le nom de la catégorie (nettoyé) contient l'un des mots-clés."""
     if not category:
@@ -106,6 +134,22 @@ def get_spectateur_overwrites() -> discord.PermissionOverwrite:
         use_external_stickers=False,
         send_voice_messages=False
     )
+
+
+def trouver_role_personnel(member: discord.Member, role_equipe: discord.Role = None) -> discord.Role:
+    """Trouve le rôle spécifique/personnel du joueur (ex: @Ugo)."""
+    roles_equipe_clean = nettoyer_texte(role_equipe.name) if role_equipe else ""
+    
+    for r in member.roles:
+        r_clean = nettoyer_texte(r.name)
+        if r.is_default() or (role_equipe and r.id == role_equipe.id):
+            continue
+        if role_equipe and r_clean == roles_equipe_clean:
+            continue
+        if any(ignore in r_clean for ignore in ROLES_GENERIQUES_A_IGNORER):
+            continue
+        return r
+    return None
 
 
 # =======================================================
@@ -293,7 +337,6 @@ async def on_ready():
     print(f"🤖 Bot connecté en tant que : {bot.user}")
 
 
-# Gestionnaire d'erreur pour bloquer les non-orgas
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
@@ -309,42 +352,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 # ==========================================
 # 4. COMMANDES DE GESTION DUOS & CANDIDATS
 # ==========================================
-# Rôles génériques à ignorer pour trouver le rôle personnel du joueur
-ROLES_GENERIQUES_A_IGNORER = [
-    "arrivants",
-    "everyone",
-    "@everyone",
-    "candidat",
-    "candidats",
-    "spectateur",
-    "spectateurs",
-    "orga",
-    "orgas",
-    "admin",
-    "administrateur",
-    "bot",
-    "booster"
-]
-
-
-def trouver_role_personnel(member: discord.Member, role_equipe: discord.Role) -> discord.Role:
-    """Trouve le rôle spécifique/personnel du joueur (ex: @Lucas)."""
-    roles_equipe_clean = nettoyer_texte(role_equipe.name)
-    
-    for r in member.roles:
-        r_clean = nettoyer_texte(r.name)
-        # On ignore @everyone, le rôle de l'équipe (ex: Jaune), et les rôles génériques
-        if r.is_default() or r.id == role_equipe.id:
-            continue
-        if r_clean == roles_equipe_clean:
-            continue
-        if any(ignore in r_clean for ignore in ROLES_GENERIQUES_A_IGNORER):
-            continue
-        
-        # Le premier rôle spécifique trouvé est son rôle perso
-        return r
-    return None
-
 
 @bot.tree.command(
     name="creer_duos", 
@@ -359,7 +366,6 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    # Récupération en temps réel via l'API pour contourner le cache vide
     membres = []
     async for member in guild.fetch_members(limit=None):
         if not member.bot and role_equipe in member.roles:
@@ -379,7 +385,8 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
         candidats_data.append({
             "member": m,
             "role": r_perso,
-            "name": (r_perso.name if r_perso else m.display_name).lower().replace(" ", "-")
+            "display_name": m.display_name,
+            "clean_name": formater_nom_salon(m.display_name)
         })
 
     # Gestion de la catégorie
@@ -418,13 +425,10 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
             guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
         }
 
-        # Candidat 1
-        overwrites[c1["member"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+        # Permissions : UNIQUEMENT les rôles perso (pas l'objet member)
         if c1["role"]:
             overwrites[c1["role"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
 
-        # Candidat 2
-        overwrites[c2["member"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
         if c2["role"]:
             overwrites[c2["role"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
 
@@ -436,7 +440,7 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
                 read_messages=True, view_channel=True, read_message_history=True, send_messages=True
             )
 
-        nom_salon = f"duo-{c1['name']}-{c2['name']}"
+        nom_salon = f"duo-{c1['clean_name']}-{c2['clean_name']}"
         await guild.create_text_channel(name=nom_salon, category=current_category, overwrites=overwrites)
         channel_count_in_current_cat += 1
 
@@ -446,6 +450,7 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
         f"✅ **Terminé !** **{total_duos} salons duos** créés dans la catégorie **{current_category.name}**.", 
         ephemeral=True
     )
+
 
 @bot.tree.command(
     name="eliminer_candidat", 
@@ -462,11 +467,11 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
 
     targeted_channels = []
     for channel in guild.text_channels:
-        if channel.name.startswith("duo-") and role_candidat in channel.overwrites:
+        if (channel.name.startswith("duo-") or channel.name.startswith("🔗・")) and role_candidat in channel.overwrites:
             targeted_channels.append(channel)
 
     if not targeted_channels:
-        await interaction.followup.send(f"ℹ️ Aucun salon duo actif trouvé pour le rôle {role_candidat.mention}.", ephemeral=True)
+        await interaction.followup.send(f"ℹ️ Aucun salon de duo/binôme actif trouvé pour le rôle {role_candidat.mention}.", ephemeral=True)
         return
 
     clean_arch_name = nettoyer_texte(NOM_CATEGORIE_ARCHIVE)
@@ -498,7 +503,8 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
                 read_messages=True, view_channel=True, read_message_history=True, send_messages=False
             )
 
-        new_name = f"🔒arch-{channel.name.replace('duo-', '')}"
+        nom_base = channel.name.replace("duo-", "").replace("🔗・", "")
+        new_name = f"🔒arch-{nom_base}"
         await channel.edit(
             name=new_name,
             category=current_archive_cat,
@@ -511,8 +517,8 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
 
     await interaction.followup.send(
         f"🏆 **Élimination enregistrée :** {role_candidat.mention}\n"
-        f"📦 **{archived_count} salons duos** ont été archivés dans **{current_archive_cat.name}**.\n"
-        f"🔒 Les deux candidats n'ont plus accès à ces salons.",
+        f"📦 **{archived_count} salons** ont été archivés dans **{current_archive_cat.name}**.\n"
+        f"🔒 Les candidats n'ont plus accès à ces salons.",
         ephemeral=True
     )
 
@@ -914,7 +920,43 @@ async def forcer_recap_jour(interaction: discord.Interaction):
     await generer_et_envoyer_recap_quotidien(interaction.guild, target_channel)
 
 
-import random
+# ==========================================
+# 8. CONTRÔLE DES TÂCHES PLANIFIÉES
+# ==========================================
+
+@bot.tree.command(
+    name="pause_taches",
+    description="Met en pause l'envoi automatique du récap du soir et des questions du matin."
+)
+@app_commands.check(est_orga_ou_admin)
+async def pause_taches(interaction: discord.Interaction):
+    if tache_recap_quotidien.is_running():
+        tache_recap_quotidien.stop()
+    if tache_questions_matin.is_running():
+        tache_questions_matin.stop()
+
+    await interaction.response.send_message(
+        "⏸️ **Tâches automatiques mises en pause :**\n- 🌙 Récap du soir (23h00) : **Arrêté**\n- 🎙️ Questions du matin (09h00) : **Arrêté**",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="reprendre_taches",
+    description="Réactive l'envoi automatique du récap du soir et des questions du matin."
+)
+@app_commands.check(est_orga_ou_admin)
+async def reprendre_taches(interaction: discord.Interaction):
+    if not tache_recap_quotidien.is_running():
+        tache_recap_quotidien.start()
+    if not tache_questions_matin.is_running():
+        tache_questions_matin.start()
+
+    await interaction.response.send_message(
+        "▶️ **Tâches automatiques réactivées :**\n- 🌙 Récap du soir (23h00) : **Actif**\n- 🎙️ Questions du matin (09h00) : **Actif**",
+        ephemeral=True
+    )
+
 
 # ==========================================
 # 9. ANIMATION DE TIRAGE AU SORT (BOULE NOIRE)
@@ -944,7 +986,6 @@ async def tirage_boules(
     guild = interaction.guild
     channel = interaction.channel
 
-    # Extraction des rôles/membres mentionnés
     role_ids = [int(r.strip("<@&>")) for r in participants.split() if r.startswith("<@&") and r.endswith(">")]
     candidats = [guild.get_role(r_id) for r_id in role_ids if guild.get_role(r_id) is not None]
 
@@ -956,12 +997,10 @@ async def tirage_boules(
         await interaction.response.send_message("❌ Le nombre de boules noires doit être compris entre 1 et le nombre de candidats - 1.", ephemeral=True)
         return
 
-    # Message de confirmation discret pour l'orga
     await interaction.response.send_message("🏺 Lancement du tirage au sort dans le salon...", ephemeral=True)
 
     symbole_sauve = couleur_sauveur.value if couleur_sauveur else "⚪ Blanche"
 
-    # Message d'ambiance public dans le salon
     embed_intro = discord.Embed(
         title="🏺 LE TIRAGE DES BOULES",
         description=(
@@ -978,11 +1017,9 @@ async def tirage_boules(
 
     await asyncio.sleep(4)
 
-    # Préparation du tirage aléatoire
     sac = (["⚫ Noire"] * nombre_boules_noires) + ([symbole_sauve] * (len(candidats) - nombre_boules_noires))
     random.shuffle(sac)
 
-    # Ordre de passage mélangé
     ordre_passage = list(candidats)
     random.shuffle(ordre_passage)
 
@@ -1006,11 +1043,8 @@ async def tirage_boules(
             color=discord.Color.orange() if not victimes_boule_noire else discord.Color.red()
         )
         await message_principal.edit(embed=embed_update)
-        
-        # Suspense de 3.5 secondes entre chaque tirage
         await asyncio.sleep(3.5)
 
-    # Annonce du verdict final
     mentions_victimes = ", ".join([v.mention for v in victimes_boule_noire])
     verdict_text = (
         f"{texte_revelations}"
@@ -1027,19 +1061,10 @@ async def tirage_boules(
     embed_final.set_footer(text="La sentence du tirage au sort est irrévocable.")
     await message_principal.edit(embed=embed_final)
 
+
 # ========================================================
 # 10. GESTION DES BINÔMES (DESTINS LIÉS EN 2 ÉTAPES)
 # ========================================================
-
-# Mémoire cache pour conserver le dernier tirage avant création des salons
-DERNIERS_BINOMES_TIRES = []
-
-
-def formater_nom_salon(nom: str) -> str:
-    """Nettoie et formate un pseudo de serveur pour un nom de salon Discord valide."""
-    nom_clean = nettoyer_texte(nom)
-    return re.sub(r"[^a-z0-9_-]", "", nom_clean.replace(" ", "-"))
-
 
 @bot.tree.command(
     name="tirer_binomes",
@@ -1060,7 +1085,6 @@ async def tirer_binomes(
     guild = interaction.guild
     channel = interaction.channel
 
-    # Récupération des membres
     membres_a = [m for m in role_equipe_a.members if not m.bot]
     membres_b = [m for m in role_equipe_b.members if not m.bot]
 
@@ -1077,7 +1101,6 @@ async def tirer_binomes(
 
     total_binomes = len(membres_a)
 
-    # Association avec le rôle personnel et récupération du pseudo serveur (display_name)
     candidats_a = [
         {
             "member": m,
@@ -1098,11 +1121,9 @@ async def tirer_binomes(
         for m in membres_b
     ]
 
-    # Tirage au sort
     random.shuffle(candidats_a)
     random.shuffle(candidats_b)
 
-    # Sauvegarde des paires en mémoire
     DERNIERS_BINOMES_TIRES = list(zip(candidats_a, candidats_b))
 
     await interaction.followup.send(
@@ -1141,7 +1162,7 @@ async def tirer_binomes(
         description=(
             f"{texte_binomes}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"👉 *Pour ouvrir les salons privés, utilisez la commande :*\n"
+            f"👉 *Pour ouvrir les salons privés, utilisez :*\n"
             f"`/creer_salons_binomes nom_categorie:🔥 DESTINS LIÉS`"
         ),
         color=discord.Color.green()
@@ -1202,13 +1223,10 @@ async def creer_salons_binomes(interaction: discord.Interaction, nom_categorie: 
             guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
         }
 
-        # Candidat A
-        overwrites[ca["member"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+        # Permissions : UNIQUEMENT les rôles personnels
         if ca["role"]:
             overwrites[ca["role"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
 
-        # Candidat B
-        overwrites[cb["member"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
         if cb["role"]:
             overwrites[cb["role"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
 
@@ -1220,7 +1238,6 @@ async def creer_salons_binomes(interaction: discord.Interaction, nom_categorie: 
                 read_messages=True, view_channel=True, read_message_history=True, send_messages=True
             )
 
-        # Format convivial avec emoji et pseudos de serveur
         nom_salon = f"🔗・{ca['clean_name']}-{cb['clean_name']}"
         salon = await guild.create_text_channel(name=nom_salon, category=current_category, overwrites=overwrites)
         channel_count_in_current_cat += 1
@@ -1228,45 +1245,107 @@ async def creer_salons_binomes(interaction: discord.Interaction, nom_categorie: 
 
         await asyncio.sleep(0.5)
 
-    # Réinitialisation du cache après création
     DERNIERS_BINOMES_TIRES = []
 
     await interaction.followup.send(
-        f"✅ **{total_salons} salons de binômes créés avec succès** dans **{current_category.name}** !\n\n" + "\n".join(salons_crees),
+        f"✅ **{total_salons} salons créés avec succès** dans **{current_category.name}** !\n\n" + "\n".join(salons_crees),
         ephemeral=True
     )
+
+
+# ========================================================
+# 11. GESTION DU CONSEIL (ISOLATION & RESTAURATION)
+# ========================================================
 
 @bot.tree.command(
-    name="pause_taches",
-    description="Met en pause l'envoi automatique du récap du soir et des questions du matin."
+    name="activer_conseil",
+    description="Isole une équipe pour le conseil : retire leurs rôles perso (accès camp & confessionnal uniquement)."
 )
+@app_commands.describe(role_equipe="L'équipe qui se rend au conseil (ex: @Jaune ou @Rouge)")
 @app_commands.check(est_orga_ou_admin)
-async def pause_taches(interaction: discord.Interaction):
-    if tache_recap_quotidien.is_running():
-        tache_recap_quotidien.stop()
-    if tache_questions_matin.is_running():
-        tache_questions_matin.stop()
+async def activer_conseil(interaction: discord.Interaction, role_equipe: discord.Role):
+    global ROLES_PERSO_EN_PAUSE
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
 
-    await interaction.response.send_message(
-        "⏸️ **Tâches automatiques mises en pause :**\n- 🌙 Récap du soir (23h00) : **Arrêté**\n- 🎙️ Questions du matin (09h00) : **Arrêté**",
+    membres_cibles = []
+    async for member in guild.fetch_members(limit=None):
+        if not member.bot and role_equipe in member.roles:
+            membres_cibles.append(member)
+
+    if not membres_cibles:
+        await interaction.followup.send(f"❌ Aucun candidat trouvé avec le rôle {role_equipe.mention}.", ephemeral=True)
+        return
+
+    isoles = 0
+    for m in membres_cibles:
+        r_perso = trouver_role_personnel(m, role_equipe)
+        if r_perso:
+            ROLES_PERSO_EN_PAUSE[m.id] = r_perso.id
+            try:
+                await m.remove_roles(r_perso, reason=f"Activation du Conseil pour {role_equipe.name}")
+                isoles += 1
+                await asyncio.sleep(0.3)
+            except Exception as e:
+                print(f"Erreur lors du retrait du rôle pour {m.display_name}: {e}")
+
+    await interaction.followup.send(
+        f"🔒 **Conseil Activé pour {role_equipe.mention} !**\n"
+        f"- **{isoles} candidat(s)** ont perdu temporairement leur rôle personnel.\n"
+        f"- Ils n'ont plus accès qu'à leur camp (`#discussion-generale`) et leur confessionnal.\n"
+        f"- Utilisez `/desactiver_conseil` avec ce même rôle d'équipe pour restaurer leurs salons après le conseil.",
         ephemeral=True
     )
 
 
 @bot.tree.command(
-    name="reprendre_taches",
-    description="Réactive l'envoi automatique du récap du soir et des questions du matin."
+    name="desactiver_conseil",
+    description="Restaure les rôles personnels des candidats d'une équipe après le conseil."
 )
+@app_commands.describe(role_equipe="L'équipe qui revient du conseil (ex: @Jaune ou @Rouge)")
 @app_commands.check(est_orga_ou_admin)
-async def reprendre_taches(interaction: discord.Interaction):
-    if not tache_recap_quotidien.is_running():
-        tache_recap_quotidien.start()
-    if not tache_questions_matin.is_running():
-        tache_questions_matin.start()
+async def desactiver_conseil(interaction: discord.Interaction, role_equipe: discord.Role):
+    global ROLES_PERSO_EN_PAUSE
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
 
-    await interaction.response.send_message(
-        "▶️ **Tâches automatiques réactivées :**\n- 🌙 Récap du soir (23h00) : **Actif**\n- 🎙️ Questions du matin (09h00) : **Actif**",
+    restaures = 0
+    async for member in guild.fetch_members(limit=None):
+        if member.bot or role_equipe not in member.roles:
+            continue
+
+        role_a_rendre = None
+
+        # 1. Recherche en mémoire
+        if member.id in ROLES_PERSO_EN_PAUSE:
+            role_id = ROLES_PERSO_EN_PAUSE[member.id]
+            role_a_rendre = guild.get_role(role_id)
+
+        # 2. Fallback automatique si le bot a redémarré (par correspondance de nom)
+        if not role_a_rendre:
+            nom_clean = nettoyer_texte(member.display_name)
+            for r in guild.roles:
+                if nettoyer_texte(r.name) == nom_clean and not any(ign in r.name.lower() for ign in ROLES_GENERIQUES_A_IGNORER):
+                    role_a_rendre = r
+                    break
+
+        if role_a_rendre and role_a_rendre not in member.roles:
+            try:
+                await member.add_roles(role_a_rendre, reason=f"Fin du Conseil pour {role_equipe.name}")
+                restaures += 1
+                if member.id in ROLES_PERSO_EN_PAUSE:
+                    del ROLES_PERSO_EN_PAUSE[member.id]
+                await asyncio.sleep(0.3)
+            except Exception as e:
+                print(f"Erreur lors de la remise du rôle à {member.display_name}: {e}")
+
+    await interaction.followup.send(
+        f"🔓 **Conseil Désactivé pour {role_equipe.mention} !**\n"
+        f"- **{restaures} candidat(s)** ont récupéré leur rôle personnel.\n"
+        f"- Leurs accès aux salons duos, binômes et discussions privées sont rouverts.",
         ephemeral=True
     )
+
+
 # --- DÉMARRAGE DU BOT ---
 bot.run(TOKEN)
