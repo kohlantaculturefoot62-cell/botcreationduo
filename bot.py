@@ -41,7 +41,10 @@ CATEGORIES_CIBLES = [
     "trio",
     "quatuor",
     "equipe rouge",
-    "equipe jaune"
+    "equipe jaune",
+    "destin lies",
+    "destins lies",
+    "destin lie"
 ]
 
 # Initialisation
