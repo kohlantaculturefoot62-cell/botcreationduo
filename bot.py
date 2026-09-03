@@ -19,8 +19,10 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 # Modèle économique et rapide Flash-Lite
 MODEL_NAME = "gemini-3.5-flash-lite"
 
-# Salon secret pour le journal quotidien et les fiches confessionnal
+# Salons & Catégories fixes
 RECAP_CHANNEL_ID = int(os.getenv("RECAP_CHANNEL_ID", 0))
+CATEGORY_TRIO_ID = 1541397070898921482
+CATEGORY_QUATUOR_ID = 1541397227744927835
 
 # Planification des tâches automatiques (Fuseau Paris)
 HEURE_RECAP = datetime.time(hour=23, minute=0, tzinfo=ZoneInfo("Europe/Paris"))
@@ -106,7 +108,7 @@ def nettoyer_texte(texte: str) -> str:
 
 
 def formater_nom_salon(nom: str) -> str:
-    """Nettoie et formate un pseudo de serveur pour un nom de salon Discord valide."""
+    """Nettoie et formate un pseudo ou nom de rôle pour un salon Discord."""
     nom_clean = nettoyer_texte(nom)
     return re.sub(r"[^a-z0-9_-]", "", nom_clean.replace(" ", "-"))
 
@@ -138,17 +140,29 @@ def get_spectateur_overwrites() -> discord.PermissionOverwrite:
 
 def trouver_role_personnel(member: discord.Member, role_equipe: discord.Role = None) -> discord.Role:
     """Trouve le rôle spécifique/personnel du joueur (ex: @Ugo)."""
-    roles_equipe_clean = nettoyer_texte(role_equipe.name) if role_equipe else ""
-    
+    nom_membre_clean = nettoyer_texte(member.display_name)
+    pseudo_global_clean = nettoyer_texte(member.name)
+    role_equipe_clean = nettoyer_texte(role_equipe.name) if role_equipe else ""
+
+    # 1. Correspondance exacte nom de rôle <-> pseudo
+    for r in member.roles:
+        if r.is_default():
+            continue
+        r_clean = nettoyer_texte(r.name)
+        if r_clean in (nom_membre_clean, pseudo_global_clean):
+            return r
+
+    # 2. Sinon, premier rôle valide non générique
     for r in member.roles:
         r_clean = nettoyer_texte(r.name)
         if r.is_default() or (role_equipe and r.id == role_equipe.id):
             continue
-        if role_equipe and r_clean == roles_equipe_clean:
+        if role_equipe and r_clean == role_equipe_clean:
             continue
-        if any(ignore in r_clean for ignore in ROLES_GENERIQUES_A_IGNORER):
+        if r_clean in [nettoyer_texte(ign) for ign in ROLES_GENERIQUES_A_IGNORER]:
             continue
         return r
+
     return None
 
 
@@ -378,7 +392,6 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
         )
         return
 
-    # Associer chaque membre à son rôle personnel
     candidats_data = []
     for m in membres:
         r_perso = trouver_role_personnel(m, role_equipe)
@@ -389,7 +402,6 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
             "clean_name": formater_nom_salon(m.display_name)
         })
 
-    # Gestion de la catégorie
     role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
     role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
 
@@ -404,7 +416,6 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
         current_category = await guild.create_category(nom_categorie)
         channel_count_in_current_cat = 0
 
-    # Combinaisons de duos
     duos = list(itertools.combinations(candidats_data, 2))
     total_duos = len(duos)
 
@@ -425,7 +436,7 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
             guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
         }
 
-        # Permissions : UNIQUEMENT les rôles perso (pas l'objet member)
+        # Permissions : Rôles perso UNIQUEMENT
         if c1["role"]:
             overwrites[c1["role"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
 
@@ -454,7 +465,7 @@ async def creer_duos(interaction: discord.Interaction, role_equipe: discord.Role
 
 @bot.tree.command(
     name="eliminer_candidat", 
-    description="Archive tous les salons duos d'un candidat éliminé et retire les accès des 2 participants."
+    description="Archive tous les salons duos d'un candidat éliminé et retire les accès des participants."
 )
 @app_commands.describe(role_candidat="Le rôle du candidat éliminé (ex: @Lucas)")
 @app_commands.check(est_orga_ou_admin)
@@ -467,11 +478,11 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
 
     targeted_channels = []
     for channel in guild.text_channels:
-        if (channel.name.startswith("duo-") or channel.name.startswith("🔗・")) and role_candidat in channel.overwrites:
+        if (channel.name.startswith("duo-") or channel.name.startswith("🔗・") or channel.name.startswith("🔺・") or channel.name.startswith("🔶・")) and role_candidat in channel.overwrites:
             targeted_channels.append(channel)
 
     if not targeted_channels:
-        await interaction.followup.send(f"ℹ️ Aucun salon de duo/binôme actif trouvé pour le rôle {role_candidat.mention}.", ephemeral=True)
+        await interaction.followup.send(f"ℹ️ Aucun salon actif trouvé pour le rôle {role_candidat.mention}.", ephemeral=True)
         return
 
     clean_arch_name = nettoyer_texte(NOM_CATEGORIE_ARCHIVE)
@@ -503,7 +514,7 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
                 read_messages=True, view_channel=True, read_message_history=True, send_messages=False
             )
 
-        nom_base = channel.name.replace("duo-", "").replace("🔗・", "")
+        nom_base = channel.name.replace("duo-", "").replace("🔗・", "").replace("🔺・", "").replace("🔶・", "")
         new_name = f"🔒arch-{nom_base}"
         await channel.edit(
             name=new_name,
@@ -523,8 +534,132 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
     )
 
 
+# ========================================================
+# 5. CRÉATION DE SALONS SPÉCIFIQUES (TRIOS & QUATUORS)
+# ========================================================
+
+@bot.tree.command(
+    name="creer_trio",
+    description="Crée un salon trio privé dans la catégorie dédiée à partir des 3 rôles choisis."
+)
+@app_commands.describe(
+    role_1="Rôle du premier candidat",
+    role_2="Rôle du deuxième candidat",
+    role_3="Rôle du troisième candidat"
+)
+@app_commands.check(est_orga_ou_admin)
+async def creer_trio(
+    interaction: discord.Interaction,
+    role_1: discord.Role,
+    role_2: discord.Role,
+    role_3: discord.Role
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    categorie = guild.get_channel(CATEGORY_TRIO_ID)
+    if not categorie or not isinstance(categorie, discord.CategoryChannel):
+        await interaction.followup.send(f"❌ Catégorie Trio introuvable (ID: `{CATEGORY_TRIO_ID}`).", ephemeral=True)
+        return
+
+    roles_choisis = [role_1, role_2, role_3]
+    if len(set(roles_choisis)) < 3:
+        await interaction.followup.send("❌ Veuillez spécifier 3 rôles distincts.", ephemeral=True)
+        return
+
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False, view_channel=False),
+        guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+    }
+
+    for r in roles_choisis:
+        overwrites[r] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+
+    if role_spectateurs:
+        overwrites[role_spectateurs] = get_spectateur_overwrites()
+
+    if role_orgas:
+        overwrites[role_orgas] = discord.PermissionOverwrite(
+            read_messages=True, view_channel=True, read_message_history=True, send_messages=True
+        )
+
+    noms = [formater_nom_salon(r.name) for r in roles_choisis]
+    nom_salon = f"🔺・{'-'.join(noms)}"
+
+    salon = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=overwrites)
+    await interaction.followup.send(
+        f"✅ **Trio créé avec succès :** {salon.mention} dans **{categorie.name}**\n"
+        f"👥 Rôles autorisés : {role_1.mention}, {role_2.mention}, {role_3.mention}",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="creer_quatuor",
+    description="Crée un salon quatuor privé dans la catégorie dédiée à partir des 4 rôles choisis."
+)
+@app_commands.describe(
+    role_1="Rôle du premier candidat",
+    role_2="Rôle du deuxième candidat",
+    role_3="Rôle du troisième candidat",
+    role_4="Rôle du quatrième candidat"
+)
+@app_commands.check(est_orga_ou_admin)
+async def creer_quatuor(
+    interaction: discord.Interaction,
+    role_1: discord.Role,
+    role_2: discord.Role,
+    role_3: discord.Role,
+    role_4: discord.Role
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    categorie = guild.get_channel(CATEGORY_QUATUOR_ID)
+    if not categorie or not isinstance(categorie, discord.CategoryChannel):
+        await interaction.followup.send(f"❌ Catégorie Quatuor introuvable (ID: `{CATEGORY_QUATUOR_ID}`).", ephemeral=True)
+        return
+
+    roles_choisis = [role_1, role_2, role_3, role_4]
+    if len(set(roles_choisis)) < 4:
+        await interaction.followup.send("❌ Veuillez spécifier 4 rôles distincts.", ephemeral=True)
+        return
+
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False, view_channel=False),
+        guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+    }
+
+    for r in roles_choisis:
+        overwrites[r] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+
+    if role_spectateurs:
+        overwrites[role_spectateurs] = get_spectateur_overwrites()
+
+    if role_orgas:
+        overwrites[role_orgas] = discord.PermissionOverwrite(
+            read_messages=True, view_channel=True, read_message_history=True, send_messages=True
+        )
+
+    noms = [formater_nom_salon(r.name) for r in roles_choisis]
+    nom_salon = f"🔶・{'-'.join(noms)}"
+
+    salon = await guild.create_text_channel(name=nom_salon, category=categorie, overwrites=overwrites)
+    await interaction.followup.send(
+        f"✅ **Quatuor créé avec succès :** {salon.mention} dans **{categorie.name}**\n"
+        f"👥 Rôles autorisés : {role_1.mention}, {role_2.mention}, {role_3.mention}, {role_4.mention}",
+        ephemeral=True
+    )
+
+
 # ==========================================
-# 5. COMMANDES DE SUPPRESSION & NETTOYAGE
+# 6. COMMANDES DE SUPPRESSION & NETTOYAGE
 # ==========================================
 
 @bot.tree.command(name="supprimer_categorie", description="Supprime une catégorie entière et ses salons.")
@@ -645,7 +780,7 @@ async def vider_categorie(interaction: discord.Interaction, nom_categorie: str):
 
 
 # ========================================================
-# 6. COMMANDES DE PERMISSIONS SPECTATEURS
+# 7. COMMANDES DE PERMISSIONS SPECTATEURS
 # ========================================================
 
 @bot.tree.command(
@@ -722,349 +857,8 @@ async def ajouter_spectateurs_categorie(interaction: discord.Interaction, nom_ca
 
 
 # ==========================================
-# 7. COMMANDES DE RÉSUMÉ IA & JOURNALISME
+# 8. GESTION DES BINÔMES (DESTINS LIÉS EN 2 ÉTAPES)
 # ==========================================
-
-@bot.tree.command(
-    name="resumer", 
-    description="Génère un résumé IA (court ou détaillé) des derniers messages du salon."
-)
-@app_commands.describe(
-    format="Choisissez entre un résumé synthétique/rapide ou une analyse complète",
-    limite="Nombre de messages récents à analyser (par défaut: 100)"
-)
-@app_commands.choices(format=[
-    app_commands.Choice(name="⚡ Résumé Court (Points clés rapides)", value="court"),
-    app_commands.Choice(name="📖 Résumé Long (Analyse détaillée & stratégique)", value="long")
-])
-@app_commands.check(est_orga_ou_admin)
-async def resumer(interaction: discord.Interaction, format: app_commands.Choice[str], limite: int = 100):
-    await interaction.response.defer(ephemeral=True)
-    channel = interaction.channel
-
-    messages = [msg async for msg in channel.history(limit=limite, oldest_first=True)]
-    user_messages = [msg for msg in messages if not msg.author.bot and msg.content.strip()]
-
-    if len(user_messages) < 3:
-        await interaction.followup.send("⚠️ Pas assez de messages pour générer un résumé pertinent.", ephemeral=True)
-        return
-
-    transcript = "\n".join([f"{msg.author.display_name}: {msg.content}" for msg in user_messages])
-
-    if format.value == "court":
-        prompt = (
-            "Tu es l'arbitre d'un jeu de stratégie. "
-            f"Voici la transcription des messages du salon #{channel.name} :\n\n"
-            f"{transcript}\n\n"
-            "Fais un résumé **TRÈS COURT, CONCIS ET DIRECT** en 3 à 5 bullet points maximum :\n"
-            "- 🎯 Sujet central en 1 phrase\n"
-            "- 🤝 Décisions / Alliances évoquées\n"
-            "- ⚠️ Orientations stratégiques ou cibles mentionnées\n"
-            "- 🎭 Dynamique des échanges (Accord, Réserves, Négociation)"
-        )
-    else:
-        prompt = (
-            "Tu es l'analyste stratégique d'un jeu d'aventure/téléréalité (type Koh-Lanta/Survivor/Secret Story). "
-            f"Voici la transcription des messages échangés dans le salon #{channel.name} :\n\n"
-            f"{transcript}\n\n"
-            "Fais un **RÉSUMÉ DÉTAILLÉ ET STRUCTURÉ** en français, avec les sections suivantes :\n"
-            "1. 🎯 **Analyse Thématique** (synthèse factuelle des sujets abordés)\n"
-            "2. 🤝 **Accords & Propositions** (qui propose quoi, points de convergence ou de divergence)\n"
-            "3. ⚠️ **Scénarios & Votes évoqués** (noms mentionnés, arguments avancés, alternatives)\n"
-            "4. 🎭 **Dynamique relationnelle** (postures observées, équilibre de la discussion)\n"
-            "5. 💬 **Citations ou Moments Clés** (phrases structurantes de l'échange)"
-        )
-
-    max_tentatives = 3
-    for tentative in range(max_tentatives):
-        try:
-            response = gemini_client.models.generate_content(
-                model=MODEL_NAME,
-                contents=prompt
-            )
-            summary_text = response.text
-
-            badge_titre = "⚡ Résumé Flash" if format.value == "court" else "📖 Résumé Détaillé"
-            embed = discord.Embed(
-                title=f"{badge_titre} — #{channel.name}",
-                description=summary_text,
-                color=discord.Color.gold() if format.value == "court" else discord.Color.purple()
-            )
-            embed.set_footer(text=f"Analyse basée sur les {len(user_messages)} messages (Tentative {tentative + 1}).")
-
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-
-        except Exception as e:
-            if "503" in str(e) and tentative < max_tentatives - 1:
-                await asyncio.sleep(2)
-            else:
-                await interaction.followup.send(f"❌ Les serveurs IA sont surchargés après {max_tentatives} tentatives. Réessayez plus tard.", ephemeral=True)
-                return
-
-
-@bot.tree.command(
-    name="resumer_conv_orga", 
-    description="Génère un résumé IA axé sur l'organisation et les décisions (pour le Staff)."
-)
-@app_commands.describe(
-    format="Choisissez entre un résumé synthétique ou un compte-rendu complet",
-    limite="Nombre de messages récents à analyser (par défaut: 100)"
-)
-@app_commands.choices(format=[
-    app_commands.Choice(name="⚡ Résumé Court (Décisions & Actions rapides)", value="court"),
-    app_commands.Choice(name="📖 Résumé Long (Compte-rendu détaillé)", value="long")
-])
-@app_commands.check(est_orga_ou_admin)
-async def resumer_conv_orga(interaction: discord.Interaction, format: app_commands.Choice[str], limite: int = 100):
-    await interaction.response.defer(ephemeral=True)
-    channel = interaction.channel
-
-    messages = [msg async for msg in channel.history(limit=limite, oldest_first=True)]
-    user_messages = [msg for msg in messages if not msg.author.bot and msg.content.strip()]
-
-    if len(user_messages) < 3:
-        await interaction.followup.send("⚠️ Pas assez de messages pour générer un compte-rendu pertinent.", ephemeral=True)
-        return
-
-    transcript = "\n".join([f"{msg.author.display_name}: {msg.content}" for msg in user_messages])
-
-    if format.value == "court":
-        prompt = (
-            "Tu es l'assistant de direction d'une équipe d'organisation d'un événement / jeu. "
-            f"Voici la transcription de la réunion/discussion de l'équipe dans le salon #{channel.name} :\n\n"
-            f"{transcript}\n\n"
-            "Fais un résumé **TRÈS COURT, CONCIS ET DIRECT** en 3 à 5 bullet points maximum :\n"
-            "- 🎯 Objectif/Sujet principal de la discussion\n"
-            "- 🛠️ Décisions importantes actées\n"
-            "- 📋 Actions à faire (Qui fait quoi ?)\n"
-            "- 📅 Prochaines étapes"
-        )
-    else:
-        prompt = (
-            "Tu es l'assistant de direction d'une équipe d'organisation d'un jeu / événement. "
-            f"Voici la transcription des échanges du staff dans le salon #{channel.name} :\n\n"
-            f"{transcript}\n\n"
-            "Rédige un **COMPTE-RENDU DÉTAILLÉ ET PROFESSIONNEL** en français, structuré avec les sections suivantes :\n"
-            "1. 🎯 **Sujets abordés** (Quels ont été les thèmes de la discussion ?)\n"
-            "2. 🛠️ **Décisions prises** (Qu'est-ce qui a été validé ou refusé par l'équipe ?)\n"
-            "3. 📋 **Répartition des tâches** (Qui est en charge de quoi ?)\n"
-            "4. 💡 **Idées & Propositions en attente** (Ce qui doit encore être discuté ou creusé)\n"
-            "5. 📅 **Prochaines étapes & Deadlines** (Ce qu'il reste à faire dans l'immédiat)"
-        )
-
-    max_tentatives = 3
-    for tentative in range(max_tentatives):
-        try:
-            response = gemini_client.models.generate_content(
-                model=MODEL_NAME,
-                contents=prompt
-            )
-            summary_text = response.text
-
-            badge_titre = "⚡ Compte-Rendu Flash" if format.value == "court" else "📖 Compte-Rendu Complet"
-            embed = discord.Embed(
-                title=f"{badge_titre} — #{channel.name}",
-                description=summary_text,
-                color=discord.Color.blue()
-            )
-            embed.set_footer(text=f"Analyse basée sur les {len(user_messages)} messages (Tentative {tentative + 1}).")
-
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-
-        except Exception as e:
-            if "503" in str(e) and tentative < max_tentatives - 1:
-                await asyncio.sleep(2)
-            else:
-                await interaction.followup.send(f"❌ Les serveurs IA sont surchargés après {max_tentatives} tentatives. Réessayez plus tard.", ephemeral=True)
-                return
-
-
-@bot.tree.command(
-    name="questions_confessionnal",
-    description="Génère des questions journalistiques objectives pour les confessionnaux (sur-mesure ou global)."
-)
-@app_commands.describe(candidat="Optionnel : mentionnez le rôle d'un candidat précis (laisser vide pour les profils clés du jour)")
-@app_commands.check(est_orga_ou_admin)
-async def questions_confessionnal(interaction: discord.Interaction, candidat: discord.Role = None):
-    await interaction.response.defer(ephemeral=True)
-
-    target_channel = bot.get_channel(RECAP_CHANNEL_ID) or interaction.channel
-    candidat_nom = candidat.name if candidat else None
-
-    resultat_text = await generer_questions_confessionnal(target_channel, candidat_nom)
-
-    titre = f"🎙️ Interview Confessionnal — {candidat.name}" if candidat else "🎙️ Suggestions Confessionnal du Jour"
-    embed = discord.Embed(
-        title=titre,
-        description=resultat_text,
-        color=discord.Color.red()
-    )
-    embed.set_footer(text="Généré par l'IA Journaliste • Réservé aux Orgas")
-
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(
-    name="forcer_recap_jour",
-    description="Génère immédiatement le journal stratégique global de tous les salons candidats des dernières 24h."
-)
-@app_commands.check(est_orga_ou_admin)
-async def forcer_recap_jour(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-
-    target_channel = bot.get_channel(RECAP_CHANNEL_ID) or interaction.channel
-    await interaction.followup.send(f"⏳ Analyse des salons candidats en cours pour {target_channel.mention}...", ephemeral=True)
-
-    await generer_et_envoyer_recap_quotidien(interaction.guild, target_channel)
-
-
-# ==========================================
-# 8. CONTRÔLE DES TÂCHES PLANIFIÉES
-# ==========================================
-
-@bot.tree.command(
-    name="pause_taches",
-    description="Met en pause l'envoi automatique du récap du soir et des questions du matin."
-)
-@app_commands.check(est_orga_ou_admin)
-async def pause_taches(interaction: discord.Interaction):
-    if tache_recap_quotidien.is_running():
-        tache_recap_quotidien.stop()
-    if tache_questions_matin.is_running():
-        tache_questions_matin.stop()
-
-    await interaction.response.send_message(
-        "⏸️ **Tâches automatiques mises en pause :**\n- 🌙 Récap du soir (23h00) : **Arrêté**\n- 🎙️ Questions du matin (09h00) : **Arrêté**",
-        ephemeral=True
-    )
-
-
-@bot.tree.command(
-    name="reprendre_taches",
-    description="Réactive l'envoi automatique du récap du soir et des questions du matin."
-)
-@app_commands.check(est_orga_ou_admin)
-async def reprendre_taches(interaction: discord.Interaction):
-    if not tache_recap_quotidien.is_running():
-        tache_recap_quotidien.start()
-    if not tache_questions_matin.is_running():
-        tache_questions_matin.start()
-
-    await interaction.response.send_message(
-        "▶️ **Tâches automatiques réactivées :**\n- 🌙 Récap du soir (23h00) : **Actif**\n- 🎙️ Questions du matin (09h00) : **Actif**",
-        ephemeral=True
-    )
-
-
-# ==========================================
-# 9. ANIMATION DE TIRAGE AU SORT (BOULE NOIRE)
-# ==========================================
-
-@bot.tree.command(
-    name="tirage_boules",
-    description="Lance le tirage au sort des boules (blanches / noires) avec animation et suspense."
-)
-@app_commands.describe(
-    participants="Mentionne les candidats participant au tirage (ex: @Sarah @Lucas @Maxime ...)",
-    nombre_boules_noires="Nombre de boules noires dans le sac (par défaut : 1)",
-    couleur_sauveur="Couleur des boules sécurisées (ex: Blanche ⚪, Rouge 🔴, Jaune 🟡)"
-)
-@app_commands.choices(couleur_sauveur=[
-    app_commands.Choice(name="⚪ Boule Blanche (Classique)", value="⚪ Blanche"),
-    app_commands.Choice(name="🔴 Boule Rouge (Équipe Rouge)", value="🔴 Rouge"),
-    app_commands.Choice(name="🟡 Boule Jaune (Équipe Jaune)", value="🟡 Jaune")
-])
-@app_commands.check(est_orga_ou_admin)
-async def tirage_boules(
-    interaction: discord.Interaction, 
-    participants: str, 
-    nombre_boules_noires: int = 1,
-    couleur_sauveur: app_commands.Choice[str] = None
-):
-    guild = interaction.guild
-    channel = interaction.channel
-
-    role_ids = [int(r.strip("<@&>")) for r in participants.split() if r.startswith("<@&") and r.endswith(">")]
-    candidats = [guild.get_role(r_id) for r_id in role_ids if guild.get_role(r_id) is not None]
-
-    if len(candidats) < 2:
-        await interaction.response.send_message("❌ Mentionnez au moins 2 rôles de candidats pour le tirage.", ephemeral=True)
-        return
-
-    if nombre_boules_noires >= len(candidats) or nombre_boules_noires < 1:
-        await interaction.response.send_message("❌ Le nombre de boules noires doit être compris entre 1 et le nombre de candidats - 1.", ephemeral=True)
-        return
-
-    await interaction.response.send_message("🏺 Lancement du tirage au sort dans le salon...", ephemeral=True)
-
-    symbole_sauve = couleur_sauveur.value if couleur_sauveur else "⚪ Blanche"
-
-    embed_intro = discord.Embed(
-        title="🏺 LE TIRAGE DES BOULES",
-        description=(
-            f"**{len(candidats)} aventuriers** s'avancent vers le sac pour sceller leur destin.\n\n"
-            f"📦 **Composition du sac :**\n"
-            f"- {len(candidats) - nombre_boules_noires}x {symbole_sauve}\n"
-            f"- {nombre_boules_noires}x ⚫ **Boule Noire**\n\n"
-            "*(Chaque aventurier va plonger sa main dans le sac...)*"
-        ),
-        color=discord.Color.dark_grey()
-    )
-    embed_intro.set_footer(text="Le destin est en marche...")
-    message_principal = await channel.send(embed=embed_intro)
-
-    await asyncio.sleep(4)
-
-    sac = (["⚫ Noire"] * nombre_boules_noires) + ([symbole_sauve] * (len(candidats) - nombre_boules_noires))
-    random.shuffle(sac)
-
-    ordre_passage = list(candidats)
-    random.shuffle(ordre_passage)
-
-    victimes_boule_noire = []
-    texte_revelations = ""
-
-    for i, candidat in enumerate(ordre_passage, 1):
-        boule_tiree = sac.pop()
-
-        if "Noire" in boule_tiree:
-            victimes_boule_noire.append(candidat)
-            symbole_affichage = "⚫ **BOULE NOIRE !**"
-        else:
-            symbole_affichage = f"{symbole_sauve} *(Sauf !)*"
-
-        texte_revelations += f"**{i}.** {candidat.mention} plonge sa main dans le sac...\n➡️ Résultat : {symbole_affichage}\n\n"
-
-        embed_update = discord.Embed(
-            title="🏺 LE TIRAGE DES BOULES — EN COURS",
-            description=texte_revelations,
-            color=discord.Color.orange() if not victimes_boule_noire else discord.Color.red()
-        )
-        await message_principal.edit(embed=embed_update)
-        await asyncio.sleep(3.5)
-
-    mentions_victimes = ", ".join([v.mention for v in victimes_boule_noire])
-    verdict_text = (
-        f"{texte_revelations}"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"☠️ **VERDICT DU DESTIN :**\n"
-        f"{mentions_victimes} {'ont' if len(victimes_boule_noire) > 1 else 'a'} tiré la **Boule Noire** !"
-    )
-
-    embed_final = discord.Embed(
-        title="🏺 LE TIRAGE DES BOULES — VERDICT FINAL",
-        description=verdict_text,
-        color=discord.Color.dark_red()
-    )
-    embed_final.set_footer(text="La sentence du tirage au sort est irrévocable.")
-    await message_principal.edit(embed=embed_final)
-
-
-# ========================================================
-# 10. GESTION DES BINÔMES (DESTINS LIÉS EN 2 ÉTAPES)
-# ========================================================
 
 @bot.tree.command(
     name="tirer_binomes",
@@ -1254,7 +1048,7 @@ async def creer_salons_binomes(interaction: discord.Interaction, nom_categorie: 
 
 
 # ========================================================
-# 11. GESTION DU CONSEIL (ISOLATION & RESTAURATION)
+# 9. GESTION DU CONSEIL (ISOLATION & RESTAURATION)
 # ========================================================
 
 @bot.tree.command(
@@ -1270,7 +1064,7 @@ async def activer_conseil(interaction: discord.Interaction, role_equipe: discord
 
     membres_cibles = []
     async for member in guild.fetch_members(limit=None):
-        if not member.bot and role_equipe in member.roles:
+        if not member.bot and role_equipe.id in [r.id for r in member.roles]:
             membres_cibles.append(member)
 
     if not membres_cibles:
@@ -1278,24 +1072,35 @@ async def activer_conseil(interaction: discord.Interaction, role_equipe: discord
         return
 
     isoles = 0
+    erreurs = []
+
     for m in membres_cibles:
         r_perso = trouver_role_personnel(m, role_equipe)
         if r_perso:
-            ROLES_PERSO_EN_PAUSE[m.id] = r_perso.id
+            if r_perso >= guild.me.top_role:
+                erreurs.append(f"⚠️ Le rôle {r_perso.name} est plus haut que le rôle du bot !")
+                continue
+            
             try:
                 await m.remove_roles(r_perso, reason=f"Activation du Conseil pour {role_equipe.name}")
+                ROLES_PERSO_EN_PAUSE[m.id] = r_perso.id
                 isoles += 1
                 await asyncio.sleep(0.3)
             except Exception as e:
-                print(f"Erreur lors du retrait du rôle pour {m.display_name}: {e}")
+                erreurs.append(f"❌ {m.display_name} : {e}")
+        else:
+            erreurs.append(f"❓ Aucun rôle personnel détecté pour **{m.display_name}**")
 
-    await interaction.followup.send(
+    texte_reponse = (
         f"🔒 **Conseil Activé pour {role_equipe.mention} !**\n"
-        f"- **{isoles} candidat(s)** ont perdu temporairement leur rôle personnel.\n"
+        f"- **{isoles}/{len(membres_cibles)} candidat(s)** ont perdu temporairement leur rôle personnel.\n"
         f"- Ils n'ont plus accès qu'à leur camp (`#discussion-generale`) et leur confessionnal.\n"
-        f"- Utilisez `/desactiver_conseil` avec ce même rôle d'équipe pour restaurer leurs salons après le conseil.",
-        ephemeral=True
     )
+
+    if erreurs:
+        texte_reponse += "\n**Détails / Alertes :**\n" + "\n".join(erreurs[:5])
+
+    await interaction.followup.send(texte_reponse, ephemeral=True)
 
 
 @bot.tree.command(
@@ -1316,12 +1121,10 @@ async def desactiver_conseil(interaction: discord.Interaction, role_equipe: disc
 
         role_a_rendre = None
 
-        # 1. Recherche en mémoire
         if member.id in ROLES_PERSO_EN_PAUSE:
             role_id = ROLES_PERSO_EN_PAUSE[member.id]
             role_a_rendre = guild.get_role(role_id)
 
-        # 2. Fallback automatique si le bot a redémarré (par correspondance de nom)
         if not role_a_rendre:
             nom_clean = nettoyer_texte(member.display_name)
             for r in guild.roles:
