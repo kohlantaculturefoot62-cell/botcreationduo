@@ -1256,7 +1256,7 @@ CHRONOS_EN_COURS = {}
 
 @bot.tree.command(
     name="poser_question_flash",
-    description="Pose une question au confessionnal avec compte à rebours dynamique en direct."
+    description="Pose une question au confessionnal avec affichage XXL et compte à rebours dynamique."
 )
 @app_commands.describe(
     question="La question à poser au candidat",
@@ -1272,19 +1272,24 @@ async def poser_question_flash(
     now = datetime.datetime.now(datetime.timezone.utc)
     fin_timestamp = int((now + datetime.timedelta(seconds=secondes)).timestamp())
 
-    # Format timestamp Discord dynamique (<t:timestamp:R> s'actualise tout seul chez le joueur)
-    embed_question = discord.Embed(
-        title="⏱️ QUESTION FLASH — CHRONO EN COURS",
-        description=(
-            f"❓ **Question :**\n> **{question}**\n\n"
-            f"⏳ **Temps restant :** <t:{fin_timestamp}:R> *(soit {secondes}s max)*\n"
-            f"⚠️ *Écris ta réponse directement dans ce salon avant la fin du temps !*"
-        ),
-        color=discord.Color.gold()
+    # Format ultra-visible avec titres géants Discord (# et ##)
+    description_visuelle = (
+        f"# ❓ QUESTION FLASH\n\n"
+        f"# **{question}**\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"### ⏳ Fin du temps imparti : <t:{fin_timestamp}:R>\n"
+        f"```yaml\n"
+        f"⏱️ DÉLAI STRICT : {secondes} SECONDES\n"
+        f"👉 RÉPONDS DIRECTEMENT SOUS CE MESSAGE\n"
+        f"```"
     )
-    embed_question.set_footer(text="Anti-triche actif • Seule la première réponse est prise en compte.")
 
-    # Envoi direct dans le salon pour que tout le monde voie le top départ
+    embed_question = discord.Embed(
+        description=description_visuelle,
+        color=discord.Color.from_rgb(255, 69, 0)  # Rouge / Orange vif très visible
+    )
+    embed_question.set_footer(text="Anti-triche actif • La 1ère réponse texte sera prise en compte.")
+
     await interaction.response.send_message(embed=embed_question)
 
     def check(m: discord.Message):
@@ -1297,10 +1302,10 @@ async def poser_question_flash(
         temps_pris = round((datetime.datetime.now() - debut_time).total_seconds(), 2)
 
         embed_reponse = discord.Embed(
-            title="📥 RÉPONSE ENREGISTRÉE !",
             description=(
+                f"# ✅ RÉPONSE ENREGISTRÉE\n\n"
                 f"👤 **Candidat :** {reponse_msg.author.mention}\n"
-                f"💬 **Réponse donnée :** `{reponse_msg.content}`\n"
+                f"💬 **Réponse :** `{reponse_msg.content}`\n"
                 f"⚡ **Temps de réaction :** `{temps_pris}s` / `{secondes}s`"
             ),
             color=discord.Color.green()
@@ -1309,15 +1314,14 @@ async def poser_question_flash(
 
     except asyncio.TimeoutError:
         embed_fin = discord.Embed(
-            title="🛑 TEMPS ÉCOULÉ !",
             description=(
-                f"⏰ Les **{secondes} secondes** sont écoulées !\n"
-                f"❌ Aucune réponse n'a été validée dans les temps."
+                f"# 🛑 TEMPS ÉCOULÉ !\n\n"
+                f"⏰ Les **{secondes} secondes** sont écoulées.\n"
+                f"❌ **Aucune réponse validée dans les temps.**"
             ),
-            color=discord.Color.red()
+            color=discord.Color.dark_red()
         )
         await channel.send(embed=embed_fin)
-
 
 @bot.tree.command(
     name="chrono_go",
