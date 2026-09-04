@@ -2129,20 +2129,24 @@ async def terminer_epreuve(interaction: discord.Interaction):
 
 
 # ========================================================
-# 15. FORMATAGE DES PRÉSENTATIONS (AVEC CORRECTION IA)
+# 15. EXTRACTION & CORRECTION IA DU CANDIDAT
 # ========================================================
 
-async def nettoyer_et_corriger_texte(texte: str) -> str:
-    """Corrige l'orthographe et la ponctuation tout en conservant scrupuleusement le style de l'auteur."""
+async def analyser_candidat_ia(texte: str) -> dict:
+    """Extrait le nom/prénom du candidat et applique une légère correction au texte."""
+    if not texte:
+        return {"nom": "", "texte": ""}
+
     prompt = (
-        "Tu es un relecteur professionnel.\n"
-        "Corrige uniquement les fautes d'orthographe, de grammaire et de ponctuation du texte ci-dessous.\n"
-        "RÈGLES STRICTES :\n"
-        "- Ne supprime aucune information.\n"
-        "- Ne reformule pas les phrases et ne change pas le style de l'auteur.\n"
-        "- Conserve les émojis s'il y en a.\n"
-        "- Renvoie UNIQUEMENT le texte corrigé et aéré en 1 ou 2 paragraphes, sans aucune phrase d'introduction.\n\n"
-        f"{texte}"
+        "Tu es l'arbitre d'un jeu d'aventure.\n"
+        "Un texte de présentation d'un candidat est fourni ci-dessous (ex: 'Je m'appelle Thomas...', 'Voici Sarah...', etc.).\n\n"
+        f"\"\"\"{texte}\"\"\"\n\n"
+        "Consignes STRICTES :\n"
+        "1. Extrais le prénom ou pseudo du candidat présenté.\n"
+        "2. Corrige la ponctuation et l'orthographe sans modifier le style ni supprimer d'éléments.\n\n"
+        "Format de réponse EXACT (2 lignes) :\n"
+        "NOM: [Prénom ou Pseudo]\n"
+        "TEXTE: [Texte corrigé]"
     )
 
     try:
@@ -2150,124 +2154,106 @@ async def nettoyer_et_corriger_texte(texte: str) -> str:
             model=MODEL_NAME,
             contents=prompt
         )
-        return response.text.strip()
+        lignes = response.text.strip().split("\n")
+        nom_trouve = ""
+        texte_propre = texte.strip()
+
+        for l in lignes:
+            if l.startswith("NOM:"):
+                nom_trouve = l.replace("NOM:", "").strip()
+            elif l.startswith("TEXTE:"):
+                texte_propre = l.replace("TEXTE:", "").strip()
+
+        return {
+            "nom": nom_trouve,
+            "texte": texte_propre if texte_propre else texte.strip()
+        }
     except Exception:
-        return texte.strip()
+        return {"nom": "", "texte": texte.strip()}
 
 
-def creer_embed_presentation(
-    membre: discord.Member,
-    texte_corrige: str,
-    image_url: str = None,
-    role_equipe: discord.Role = None
+def trouver_membre_serveur(guild: discord.Guild, nom_cherche: str) -> discord.Member:
+    """Retrouve le profil Discord du candidat (display_name, username ou rôle)."""
+    if not nom_cherche:
+        return None
+
+    nom_clean = nettoyer_texte(nom_cherche)
+
+    for m in guild.members:
+        if m.bot:
+            continue
+        m_display = nettoyer_texte(m.display_name)
+        m_user = nettoyer_texte(m.name)
+        if nom_clean in m_display or nom_clean in m_user:
+            return m
+
+    for r in guild.roles:
+        if nom_clean == nettoyer_texte(r.name) and not r.is_default():
+            for m in guild.members:
+                if r in m.roles and not m.bot:
+                    return m
+
+    return None
+
+
+def creer_embed_candidat_propre(
+    nom_affiche: str,
+    membre_discord: discord.Member,
+    texte: str,
+    image_url: str = None
 ) -> discord.Embed:
-    """Construit une fiche d'aventurier épurée avec photo large et avatar."""
+    """Génère l'embed visuel avec photo large et attribution d'équipe."""
     couleur = discord.Color.dark_teal()
     nom_equipe = ""
-    
-    if role_equipe:
-        nom_clean = nettoyer_texte(role_equipe.name)
-        if "rouge" in nom_clean:
-            couleur = discord.Color.from_rgb(220, 20, 60)
-        elif "jaune" in nom_clean:
-            couleur = discord.Color.from_rgb(255, 215, 0)
-        elif "bleu" in nom_clean:
-            couleur = discord.Color.from_rgb(30, 144, 255)
-        nom_equipe = f" • Tribu {role_equipe.name}"
+    avatar_url = None
+    mention_str = ""
+
+    if membre_discord:
+        avatar_url = membre_discord.display_avatar.url
+        mention_str = f"**Aventurier :** {membre_discord.mention}\n\n"
+
+        for r in membre_discord.roles:
+            nom_r = nettoyer_texte(r.name)
+            if "jaune" in nom_r:
+                couleur = discord.Color.from_rgb(255, 215, 0)
+                nom_equipe = f" • Tribu {r.name}"
+                break
+            elif "rouge" in nom_r:
+                couleur = discord.Color.from_rgb(220, 20, 60)
+                nom_equipe = f" • Tribu {r.name}"
+                break
+            elif "bleu" in nom_r:
+                couleur = discord.Color.from_rgb(30, 144, 255)
+                nom_equipe = f" • Tribu {r.name}"
+                break
 
     embed = discord.Embed(
-        title=f"🌴 {membre.display_name.upper()}{nom_equipe}",
-        description=f"**Aventurier :** {membre.mention}\n\n{texte_corrige}",
+        title=f"🌴 {nom_affiche.upper()}{nom_equipe}",
+        description=f"{mention_str}{texte}",
         color=couleur
     )
 
-    embed.set_thumbnail(url=membre.display_avatar.url)
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
 
     if image_url:
         embed.set_image(url=image_url)
 
-    embed.set_footer(
-        text="Aventure Survivor • Fiche de présentation",
-        icon_url=membre.guild.icon.url if membre.guild.icon else None
-    )
+    embed.set_footer(text="Aventure Survivor • Fiche Officielle")
     return embed
 
 
-@bot.tree.command(
-    name="formater_presentation",
-    description="Publie la présentation d'un message unique sous forme de fiche propre avec sa photo."
-)
-@app_commands.describe(
-    message_id_ou_lien="L'ID du message ou son lien Discord",
-    role_equipe="Optionnel : Rôle d'équipe du candidat (ex: @Jaune, @Rouge)",
-    salon_destination="Optionnel : salon où envoyer l'embed (par défaut : salon actuel)"
-)
-@app_commands.check(est_orga_ou_admin)
-async def formater_presentation(
-    interaction: discord.Interaction,
-    message_id_ou_lien: str,
-    role_equipe: discord.Role = None,
-    salon_destination: discord.TextChannel = None
-):
-    await interaction.response.defer(ephemeral=True)
-    guild = interaction.guild
-    dest_channel = salon_destination or interaction.channel
-
-    msg_id = message_id_ou_lien.strip().split("/")[-1]
-    try:
-        msg_id_int = int(msg_id)
-    except ValueError:
-        await interaction.followup.send("❌ Lien ou ID de message invalide.", ephemeral=True)
-        return
-
-    source_msg = None
-    try:
-        source_msg = await interaction.channel.fetch_message(msg_id_int)
-    except Exception:
-        for ch in guild.text_channels:
-            try:
-                source_msg = await ch.fetch_message(msg_id_int)
-                if source_msg:
-                    break
-            except Exception:
-                continue
-
-    if not source_msg:
-        await interaction.followup.send("❌ Message introuvable sur le serveur.", ephemeral=True)
-        return
-
-    texte_brut = source_msg.content.strip()
-    if not texte_brut:
-        await interaction.followup.send("❌ Le message ne contient aucun texte.", ephemeral=True)
-        return
-
-    image_url = None
-    if source_msg.attachments:
-        for att in source_msg.attachments:
-            if att.content_type and att.content_type.startswith("image/"):
-                image_url = att.url
-                break
-
-    texte_final = await nettoyer_et_corriger_texte(texte_brut)
-
-    embed = creer_embed_presentation(
-        membre=source_msg.author,
-        texte_corrige=texte_final,
-        image_url=image_url,
-        role_equipe=role_equipe
-    )
-
-    await dest_channel.send(embed=embed)
-    await interaction.followup.send(f"✅ Fiche publiée dans {dest_channel.mention} !", ephemeral=True)
-
+# ========================================================
+# 16. SCAN DU FIL PAR PAIRES (TEXTE ➔ IMAGE)
+# ========================================================
 
 @bot.tree.command(
     name="scanner_fil_presentations",
-    description="Extrait toutes les présentations et photos d'un fil (Thread) pour les publier sur le salon dédié."
+    description="Parcourt les paires (Texte ➔ Image) d'un fil pour générer chaque fiche candidat."
 )
 @app_commands.describe(
-    salon_destination="Le salon où afficher les fiches générées (ex: #presentation)",
-    fil="Optionnel : Le fil de discussion ciblé (par défaut : le fil actuel où la commande est tapée)"
+    salon_destination="Le salon où afficher les fiches finales (ex: #presentation)",
+    fil="Optionnel : Le fil contenant les présentations (par défaut : fil actuel)"
 )
 @app_commands.check(est_orga_ou_admin)
 async def scanner_fil_presentations(
@@ -2276,67 +2262,103 @@ async def scanner_fil_presentations(
     fil: discord.Thread = None
 ):
     await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
 
     source_thread = fil
     if not source_thread:
         if isinstance(interaction.channel, discord.Thread):
             source_thread = interaction.channel
         else:
-            await interaction.followup.send(
-                "❌ Merci de spécifier un fil de discussion ou d'exécuter la commande à l'intérieur d'un fil.",
-                ephemeral=True
-            )
+            await interaction.followup.send("❌ Exécute la commande dans le fil ou mentionne-le.", ephemeral=True)
             return
 
-    messages = [msg async for msg in source_thread.history(limit=100, oldest_first=True)]
-    messages_candidats = [
-        m for m in messages 
-        if not m.author.bot and (m.content.strip() or m.attachments)
-    ]
+    raw_messages = [msg async for msg in source_thread.history(limit=200, oldest_first=True)]
+    messages = [m for m in raw_messages if not m.author.bot and (m.content.strip() or m.attachments)]
 
-    if not messages_candidats:
-        await interaction.followup.send(f"❌ Aucun message trouvé dans le fil {source_thread.mention}.", ephemeral=True)
+    if not messages:
+        await interaction.followup.send("❌ Aucun message trouvé dans ce fil.", ephemeral=True)
         return
 
     await interaction.followup.send(
-        f"⏳ Extraction de **{len(messages_candidats)} présentations** depuis le fil {source_thread.mention} vers {salon_destination.mention}...",
+        f"⏳ Traitement des messages de {source_thread.mention} (Pattern Texte ➔ Photo)...",
         ephemeral=True
     )
 
-    compteur = 0
-    for msg in messages_candidats:
+    # 1. Extraction par paires séquentielles
+    paires_candidats = []
+    i = 0
+    total = len(messages)
+
+    while i < total:
+        msg = messages[i]
+        texte = msg.content.strip()
         image_url = None
+
         if msg.attachments:
             for att in msg.attachments:
                 if att.content_type and att.content_type.startswith("image/"):
                     image_url = att.url
                     break
 
-        texte_brut = msg.content.strip()
-        texte_final = await nettoyer_et_corriger_texte(texte_brut) if texte_brut else "*Présentation en image*"
+        # Cas standard : le message i est un texte, le message i+1 est sa photo
+        if texte and not image_url and (i + 1 < total):
+            next_msg = messages[i + 1]
+            if next_msg.attachments:
+                for att in next_msg.attachments:
+                    if att.content_type and att.content_type.startswith("image/"):
+                        image_url = att.url
+                        i += 1  # On consomme le message photo
+                        break
 
-        # Détection automatique de rôle d'équipe
-        role_equipe = None
-        for r in msg.author.roles:
-            nom_r = nettoyer_texte(r.name)
-            if any(eq in nom_r for eq in ["jaune", "rouge", "bleu", "tribu", "equipe"]):
-                role_equipe = r
-                break
+        if texte or image_url:
+            paires_candidats.append({"texte": texte, "image_url": image_url})
+        i += 1
 
-        embed = creer_embed_presentation(
-            membre=msg.author,
-            texte_corrige=texte_final,
-            image_url=image_url,
-            role_equipe=role_equipe
+    # 2. Analyse IA & Génération des fiches
+    fiches_finales = []
+    vus = set()
+
+    for item in paires_candidats:
+        if not item["texte"]:
+            continue
+
+        res_ia = await analyser_candidat_ia(item["texte"])
+        nom_detecte = res_ia["nom"]
+        texte_corrige = res_ia["texte"]
+
+        membre = trouver_membre_serveur(guild, nom_detecte)
+        cle_unique = membre.id if membre else (nettoyer_texte(nom_detecte) if nom_detecte else texte_corrige[:20])
+
+        if cle_unique in vus:
+            continue
+        vus.add(cle_unique)
+
+        nom_final = nom_detecte or (membre.display_name if membre else "Aventurier")
+
+        fiches_finales.append({
+            "nom": nom_final,
+            "membre": membre,
+            "texte": texte_corrige,
+            "image_url": item["image_url"]
+        })
+        await asyncio.sleep(0.4)
+
+    # 3. Publication sur le salon cible
+    for fiche in fiches_finales:
+        embed = creer_embed_candidat_propre(
+            nom_affiche=fiche["nom"],
+            membre_discord=fiche["membre"],
+            texte=fiche["texte"],
+            image_url=fiche["image_url"]
         )
-
         await salon_destination.send(embed=embed)
-        compteur += 1
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(1.2)
 
-    await salon_destination.send(f"✨ **{compteur} fiches d'aventuriers publiées avec succès !**")
-    await interaction.followup.send("✅ Extraction et publication terminées !", ephemeral=True)
-
+    await salon_destination.send(f"✨ **{len(fiches_finales)} aventuriers ont été présentés !**")
+    await interaction.followup.send(
+        f"✅ Succès ! **{len(fiches_finales)} fiches** publiées dans {salon_destination.mention}.",
+        ephemeral=True
+    )
 
 # ==========================================
 # DÉMARRAGE DU BOT
