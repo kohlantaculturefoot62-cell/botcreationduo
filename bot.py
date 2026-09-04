@@ -2487,7 +2487,140 @@ async def publier_derniere_presentation(
         f"✅ Dernière présentation publiée : **{prenom}** dans {salon_destination.mention} !",
         ephemeral=True
     )
+# ========================================================
+# 17. RELECTURE, REMPLACEMENT & ANALYSE D'AMBIGUÏTÉ
+# ========================================================
 
+SALON_REMARQUES_QUESTIONS_ID = 1545503543405060178
+
+async def traiter_et_analyser_questions_ia(lignes_brutes: list[str]) -> dict:
+    """Corrige la formulation (format abécédaire inclus) et analyse les ambiguïtés."""
+    texte_questions = "\n".join(lignes_brutes)
+
+    prompt = (
+        "Tu es l'arbitre en chef et concepteur d'épreuves de jeux télévisés (type Koh-Lanta / Survivor / Motus / Grand Concours).\n"
+        "Voici une liste de questions brutes rédigées par des organisateurs pour une épreuve.\n"
+        "NOTE IMPORTANTE : Il peut s'agir d'un Abécédaire (ex: 'A. Question dont la réponse commence par A', 'B - Question...', etc.) "
+        "ou de questions avec un temps alloué à la fin (ex: '... | 15').\n\n"
+        f"{texte_questions}\n\n"
+        "MISSIONS :\n"
+        "1. QUESTIONS_CORRIGEES : Réécris chaque question en corrigeant l'orthographe, la syntaxe et la ponctuation. "
+        "Conserve IMPÉRATIVEMENT les lettres d'abécédaire (A, B, C...) et les timers éventuels (| 15) à la fin. Ne change jamais le fond ni la réponse attendue.\n"
+        "2. ANALYSE_AMBIGUITE : Détecte les pièges, formulations floues, questions pouvant accepter plusieurs réponses valides non prévues, "
+        "ou incohérences avec la lettre de l'abécédaire.\n\n"
+        "Format STRICT attendu :\n"
+        "===QUESTIONS===\n"
+        "[Liste exacte des questions corrigées, une par ligne, sans numérotation ajoutée]\n"
+        "===ANALYSE===\n"
+        "[Remarques détaillées avec puces par question litigieuse, ou 'Aucune ambiguïté détectée. Questions claires.']"
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        rep = response.text.strip()
+
+        questions_corrigees = []
+        analyse_texte = "Aucune ambiguïté majeure détectée."
+
+        if "===QUESTIONS===" in rep and "===ANALYSE===" in rep:
+            parties = rep.split("===ANALYSE===")
+            partie_q = parties[0].replace("===QUESTIONS===", "").strip()
+            analyse_texte = parties[1].strip()
+            questions_corrigees = [q.strip() for q in partie_q.split("\n") if q.strip()]
+        else:
+            questions_corrigees = [l.strip() for l in rep.split("\n") if l.strip()]
+
+        return {
+            "questions": questions_corrigees if questions_corrigees else lignes_brutes,
+            "analyse": analyse_texte
+        }
+
+    except Exception as e:
+        print(f"Erreur analyse questions Gemini : {e}")
+        return {
+            "questions": lignes_brutes,
+            "analyse": f"⚠️ Erreur lors de l'analyse automatique : {e}"
+        }
+
+
+@bot.tree.command(
+    name="corriger_salon_questions",
+    description="Remplace le message brut par la version propre et envoie l'analyse des ambiguïtés aux orgas."
+)
+@app_commands.describe(
+    salon_questions="Optionnel : Le salon où se trouvent les questions (par défaut : salon actuel)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def corriger_salon_questions(
+    interaction: discord.Interaction,
+    salon_questions: discord.TextChannel = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    target_channel = salon_questions or interaction.channel
+
+    # 1. Recherche du dernier message contenant du texte
+    message_cible = None
+    async for msg in target_channel.history(limit=30, oldest_first=False):
+        if not msg.author.bot and msg.content.strip():
+            message_cible = msg
+            break
+
+    if not message_cible:
+        await interaction.followup.send(f"❌ Aucun message trouvé dans {target_channel.mention}.", ephemeral=True)
+        return
+
+    lignes = [l.strip() for l in message_cible.content.strip().split("\n") if l.strip()]
+    if not lignes:
+        await interaction.followup.send("❌ Le message cible ne contient pas de texte valide.", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        f"⏳ Traitement de **{len(lignes)} questions** (Correction + Audit d'ambiguïté)...",
+        ephemeral=True
+    )
+
+    # 2. Analyse et correction Gemini
+    resultat = await traiter_et_analyser_questions_ia(lignes)
+    questions_finales = resultat["questions"]
+    texte_questions_clean = "\n".join(questions_finales)
+
+    # 3. Remplacement du message d'origine dans le salon source
+    try:
+        await message_cible.delete()
+    except Exception as e:
+        print(f"Impossible de supprimer le message original : {e}")
+
+    await target_channel.send(texte_questions_clean)
+
+    # 4. Envoi du rapport d'ambiguïté dans le salon Orga dédié
+    salon_remarques = bot.get_channel(SALON_REMARQUES_QUESTIONS_ID)
+    if salon_remarques:
+        embed_remarques = discord.Embed(
+            title=f"🔎 AUDIT & AMBIGUÏTÉS — #{target_channel.name}",
+            description=resultat["analyse"],
+            color=discord.Color.orange()
+        )
+        embed_remarques.set_footer(text=f"Total : {len(questions_finales)} questions vérifiées.")
+
+        # Gestion du découpage si le rapport dépasse la limite Discord
+        if len(resultat["analyse"]) > 3900:
+            await salon_remarques.send(f"🔎 **AUDIT DES QUESTIONS — #{target_channel.name}**")
+            for chunk in [resultat["analyse"][i:i+1900] for i in range(0, len(resultat["analyse"]), 1900)]:
+                await salon_remarques.send(chunk)
+        else:
+            await salon_remarques.send(embed=embed_remarques)
+
+    await interaction.followup.send(
+        f"✅ **Terminé !**\n"
+        f"- Le message dans {target_channel.mention} a été remplacé par la version propre.\n"
+        f"- Le rapport d'ambiguïté a été transmis sur <#{SALON_REMARQUES_QUESTIONS_ID}>.",
+        ephemeral=True
+    )
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
