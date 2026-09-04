@@ -2129,50 +2129,49 @@ async def terminer_epreuve(interaction: discord.Interaction):
 
 
 # ========================================================
-# 15. PRÉSENTATIONS (EXTRACTION PYDANTIC & STRUCTURATION)
+# 15. PRÉSENTATIONS (EXTRACTION DIRECTE GEMINI)
 # ========================================================
 
-class ProfilCandidat(BaseModel):
-    prenom: str
-    texte_corrige: str
-
 async def analyser_candidat_ia(texte: str) -> dict:
-    """Extrait le prénom et nettoie le texte via le schéma structuré Pydantic de Gemini."""
+    """Demande directement le prénom et la correction à Gemini."""
     if not texte:
         return {"nom": "Candidat", "texte": ""}
 
-    prompt = (
-        "Lis cette présentation d'un participant à un jeu de survie/aventure :\n\n"
-        f"\"\"\"{texte}\"\"\"\n\n"
-        "1. Extrais UNIQUEMENT le prénom réel (ou le pseudo) de la personne qui se présente "
-        "(ex: si le texte dit 'Je m'appelle Thomas...', le prénom est 'Thomas'). "
-        "Ne mets jamais un pronom comme 'Je', 'Moi', ni 'Aventurier'.\n"
-        "2. Corrige les fautes d'orthographe et aère le texte sans changer le style."
+    # 1. On demande JUSTE le prénom
+    prompt_prenom = (
+        "Quel est le prénom du candidat dans cette présentation ? "
+        "Réponds UNIQUEMENT par le prénom, en un seul mot, sans rien d'autre.\n\n"
+        f"{texte}"
+    )
+
+    # 2. On demande la correction/mise en page
+    prompt_texte = (
+        "Corrige l'orthographe et aère cette présentation sans en changer le style ni les mots :\n\n"
+        f"{texte}"
     )
 
     try:
-        response = gemini_client.models.generate_content(
+        res_prenom = gemini_client.models.generate_content(
             model=MODEL_NAME,
-            contents=prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_schema": ProfilCandidat,
-            },
+            contents=prompt_prenom
         )
-        
-        data = json.loads(response.text)
-        prenom = data.get("prenom", "").strip().capitalize()
-        texte_propre = data.get("texte_corrige", "").strip()
+        prenom = res_prenom.text.strip().replace(".", "").replace(",", "").capitalize()
+    except Exception:
+        prenom = "Candidat"
 
-        return {
-            "nom": prenom if prenom else "Candidat",
-            "texte": texte_propre if texte_propre else texte.strip()
-        }
-    except Exception as e:
-        print(f"Erreur API Gemini : {e}")
-        match = re.search(r"(?:m'appelle|moi c'est|suis|prénom\s*:?)\s*([A-Za-zÀ-ÿ\-]+)", texte, re.IGNORECASE)
-        nom_secours = match.group(1).capitalize() if match else "Candidat"
-        return {"nom": nom_secours, "texte": texte.strip()}
+    try:
+        res_texte = gemini_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt_texte
+        )
+        texte_propre = res_texte.text.strip()
+    except Exception:
+        texte_propre = texte.strip()
+
+    return {
+        "nom": prenom,
+        "texte": texte_propre
+    }
 
 
 def creer_embed_presentation_pure(
@@ -2255,7 +2254,7 @@ async def formater_presentation(
 
 
 # ========================================================
-# 16. SCAN DU FIL PAR PAIRES (AVEC COMPTEUR DE JOUEURS)
+# 16. SCAN DU FIL PAR PAIRES (AVEC COMPTEUR DE CANDIDATS)
 # ========================================================
 
 @bot.tree.command(
@@ -2315,13 +2314,14 @@ async def scanner_fil_presentations(
                     image_url = att.url
                     break
 
+        # Si le message actuel est du texte et que le suivant contient l'image
         if texte and not image_url and (i + 1 < total):
             next_msg = messages[i + 1]
             if next_msg.attachments:
                 for att in next_msg.attachments:
                     if att.content_type and att.content_type.startswith("image/"):
                         image_url = att.url
-                        i += 1
+                        i += 1  # Consomme le message photo
                         break
 
         if texte:
@@ -2353,7 +2353,6 @@ async def scanner_fil_presentations(
         f"✅ Terminé ! **{total_publies}/{nombre_candidats} fiches** publiées dans {salon_destination.mention}.",
         ephemeral=True
     )
-
 
 # ==========================================
 # DÉMARRAGE DU BOT
