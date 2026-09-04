@@ -23,7 +23,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
 # Modèle économique et rapide Flash
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-3.5-flash-lite"
 
 # Salons & Catégories fixes
 RECAP_CHANNEL_ID = int(os.getenv("RECAP_CHANNEL_ID", 0))
