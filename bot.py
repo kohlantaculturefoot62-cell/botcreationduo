@@ -2416,7 +2416,77 @@ async def scanner_fil_presentations(
         f"✅ Terminé ! **{total_publies}/{nombre_candidats} fiches** publiées dans {salon_destination.mention}.",
         ephemeral=True
     )
+# ========================================================
+# PUBLIER UNIQUEMENT LA DERNIÈRE PRÉSENTATION DU FIL
+# ========================================================
 
+@bot.tree.command(
+    name="publier_derniere_presentation",
+    description="Extrait et publie uniquement la toute dernière présentation postée dans le fil."
+)
+@app_commands.describe(
+    salon_destination="Le salon où afficher la fiche (ex: #presentation)",
+    fil="Optionnel : Le fil contenant la présentation (par défaut : fil actuel)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def publier_derniere_presentation(
+    interaction: discord.Interaction,
+    salon_destination: discord.TextChannel,
+    fil: discord.Thread = None
+):
+    await interaction.response.defer(ephemeral=True)
+
+    source_thread = fil or (interaction.channel if isinstance(interaction.channel, discord.Thread) else None)
+    if not source_thread:
+        await interaction.followup.send("❌ Exécute la commande dans le fil ou mentionne-le.", ephemeral=True)
+        return
+
+    # Récupère les derniers messages du fil (du plus récent au plus ancien)
+    raw_messages = [msg async for msg in source_thread.history(limit=15, oldest_first=False)]
+    messages = [m for m in raw_messages if not m.author.bot and (m.content.strip() or m.attachments)]
+
+    if not messages:
+        await interaction.followup.send("❌ Aucun message récent trouvé dans ce fil.", ephemeral=True)
+        return
+
+    texte = None
+    image_url = None
+
+    # Parcourt du plus récent au plus ancien pour attraper la dernière paire
+    for msg in messages:
+        if not image_url and msg.attachments:
+            for att in msg.attachments:
+                if att.content_type and att.content_type.startswith("image/"):
+                    image_url = att.url
+                    break
+        
+        if not texte and msg.content.strip():
+            texte = msg.content.strip()
+
+        # Dès qu'on a trouvé le texte le plus récent, on a notre candidat
+        if texte:
+            break
+
+    if not texte:
+        await interaction.followup.send("❌ Impossible de trouver un texte de présentation récent.", ephemeral=True)
+        return
+
+    # Extraction et formatage par Gemini
+    res_ia = await analyser_candidat_ia(texte)
+    prenom = res_ia["nom"]
+    texte_corrige = res_ia["texte"]
+
+    embed = creer_embed_presentation_pure(
+        prenom=prenom,
+        texte=texte_corrige,
+        image_url=image_url
+    )
+
+    await salon_destination.send(embed=embed)
+    await interaction.followup.send(
+        f"✅ Dernière présentation publiée : **{prenom}** dans {salon_destination.mention} !",
+        ephemeral=True
+    )
 
 # ==========================================
 # DÉMARRAGE DU BOT
