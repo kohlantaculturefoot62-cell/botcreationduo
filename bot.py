@@ -1783,7 +1783,7 @@ async def chrono_stop(
 
 
 # ========================================================
-# 14. QUIZ & ÉPREUVES AUTOMATISÉES
+# 14. QUIZ & ÉPREUVES AUTOMATISÉES (TEMPS TOTAL & GRAND FORMAT)
 # ========================================================
 
 class GlobalQuizLancementView(discord.ui.View):
@@ -1831,7 +1831,7 @@ class GlobalQuizLancementView(discord.ui.View):
         resultats = []
 
         for i, q in enumerate(questions, 1):
-            # 1. Vérification si une pause a été déclenchée par un orga avant cette question
+            # Vérification de pause avant d'afficher la question
             if ETATS_EPREUVES_SALONS.get(channel.id, {}).get("pause_demandee"):
                 embed_pause = discord.Embed(
                     title="⏸️ ÉPREUVE EN PAUSE",
@@ -1861,13 +1861,13 @@ class GlobalQuizLancementView(discord.ui.View):
             now = datetime.datetime.now(datetime.timezone.utc)
             fin_timestamp = int((now + datetime.timedelta(seconds=duree_totale)).timestamp())
 
-            # Affichage clair et garanti sur tous les appareils
+            # Format géant (H1 & H2) ultra-visible
             embed_q = discord.Embed(
-                title=f"📋 Question {i} / {len(questions)}",
                 description=(
-                    f"**{q['question']}**\n\n"
-                    f"⏱️ **Temps alloué :** `{duree_totale}s`\n"
-                    f"⏳ **Fin du chrono :** <t:{fin_timestamp}:R> *(à <t:{fin_timestamp}:T>)*"
+                    f"### 📋 Question {i} / {len(questions)}\n"
+                    f"# {q['question']}\n\n"
+                    f"## ⏳ Fin : <t:{fin_timestamp}:R>\n"
+                    f"*(Temps alloué : `{duree_totale}s`)*"
                 ),
                 color=discord.Color.from_rgb(255, 69, 0)
             )
@@ -1879,18 +1879,18 @@ class GlobalQuizLancementView(discord.ui.View):
             debut_question = time.perf_counter()
             reponse_recue = False
             reponse_msg = None
-            temps_pris = duree_totale
+            temps_pris_num = float(duree_totale)
 
             try:
                 reponse_msg = await bot.wait_for("message", timeout=duree_totale, check=check_reponse)
-                temps_pris = round(time.perf_counter() - debut_question, 2)
+                temps_pris_num = round(time.perf_counter() - debut_question, 2)
                 reponse_recue = True
 
                 embed_valide = discord.Embed(
-                    title=f"📋 Question {i} / {len(questions)}",
                     description=(
-                        f"**{q['question']}**\n\n"
-                        f"✅ **Réponse enregistrée en `{temps_pris}s`**"
+                        f"### 📋 Question {i} / {len(questions)}\n"
+                        f"# {q['question']}\n\n"
+                        f"## ✅ Répondu en `{temps_pris_num}s`"
                     ),
                     color=discord.Color.green()
                 )
@@ -1900,16 +1900,17 @@ class GlobalQuizLancementView(discord.ui.View):
                     "index": i,
                     "question": q["question"],
                     "reponse": reponse_msg.content,
-                    "temps_pris": f"{temps_pris}s",
+                    "temps_num": temps_pris_num,
+                    "temps_pris": f"{temps_pris_num}s",
                     "statut": "✅ Répondu"
                 })
 
             except asyncio.TimeoutError:
                 embed_timeout = discord.Embed(
-                    title=f"📋 Question {i} / {len(questions)}",
                     description=(
-                        f"**{q['question']}**\n\n"
-                        f"🛑 **TEMPS ÉCOULÉ !**"
+                        f"### 📋 Question {i} / {len(questions)}\n"
+                        f"# {q['question']}\n\n"
+                        f"## 🛑 TEMPS ÉCOULÉ !"
                     ),
                     color=discord.Color.dark_red()
                 )
@@ -1919,6 +1920,7 @@ class GlobalQuizLancementView(discord.ui.View):
                     "index": i,
                     "question": q["question"],
                     "reponse": "*Aucune réponse*",
+                    "temps_num": temps_pris_num,
                     "temps_pris": f"{duree_totale}s",
                     "statut": "❌ Hors délai"
                 })
@@ -1932,7 +1934,7 @@ class GlobalQuizLancementView(discord.ui.View):
             except Exception:
                 pass
 
-            # 2. Sas de transition anti-débordement entre questions (4 secondes)
+            # Sas de transition anti-débordement entre questions (4 secondes)
             if i < len(questions) and not ETATS_EPREUVES_SALONS.get(channel.id, {}).get("pause_demandee"):
                 embed_tampon = discord.Embed(
                     description=f"⏳ **Question suivante ({i + 1}/{len(questions)}) dans quelques instants...**",
@@ -1960,30 +1962,53 @@ class GlobalQuizLancementView(discord.ui.View):
         # Nettoyage de l'état du salon
         ETATS_EPREUVES_SALONS.pop(channel.id, None)
 
+        # Calcul du temps total cumulé
+        temps_total_brut = sum(r["temps_num"] for r in resultats)
+        minutes = int(temps_total_brut // 60)
+        secondes_restantes = round(temps_total_brut % 60, 2)
+        
+        if minutes > 0:
+            temps_total_texte = f"{minutes} min {secondes_restantes} s"
+        else:
+            temps_total_texte = f"{round(temps_total_brut, 2)} s"
+
+        # Message au joueur
         embed_fin_joueur = discord.Embed(
             title="🏁 ÉPREUVE TERMINÉE",
-            description="Tes réponses et tes temps ont bien été transmis aux Organisateurs. Merci !",
+            description=(
+                f"Tes réponses ont bien été transmises aux Organisateurs.\n"
+                f"⏱️ **Temps total cumulé :** `{temps_total_texte}`\n\nMerci !"
+            ),
             color=discord.Color.green()
         )
         await channel.send(embed=embed_fin_joueur)
 
+        # Envoi des résultats complets au salon Orga
         result_channel = bot.get_channel(RESULTATS_CHANNEL_ID)
         if result_channel:
-            lignes_recap = []
+            bonnes_reponses = sum(1 for r in resultats if r["statut"] == "✅ Répondu")
+            
+            lignes_recap = [
+                f"⏱️ **TEMPS TOTAL CUMULÉ :** `{temps_total_texte}` *({round(temps_total_brut, 2)}s)*",
+                f"🎯 **Taux de complétion :** `{bonnes_reponses}/{len(resultats)} dans les temps`\n",
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+            ]
+
             for r in resultats:
                 lignes_recap.append(
                     f"**Q{r['index']}. {r['question']}**\n"
                     f"💬 `{r['reponse']}` ({r['statut']} en `{r['temps_pris']}`)\n"
                 )
 
+            recap_str = "\n".join(lignes_recap)
+
             embed_recap_orga = discord.Embed(
                 title=f"📊 RÉSULTATS ÉPREUVE — {self.candidat.display_name}",
-                description="\n".join(lignes_recap),
+                description=recap_str if len(recap_str) <= 3900 else None,
                 color=discord.Color.gold()
             )
-            embed_recap_orga.set_footer(text=f"ID Candidat : {self.candidat.id} • Confessionnal : #{channel.name}")
+            embed_recap_orga.set_footer(text=f"Temps total : {temps_total_texte} • ID : {self.candidat.id} • #{channel.name}")
 
-            recap_str = "\n".join(lignes_recap)
             if len(recap_str) > 3900:
                 await result_channel.send(f"📊 **RÉSULTATS DE L'ÉPREUVE — {self.candidat.mention}**")
                 for chunk in [recap_str[j:j+1900] for j in range(0, len(recap_str), 1900)]:
@@ -2209,7 +2234,6 @@ async def terminer_epreuve(interaction: discord.Interaction):
         "- La configuration en mémoire a été réinitialisée.",
         ephemeral=True
     )
-
 
 # ========================================================
 # 15. PRÉSENTATIONS (EXTRACTION PAR IA)
