@@ -20,7 +20,7 @@ from google import genai
 TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-# Modèle d'origine inchangé
+# Modèle d'origine
 MODEL_NAME = "gemini-3.5-flash-lite"
 
 # Salons & Catégories fixes
@@ -28,6 +28,7 @@ RECAP_CHANNEL_ID = int(os.getenv("RECAP_CHANNEL_ID", 0))
 CATEGORY_TRIO_ID = 1541397070898921482
 CATEGORY_QUATUOR_ID = 1541397227744927835
 RESULTATS_CHANNEL_ID = 1545186500960985148
+SALON_REMARQUES_QUESTIONS_ID = 1545503543405060178
 
 # Planification des tâches automatiques (Fuseau Paris)
 HEURE_RECAP = datetime.time(hour=23, minute=0, tzinfo=ZoneInfo("Europe/Paris"))
@@ -93,6 +94,9 @@ CONFIG_EPREUVE_GLOBALE = {
     "temps_par_defaut": 15,
     "active": False
 }
+
+# Suivi de l'état d'épreuve par salon : {channel_id: {"pause_demandee": bool, "event": asyncio.Event}}
+ETATS_EPREUVES_SALONS = {}
 
 
 # ==========================================
@@ -260,7 +264,8 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
     max_tentatives = 3
     for tentative in range(max_tentatives):
         try:
-            response = gemini_client.models.generate_content(
+            response = await asyncio.to_thread(
+                gemini_client.models.generate_content,
                 model=MODEL_NAME,
                 contents=prompt
             )
@@ -325,7 +330,8 @@ async def generer_questions_confessionnal(target_recap_channel: discord.TextChan
     max_tentatives = 3
     for tentative in range(max_tentatives):
         try:
-            response = gemini_client.models.generate_content(
+            response = await asyncio.to_thread(
+                gemini_client.models.generate_content,
                 model=MODEL_NAME,
                 contents=prompt
             )
@@ -1033,7 +1039,8 @@ async def resumer(interaction: discord.Interaction, format: app_commands.Choice[
     max_tentatives = 3
     for tentative in range(max_tentatives):
         try:
-            response = gemini_client.models.generate_content(
+            response = await asyncio.to_thread(
+                gemini_client.models.generate_content,
                 model=MODEL_NAME,
                 contents=prompt
             )
@@ -1111,7 +1118,8 @@ async def resumer_conv_orga(interaction: discord.Interaction, format: app_comman
     max_tentatives = 3
     for tentative in range(max_tentatives):
         try:
-            response = gemini_client.models.generate_content(
+            response = await asyncio.to_thread(
+                gemini_client.models.generate_content,
                 model=MODEL_NAME,
                 contents=prompt
             )
@@ -1633,9 +1641,10 @@ async def poser_question_flash(
     fin_timestamp = int((now + datetime.timedelta(seconds=secondes)).timestamp())
 
     embed_question = discord.Embed(
+        title="⚡ QUESTION FLASH",
         description=(
-            f"# {question}\n\n"
-            f"## ⏳ Fin du temps : <t:{fin_timestamp}:R>"
+            f"**{question}**\n\n"
+            f"⏳ **Fin du chrono :** <t:{fin_timestamp}:R> *(à <t:{fin_timestamp}:T>)*"
         ),
         color=discord.Color.from_rgb(255, 69, 0)
     )
@@ -1653,17 +1662,18 @@ async def poser_question_flash(
         temps_pris = round((datetime.datetime.now() - debut_time).total_seconds(), 2)
 
         embed_fige = discord.Embed(
+            title="⚡ QUESTION FLASH",
             description=(
-                f"# {question}\n\n"
-                f"## ⏱️ Répondu en `{temps_pris}s`"
+                f"**{question}**\n\n"
+                f"⏱️ **Répondu en `{temps_pris}s`**"
             ),
             color=discord.Color.green()
         )
         await original_msg.edit(embed=embed_fige)
 
         embed_reponse = discord.Embed(
+            title="✅ RÉPONSE VALIDÉE",
             description=(
-                f"# ✅ RÉPONSE VALIDÉE\n\n"
                 f"💬 **Réponse :** `{reponse_msg.content}`\n"
                 f"⚡ **Temps :** `{temps_pris}s`"
             ),
@@ -1673,16 +1683,17 @@ async def poser_question_flash(
 
     except asyncio.TimeoutError:
         embed_timeout_fige = discord.Embed(
+            title="⚡ QUESTION FLASH",
             description=(
-                f"# {question}\n\n"
-                f"## 🛑 TEMPS ÉCOULÉ"
+                f"**{question}**\n\n"
+                f"🛑 **TEMPS ÉCOULÉ**"
             ),
             color=discord.Color.dark_red()
         )
         await original_msg.edit(embed=embed_timeout_fige)
 
         embed_fin = discord.Embed(
-            description="# 🛑 TEMPS ÉCOULÉ !",
+            title="🛑 TEMPS ÉCOULÉ !",
             color=discord.Color.dark_red()
         )
         await channel.send(embed=embed_fin)
@@ -1770,12 +1781,10 @@ async def chrono_stop(
     embed.set_footer(text="Performance enregistrée par les Orgas.")
     await interaction.response.send_message(embed=embed)
 
-# ========================================================
-# 14. QUIZ & ÉPREUVES AUTOMATISÉES (AVEC TRANSITIONS ET PAUSE DIFFÉRÉE)
-# ========================================================
 
-# Suivi de l'état d'épreuve par salon : {channel_id: {"pause_demandee": bool, "event": asyncio.Event}}
-ETATS_EPREUVES_SALONS = {}
+# ========================================================
+# 14. QUIZ & ÉPREUVES AUTOMATISÉES
+# ========================================================
 
 class GlobalQuizLancementView(discord.ui.View):
     def __init__(self, candidat: discord.Member):
@@ -1804,7 +1813,7 @@ class GlobalQuizLancementView(discord.ui.View):
             await channel.send("❌ Erreur : Aucune question chargée dans la configuration.")
             return
 
-        # Initialisation de l'état du salon
+        # Initialisation de l'état de pause du salon
         ETATS_EPREUVES_SALONS[channel.id] = {
             "pause_demandee": False,
             "event": asyncio.Event()
@@ -1822,7 +1831,7 @@ class GlobalQuizLancementView(discord.ui.View):
         resultats = []
 
         for i, q in enumerate(questions, 1):
-            # 1. Vérification si une pause a été demandée par les orgas avant de lancer cette question
+            # 1. Vérification si une pause a été déclenchée par un orga avant cette question
             if ETATS_EPREUVES_SALONS.get(channel.id, {}).get("pause_demandee"):
                 embed_pause = discord.Embed(
                     title="⏸️ ÉPREUVE EN PAUSE",
@@ -1834,7 +1843,6 @@ class GlobalQuizLancementView(discord.ui.View):
                 )
                 msg_pause = await channel.send(embed=embed_pause)
                 
-                # Attente du déblocage par /reprendre_epreuve
                 await ETATS_EPREUVES_SALONS[channel.id]["event"].wait()
                 
                 try:
@@ -1853,7 +1861,7 @@ class GlobalQuizLancementView(discord.ui.View):
             now = datetime.datetime.now(datetime.timezone.utc)
             fin_timestamp = int((now + datetime.timedelta(seconds=duree_totale)).timestamp())
 
-            # Embed avec balises universelles garanties sur tous les écrans
+            # Affichage clair et garanti sur tous les appareils
             embed_q = discord.Embed(
                 title=f"📋 Question {i} / {len(questions)}",
                 description=(
@@ -1915,7 +1923,7 @@ class GlobalQuizLancementView(discord.ui.View):
                     "statut": "❌ Hors délai"
                 })
 
-            # Suppression propre de la question et de la réponse
+            # Suppression propre du salon pour la confidentialité
             await asyncio.sleep(2.0)
             try:
                 await q_msg.delete()
@@ -1924,7 +1932,7 @@ class GlobalQuizLancementView(discord.ui.View):
             except Exception:
                 pass
 
-            # 2. SAS DE TRANSITION & ANTI-DÉBORDEMENT ENTRE DEUX QUESTIONS (4 secondes)
+            # 2. Sas de transition anti-débordement entre questions (4 secondes)
             if i < len(questions) and not ETATS_EPREUVES_SALONS.get(channel.id, {}).get("pause_demandee"):
                 embed_tampon = discord.Embed(
                     description=f"⏳ **Question suivante ({i + 1}/{len(questions)}) dans quelques instants...**",
@@ -1932,7 +1940,6 @@ class GlobalQuizLancementView(discord.ui.View):
                 )
                 msg_tampon = await channel.send(embed=embed_tampon)
 
-                # Purge automatique de tout message parasite envoyé par le joueur pendant le sas
                 fin_sas = time.perf_counter() + 3.5
                 while time.perf_counter() < fin_sas:
                     temps_attente = max(0.1, fin_sas - time.perf_counter())
@@ -1953,7 +1960,6 @@ class GlobalQuizLancementView(discord.ui.View):
         # Nettoyage de l'état du salon
         ETATS_EPREUVES_SALONS.pop(channel.id, None)
 
-        # Message discret au joueur
         embed_fin_joueur = discord.Embed(
             title="🏁 ÉPREUVE TERMINÉE",
             description="Tes réponses et tes temps ont bien été transmis aux Organisateurs. Merci !",
@@ -1961,7 +1967,6 @@ class GlobalQuizLancementView(discord.ui.View):
         )
         await channel.send(embed=embed_fin_joueur)
 
-        # Envoi des résultats au staff
         result_channel = bot.get_channel(RESULTATS_CHANNEL_ID)
         if result_channel:
             lignes_recap = []
@@ -1987,9 +1992,166 @@ class GlobalQuizLancementView(discord.ui.View):
                 await result_channel.send(embed=embed_recap_orga)
 
 
-# ========================================================
-# COMMANDES DE PAUSE ET DE REPRISE DIFFÉRÉES
-# ========================================================
+@bot.tree.command(
+    name="configurer_epreuve",
+    description="Étape 1 : Charge et enregistre la banque de questions pour tous les candidats."
+)
+@app_commands.describe(
+    salon_questions="Le salon secret où se trouvent les questions",
+    temps_par_defaut="Temps par défaut en secondes si non spécifié (ex: 15)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def configurer_epreuve(
+    interaction: discord.Interaction,
+    salon_questions: discord.TextChannel,
+    temps_par_defaut: int = 15
+):
+    await interaction.response.defer(ephemeral=True)
+    global CONFIG_EPREUVE_GLOBALE
+
+    questions = []
+    async for msg in salon_questions.history(limit=25, oldest_first=False):
+        if not msg.author.bot and msg.content.strip():
+            for ligne in msg.content.strip().split("\n"):
+                ligne = ligne.strip()
+                if not ligne:
+                    continue
+                if "|" in ligne:
+                    parties = ligne.split("|")
+                    q_txt = parties[0].strip()
+                    try:
+                        t_sec = int(parties[1].strip())
+                    except ValueError:
+                        t_sec = temps_par_defaut
+                else:
+                    q_txt = ligne
+                    t_sec = temps_par_defaut
+                
+                questions.append({"question": q_txt, "secondes": t_sec})
+            if questions:
+                break
+
+    if not questions:
+        await interaction.followup.send("❌ Aucune question valide trouvée dans le salon source.", ephemeral=True)
+        return
+
+    CONFIG_EPREUVE_GLOBALE["questions"] = questions
+    CONFIG_EPREUVE_GLOBALE["temps_par_defaut"] = temps_par_defaut
+    CONFIG_EPREUVE_GLOBALE["active"] = True
+
+    await interaction.followup.send(
+        f"✅ **Configuration enregistrée avec succès !**\n"
+        f"- 📝 **{len(questions)} questions** chargées depuis {salon_questions.mention}.\n"
+        f"- ⏱️ **Temps de base :** `{temps_par_defaut}s` par question.\n"
+        f"- 📬 Les récaps seront envoyés sur <#{RESULTATS_CHANNEL_ID}>.\n\n"
+        f"👉 *Lance maintenant `/lancer_epreuve`.*",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="lancer_epreuve",
+    description="Étape 2 : Déploie l'épreuve pour un candidat précis (ou en masse sur une catégorie)."
+)
+@app_commands.describe(
+    candidat="Optionnel : le candidat ciblé pour qui déployer l'épreuve",
+    salon_cible="Optionnel : le salon où déployer (par défaut : le salon actuel)",
+    nom_categorie="Optionnel : nom de la catégorie pour déployer dans tous les confessionnaux en masse"
+)
+@app_commands.check(est_orga_ou_admin)
+async def lancer_epreuve(
+    interaction: discord.Interaction,
+    candidat: discord.Member = None,
+    salon_cible: discord.TextChannel = None,
+    nom_categorie: str = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    if not CONFIG_EPREUVE_GLOBALE["active"] or not CONFIG_EPREUVE_GLOBALE["questions"]:
+        await interaction.followup.send("❌ Aucune épreuve n'est configurée. Lance d'abord `/configurer_epreuve`.", ephemeral=True)
+        return
+
+    if candidat:
+        target_ch = salon_cible or interaction.channel
+        if not isinstance(target_ch, discord.TextChannel):
+            await interaction.followup.send("❌ Le salon cible doit être un salon textuel.", ephemeral=True)
+            return
+
+        view = GlobalQuizLancementView(candidat=candidat)
+        embed_invit = discord.Embed(
+            title="🏺 ÉPREUVE DE RAPIDITÉ",
+            description=(
+                f"Bienvenue {candidat.mention} pour ton épreuve.\n\n"
+                f"📌 **Consignes :**\n"
+                f"- Les questions s'enchaînent automatiquement.\n"
+                f"- Écris ta réponse directement ici.\n"
+                f"- Les questions et réponses s'effaceront au fur et à mesure pour la confidentialité.\n\n"
+                f"👉 **Clique sur le bouton vert ci-dessous dès que tu es prêt :**"
+            ),
+            color=discord.Color.dark_gold()
+        )
+
+        await target_ch.send(embed=embed_invit, view=view)
+        await interaction.followup.send(
+            f"🚀 **Épreuve déployée pour {candidat.mention}** dans {target_ch.mention} !",
+            ephemeral=True
+        )
+        return
+
+    if nom_categorie:
+        cat_clean = nettoyer_texte(nom_categorie)
+        category = discord.utils.find(lambda c: nettoyer_texte(c.name) == cat_clean, guild.categories)
+        if not category:
+            await interaction.followup.send(f"❌ Catégorie **{nom_categorie}** introuvable.", ephemeral=True)
+            return
+
+        salons_cibles = [ch for ch in category.channels if isinstance(ch, discord.TextChannel)]
+        deplois = 0
+
+        for ch in salons_cibles:
+            candidat_trouve = None
+            for cible, overwrite in ch.overwrites.items():
+                if isinstance(cible, discord.Member) and not cible.bot:
+                    candidat_trouve = cible
+                    break
+                elif isinstance(cible, discord.Role) and cible.name not in [ROLE_ORGAS_NAME, ROLE_SPECTATEURS_NAME, "@everyone"]:
+                    for m in ch.guild.members:
+                        if cible in m.roles and not m.bot:
+                            candidat_trouve = m
+                            break
+                    if candidat_trouve:
+                        break
+
+            if not candidat_trouve:
+                continue
+
+            view = GlobalQuizLancementView(candidat=candidat_trouve)
+            embed_invit = discord.Embed(
+                title="🏺 ÉPREUVE DE RAPIDITÉ",
+                description=(
+                    f"Bienvenue {candidat_trouve.mention} pour ton épreuve.\n\n"
+                    f"📌 **Consignes :**\n"
+                    f"- Les questions s'enchaînent automatiquement.\n"
+                    f"- Écris ta réponse directement ici.\n"
+                    f"- Les questions et réponses s'effaceront au fur et à mesure pour la confidentialité.\n\n"
+                    f"👉 **Clique sur le bouton vert ci-dessous dès que tu es prêt :**"
+                ),
+                color=discord.Color.dark_gold()
+            )
+
+            await ch.send(embed=embed_invit, view=view)
+            deplois += 1
+            await asyncio.sleep(0.4)
+
+        await interaction.followup.send(
+            f"🚀 **Épreuve déployée sur {deplois} salon(s)** de la catégorie **{category.name}** !",
+            ephemeral=True
+        )
+        return
+
+    await interaction.followup.send("❌ Veuillez renseigner un `candidat` ou un `nom_categorie`.", ephemeral=True)
+
 
 @bot.tree.command(
     name="pause_epreuve",
@@ -2030,11 +2192,31 @@ async def reprendre_epreuve(interaction: discord.Interaction, salon: discord.Tex
 
     await interaction.response.send_message(f"▶️ **Épreuve relancée avec succès dans {ch.mention} !**", ephemeral=True)
 
+
+@bot.tree.command(
+    name="terminer_epreuve",
+    description="Étape 3 : Clôture définitivement l'épreuve en cours et réinitialise la configuration."
+)
+@app_commands.check(est_orga_ou_admin)
+async def terminer_epreuve(interaction: discord.Interaction):
+    global CONFIG_EPREUVE_GLOBALE
+    CONFIG_EPREUVE_GLOBALE["active"] = False
+    CONFIG_EPREUVE_GLOBALE["questions"] = []
+
+    await interaction.response.send_message(
+        "🛑 **Épreuve clôturée !**\n"
+        "- Les boutons encore actifs ne peuvent plus lancer de questions.\n"
+        "- La configuration en mémoire a été réinitialisée.",
+        ephemeral=True
+    )
+
+
 # ========================================================
 # 15. PRÉSENTATIONS (EXTRACTION PAR IA)
 # ========================================================
 
 async def analyser_candidat_ia(texte: str) -> dict:
+    """Extrait le prénom et nettoie le texte via Gemini sans bloquer Discord."""
     if not texte:
         return {"nom": "Candidat", "texte": ""}
 
@@ -2042,7 +2224,7 @@ async def analyser_candidat_ia(texte: str) -> dict:
         "Voici la présentation d'un participant à un jeu :\n\n"
         f"\"\"\"{texte}\"\"\"\n\n"
         "Consignes :\n"
-        "1. Donne le prénom de la personne qui se présente.\n"
+        "1. Donne le prénom de la personne qui se présente (ex: Thomas, Simon, Sarah).\n"
         "2. Corrige les fautes d'orthographe et la ponctuation sans modifier le style.\n\n"
         "Format de réponse obligatoire :\n"
         "PRENOM: <prénom seul>\n"
@@ -2156,7 +2338,7 @@ async def formater_presentation(
 
 
 # ========================================================
-# 16. SCAN DU FIL PAR PAIRES (AVEC QUOTA CANDIDATS)
+# 16. SCAN DU FIL PAR PAIRES & DERNIÈRE PRÉSENTATION
 # ========================================================
 
 @bot.tree.command(
@@ -2254,9 +2436,7 @@ async def scanner_fil_presentations(
         f"✅ Terminé ! **{total_publies}/{nombre_candidats} fiches** publiées dans {salon_destination.mention}.",
         ephemeral=True
     )
-# ========================================================
-# PUBLIER UNIQUEMENT LA DERNIÈRE PRÉSENTATION DU FIL
-# ========================================================
+
 
 @bot.tree.command(
     name="publier_derniere_presentation",
@@ -2279,7 +2459,6 @@ async def publier_derniere_presentation(
         await interaction.followup.send("❌ Exécute la commande dans le fil ou mentionne-le.", ephemeral=True)
         return
 
-    # Récupère les derniers messages du fil (du plus récent au plus ancien)
     raw_messages = [msg async for msg in source_thread.history(limit=15, oldest_first=False)]
     messages = [m for m in raw_messages if not m.author.bot and (m.content.strip() or m.attachments)]
 
@@ -2290,7 +2469,6 @@ async def publier_derniere_presentation(
     texte = None
     image_url = None
 
-    # Parcourt du plus récent au plus ancien pour attraper la dernière paire
     for msg in messages:
         if not image_url and msg.attachments:
             for att in msg.attachments:
@@ -2301,7 +2479,6 @@ async def publier_derniere_presentation(
         if not texte and msg.content.strip():
             texte = msg.content.strip()
 
-        # Dès qu'on a trouvé le texte le plus récent, on a notre candidat
         if texte:
             break
 
@@ -2309,7 +2486,6 @@ async def publier_derniere_presentation(
         await interaction.followup.send("❌ Impossible de trouver un texte de présentation récent.", ephemeral=True)
         return
 
-    # Extraction et formatage par Gemini
     res_ia = await analyser_candidat_ia(texte)
     prenom = res_ia["nom"]
     texte_corrige = res_ia["texte"]
@@ -2325,11 +2501,11 @@ async def publier_derniere_presentation(
         f"✅ Dernière présentation publiée : **{prenom}** dans {salon_destination.mention} !",
         ephemeral=True
     )
+
+
 # ========================================================
 # 17. RELECTURE, REMPLACEMENT & ANALYSE D'AMBIGUÏTÉ
 # ========================================================
-
-SALON_REMARQUES_QUESTIONS_ID = 1545503543405060178
 
 async def traiter_et_analyser_questions_ia(lignes_brutes: list[str]) -> dict:
     """Corrige la formulation (format abécédaire inclus) et analyse les ambiguïtés."""
@@ -2398,10 +2574,8 @@ async def corriger_salon_questions(
     salon_questions: discord.TextChannel = None
 ):
     await interaction.response.defer(ephemeral=True)
-    guild = interaction.guild
     target_channel = salon_questions or interaction.channel
 
-    # 1. Recherche du dernier message contenant du texte
     message_cible = None
     async for msg in target_channel.history(limit=30, oldest_first=False):
         if not msg.author.bot and msg.content.strip():
@@ -2422,12 +2596,10 @@ async def corriger_salon_questions(
         ephemeral=True
     )
 
-    # 2. Analyse et correction Gemini
     resultat = await traiter_et_analyser_questions_ia(lignes)
     questions_finales = resultat["questions"]
     texte_questions_clean = "\n".join(questions_finales)
 
-    # 3. Remplacement du message d'origine dans le salon source
     try:
         await message_cible.delete()
     except Exception as e:
@@ -2435,7 +2607,6 @@ async def corriger_salon_questions(
 
     await target_channel.send(texte_questions_clean)
 
-    # 4. Envoi du rapport d'ambiguïté dans le salon Orga dédié
     salon_remarques = bot.get_channel(SALON_REMARQUES_QUESTIONS_ID)
     if salon_remarques:
         embed_remarques = discord.Embed(
@@ -2445,7 +2616,6 @@ async def corriger_salon_questions(
         )
         embed_remarques.set_footer(text=f"Total : {len(questions_finales)} questions vérifiées.")
 
-        # Gestion du découpage si le rapport dépasse la limite Discord
         if len(resultat["analyse"]) > 3900:
             await salon_remarques.send(f"🔎 **AUDIT DES QUESTIONS — #{target_channel.name}**")
             for chunk in [resultat["analyse"][i:i+1900] for i in range(0, len(resultat["analyse"]), 1900)]:
@@ -2459,6 +2629,8 @@ async def corriger_salon_questions(
         f"- Le rapport d'ambiguïté a été transmis sur <#{SALON_REMARQUES_QUESTIONS_ID}>.",
         ephemeral=True
     )
+
+
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
