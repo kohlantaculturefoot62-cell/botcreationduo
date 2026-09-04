@@ -21,7 +21,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
 # Modèle économique et rapide Flash-Lite
-MODEL_NAME = "gemini-3.5-flash-lite"
+MODEL_NAME = "gemini-2.5-flash"
 
 # Salons & Catégories fixes
 RECAP_CHANNEL_ID = int(os.getenv("RECAP_CHANNEL_ID", 0))
@@ -79,7 +79,7 @@ intents = discord.Intents.default()
 intents.guilds = True
 intents.message_content = True
 intents.members = True
-intents.voice_states = True # Pour l'anti-triche vocal
+intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -384,11 +384,9 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     if member.bot:
         return
 
-    # Détection déconnexion vocale
     if before.channel and not after.channel:
         print(f"⚠️ ALERTE TRICHE : {member.display_name} a QUITTÉ le salon vocal {before.channel.name} !")
 
-    # Détection mute / deafen (s'il coupe le son pour écouter quelqu'un à côté)
     if not before.self_deaf and after.self_deaf:
         print(f"⚠️ ALERTE : {member.display_name} a COUPÉ SON CASQUE (Deafen).")
 
@@ -1482,7 +1480,6 @@ async def creer_salons_binomes(interaction: discord.Interaction, nom_categorie: 
             guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
         }
 
-        # Permissions : UNIQUEMENT les rôles personnels
         if ca["role"]:
             overwrites[ca["role"]] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
 
@@ -1782,7 +1779,7 @@ async def chrono_stop(
 
 class GlobalQuizLancementView(discord.ui.View):
     def __init__(self, candidat: discord.Member):
-        super().__init__(timeout=1800)  # 30 minutes de validité
+        super().__init__(timeout=1800)
         self.candidat = candidat
 
     @discord.ui.button(label="🚀 DÉMARRER MON ÉPREUVE", style=discord.ButtonStyle.green, custom_id="btn_global_quiz_start")
@@ -1807,7 +1804,6 @@ class GlobalQuizLancementView(discord.ui.View):
             await channel.send("❌ Erreur : Aucune question chargée dans la configuration.")
             return
 
-        # Décompte initial avant la première question
         msg_decompte = await channel.send("⚠️ **Attention... L'épreuve commence dans : 3**")
         for k in range(2, 0, -1):
             await asyncio.sleep(1)
@@ -1824,7 +1820,6 @@ class GlobalQuizLancementView(discord.ui.View):
                 if fige_msg:
                     return f"# Question {i}/{len(questions)}\n\n# **{q['question']}**\n\n## {fige_msg}"
                 
-                # Barre visuelle de progression universelle
                 pourcentage = max(0, min(1, secondes_restantes / secondes))
                 blocs_pleins = int(pourcentage * 10)
                 barre = "🟩" * blocs_pleins + "⬛" * (10 - blocs_pleins)
@@ -1852,7 +1847,6 @@ class GlobalQuizLancementView(discord.ui.View):
             reponse_msg = None
             temps_ecoule = secondes
 
-            # Boucle d'actualisation fluide
             while not tache_reponse.done():
                 ecoule_live = time.perf_counter() - start_perf
                 restant_live = int(secondes - ecoule_live)
@@ -1915,7 +1909,6 @@ class GlobalQuizLancementView(discord.ui.View):
                     "statut": "❌ Hors délai"
                 })
 
-            # Pause et suppression de la question & de la réponse pour ne laisser aucune trace
             await asyncio.sleep(4.0)
             try:
                 await q_msg.delete()
@@ -1924,7 +1917,6 @@ class GlobalQuizLancementView(discord.ui.View):
             except Exception:
                 pass
 
-        # 1. Message discret pour le joueur dans son confessionnal
         embed_fin_joueur = discord.Embed(
             title="🏁 ÉPREUVE TERMINÉE",
             description="Tes réponses et tes temps ont bien été transmis aux Organisateurs. Merci !",
@@ -1932,7 +1924,6 @@ class GlobalQuizLancementView(discord.ui.View):
         )
         await channel.send(embed=embed_fin_joueur)
 
-        # 2. Envoi du récapitulatif complet dans le salon ORGA dédié
         result_channel = bot.get_channel(RESULTATS_CHANNEL_ID)
         if result_channel:
             lignes_recap = []
@@ -2038,7 +2029,6 @@ async def lancer_epreuve(
         await interaction.followup.send("❌ Aucune épreuve n'est configurée. Lance d'abord `/configurer_epreuve`.", ephemeral=True)
         return
 
-    # CAS 1 : Déploiement individuel
     if candidat:
         target_ch = salon_cible or interaction.channel
         if not isinstance(target_ch, discord.TextChannel):
@@ -2066,7 +2056,6 @@ async def lancer_epreuve(
         )
         return
 
-    # CAS 2 : Déploiement en masse par catégorie
     if nom_categorie:
         cat_clean = nettoyer_texte(nom_categorie)
         category = discord.utils.find(lambda c: nettoyer_texte(c.name) == cat_clean, guild.categories)
@@ -2137,6 +2126,216 @@ async def terminer_epreuve(interaction: discord.Interaction):
         "- La configuration en mémoire a été réinitialisée.",
         ephemeral=True
     )
+
+
+# ========================================================
+# 15. FORMATAGE DES PRÉSENTATIONS (AVEC CORRECTION IA)
+# ========================================================
+
+async def nettoyer_et_corriger_texte(texte: str) -> str:
+    """Corrige l'orthographe et la ponctuation tout en conservant scrupuleusement le style de l'auteur."""
+    prompt = (
+        "Tu es un relecteur professionnel.\n"
+        "Corrige uniquement les fautes d'orthographe, de grammaire et de ponctuation du texte ci-dessous.\n"
+        "RÈGLES STRICTES :\n"
+        "- Ne supprime aucune information.\n"
+        "- Ne reformule pas les phrases et ne change pas le style de l'auteur.\n"
+        "- Conserve les émojis s'il y en a.\n"
+        "- Renvoie UNIQUEMENT le texte corrigé et aéré en 1 ou 2 paragraphes, sans aucune phrase d'introduction.\n\n"
+        f"{texte}"
+    )
+
+    try:
+        response = gemini_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception:
+        return texte.strip()
+
+
+def creer_embed_presentation(
+    membre: discord.Member,
+    texte_corrige: str,
+    image_url: str = None,
+    role_equipe: discord.Role = None
+) -> discord.Embed:
+    """Construit une fiche d'aventurier épurée avec photo large et avatar."""
+    couleur = discord.Color.dark_teal()
+    nom_equipe = ""
+    
+    if role_equipe:
+        nom_clean = nettoyer_texte(role_equipe.name)
+        if "rouge" in nom_clean:
+            couleur = discord.Color.from_rgb(220, 20, 60)
+        elif "jaune" in nom_clean:
+            couleur = discord.Color.from_rgb(255, 215, 0)
+        elif "bleu" in nom_clean:
+            couleur = discord.Color.from_rgb(30, 144, 255)
+        nom_equipe = f" • Tribu {role_equipe.name}"
+
+    embed = discord.Embed(
+        title=f"🌴 {membre.display_name.upper()}{nom_equipe}",
+        description=f"**Aventurier :** {membre.mention}\n\n{texte_corrige}",
+        color=couleur
+    )
+
+    embed.set_thumbnail(url=membre.display_avatar.url)
+
+    if image_url:
+        embed.set_image(url=image_url)
+
+    embed.set_footer(
+        text="Aventure Survivor • Fiche de présentation",
+        icon_url=membre.guild.icon.url if membre.guild.icon else None
+    )
+    return embed
+
+
+@bot.tree.command(
+    name="formater_presentation",
+    description="Publie la présentation d'un message unique sous forme de fiche propre avec sa photo."
+)
+@app_commands.describe(
+    message_id_ou_lien="L'ID du message ou son lien Discord",
+    role_equipe="Optionnel : Rôle d'équipe du candidat (ex: @Jaune, @Rouge)",
+    salon_destination="Optionnel : salon où envoyer l'embed (par défaut : salon actuel)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def formater_presentation(
+    interaction: discord.Interaction,
+    message_id_ou_lien: str,
+    role_equipe: discord.Role = None,
+    salon_destination: discord.TextChannel = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    dest_channel = salon_destination or interaction.channel
+
+    msg_id = message_id_ou_lien.strip().split("/")[-1]
+    try:
+        msg_id_int = int(msg_id)
+    except ValueError:
+        await interaction.followup.send("❌ Lien ou ID de message invalide.", ephemeral=True)
+        return
+
+    source_msg = None
+    try:
+        source_msg = await interaction.channel.fetch_message(msg_id_int)
+    except Exception:
+        for ch in guild.text_channels:
+            try:
+                source_msg = await ch.fetch_message(msg_id_int)
+                if source_msg:
+                    break
+            except Exception:
+                continue
+
+    if not source_msg:
+        await interaction.followup.send("❌ Message introuvable sur le serveur.", ephemeral=True)
+        return
+
+    texte_brut = source_msg.content.strip()
+    if not texte_brut:
+        await interaction.followup.send("❌ Le message ne contient aucun texte.", ephemeral=True)
+        return
+
+    image_url = None
+    if source_msg.attachments:
+        for att in source_msg.attachments:
+            if att.content_type and att.content_type.startswith("image/"):
+                image_url = att.url
+                break
+
+    texte_final = await nettoyer_et_corriger_texte(texte_brut)
+
+    embed = creer_embed_presentation(
+        membre=source_msg.author,
+        texte_corrige=texte_final,
+        image_url=image_url,
+        role_equipe=role_equipe
+    )
+
+    await dest_channel.send(embed=embed)
+    await interaction.followup.send(f"✅ Fiche publiée dans {dest_channel.mention} !", ephemeral=True)
+
+
+@bot.tree.command(
+    name="scanner_fil_presentations",
+    description="Extrait toutes les présentations et photos d'un fil (Thread) pour les publier sur le salon dédié."
+)
+@app_commands.describe(
+    salon_destination="Le salon où afficher les fiches générées (ex: #presentation)",
+    fil="Optionnel : Le fil de discussion ciblé (par défaut : le fil actuel où la commande est tapée)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def scanner_fil_presentations(
+    interaction: discord.Interaction,
+    salon_destination: discord.TextChannel,
+    fil: discord.Thread = None
+):
+    await interaction.response.defer(ephemeral=True)
+
+    source_thread = fil
+    if not source_thread:
+        if isinstance(interaction.channel, discord.Thread):
+            source_thread = interaction.channel
+        else:
+            await interaction.followup.send(
+                "❌ Merci de spécifier un fil de discussion ou d'exécuter la commande à l'intérieur d'un fil.",
+                ephemeral=True
+            )
+            return
+
+    messages = [msg async for msg in source_thread.history(limit=100, oldest_first=True)]
+    messages_candidats = [
+        m for m in messages 
+        if not m.author.bot and (m.content.strip() or m.attachments)
+    ]
+
+    if not messages_candidats:
+        await interaction.followup.send(f"❌ Aucun message trouvé dans le fil {source_thread.mention}.", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        f"⏳ Extraction de **{len(messages_candidats)} présentations** depuis le fil {source_thread.mention} vers {salon_destination.mention}...",
+        ephemeral=True
+    )
+
+    compteur = 0
+    for msg in messages_candidats:
+        image_url = None
+        if msg.attachments:
+            for att in msg.attachments:
+                if att.content_type and att.content_type.startswith("image/"):
+                    image_url = att.url
+                    break
+
+        texte_brut = msg.content.strip()
+        texte_final = await nettoyer_et_corriger_texte(texte_brut) if texte_brut else "*Présentation en image*"
+
+        # Détection automatique de rôle d'équipe
+        role_equipe = None
+        for r in msg.author.roles:
+            nom_r = nettoyer_texte(r.name)
+            if any(eq in nom_r for eq in ["jaune", "rouge", "bleu", "tribu", "equipe"]):
+                role_equipe = r
+                break
+
+        embed = creer_embed_presentation(
+            membre=msg.author,
+            texte_corrige=texte_final,
+            image_url=image_url,
+            role_equipe=role_equipe
+        )
+
+        await salon_destination.send(embed=embed)
+        compteur += 1
+        await asyncio.sleep(1.5)
+
+    await salon_destination.send(f"✨ **{compteur} fiches d'aventuriers publiées avec succès !**")
+    await interaction.followup.send("✅ Extraction et publication terminées !", ephemeral=True)
 
 
 # ==========================================
