@@ -2129,49 +2129,52 @@ async def terminer_epreuve(interaction: discord.Interaction):
 
 
 # ========================================================
-# 15. PRÉSENTATIONS (EXTRACTION DIRECTE GEMINI)
+# 15. EXTRACTION & PRÉSENTATIONS (APPEL ASYNC DIRECT)
 # ========================================================
 
 async def analyser_candidat_ia(texte: str) -> dict:
-    """Demande directement le prénom et la correction à Gemini."""
+    """Appel direct et asynchrone à Gemini pour extraire le prénom et corriger le texte."""
     if not texte:
         return {"nom": "Candidat", "texte": ""}
 
-    # 1. On demande JUSTE le prénom
-    prompt_prenom = (
-        "Quel est le prénom du candidat dans cette présentation ? "
-        "Réponds UNIQUEMENT par le prénom, en un seul mot, sans rien d'autre.\n\n"
-        f"{texte}"
-    )
-
-    # 2. On demande la correction/mise en page
-    prompt_texte = (
-        "Corrige l'orthographe et aère cette présentation sans en changer le style ni les mots :\n\n"
-        f"{texte}"
+    prompt = (
+        "Voici une présentation d'un candidat pour un jeu :\n\n"
+        f"\"\"\"{texte}\"\"\"\n\n"
+        "TÂCHES :\n"
+        "1. Extrais UNIQUEMENT le prénom de la personne présentée (ex: Thomas, Simon, Sarah, etc.).\n"
+        "2. Corrige les fautes d'orthographe et la ponctuation du texte sans en modifier le style.\n\n"
+        "Format de réponse STRICT attendu (sans texte avant ni après) :\n"
+        "PRENOM: [Le prénom seul]\n"
+        "TEXTE: [Le texte corrigé]"
     )
 
     try:
-        res_prenom = gemini_client.models.generate_content(
+        # Appel asynchrone officiel du SDK google-genai
+        response = await gemini_client.aio.models.generate_content(
             model=MODEL_NAME,
-            contents=prompt_prenom
+            contents=prompt
         )
-        prenom = res_prenom.text.strip().replace(".", "").replace(",", "").capitalize()
-    except Exception:
-        prenom = "Candidat"
-
-    try:
-        res_texte = gemini_client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt_texte
-        )
-        texte_propre = res_texte.text.strip()
-    except Exception:
+        
+        rep = response.text.strip()
+        prenom = ""
         texte_propre = texte.strip()
 
-    return {
-        "nom": prenom,
-        "texte": texte_propre
-    }
+        for ligne in rep.split("\n"):
+            if ligne.startswith("PRENOM:"):
+                prenom = ligne.replace("PRENOM:", "").strip().replace(".", "").replace(",", "").capitalize()
+                break
+        
+        if "TEXTE:" in rep:
+            texte_propre = rep.split("TEXTE:")[1].strip()
+
+        if prenom:
+            return {"nom": prenom, "texte": texte_propre}
+
+    except Exception as e:
+        print(f"❌ ERREUR API GEMINI : {e}")
+
+    # Fallback si coupure réseau ou erreur API
+    return {"nom": "Candidat", "texte": texte.strip()}
 
 
 def creer_embed_presentation_pure(
@@ -2179,7 +2182,7 @@ def creer_embed_presentation_pure(
     texte: str,
     image_url: str = None
 ) -> discord.Embed:
-    """Génère la fiche propre avec le prénom dans le titre et la photo en grand."""
+    """Génère la fiche avec le prénom en titre et la photo du candidat."""
     embed = discord.Embed(
         title=f"🌴 {prenom.upper()}",
         description=texte,
@@ -2254,12 +2257,12 @@ async def formater_presentation(
 
 
 # ========================================================
-# 16. SCAN DU FIL PAR PAIRES (AVEC COMPTEUR DE CANDIDATS)
+# 16. SCAN DU FIL PAR PAIRES (AVEC QUOTA CANDIDATS)
 # ========================================================
 
 @bot.tree.command(
     name="scanner_fil_presentations",
-    description="Extrait exactement le nombre demandé de présentations (Texte ➔ Photo) depuis un fil."
+    description="Extrait le nombre demandé de présentations (Texte ➔ Photo) depuis un fil."
 )
 @app_commands.describe(
     salon_destination="Le salon où afficher les fiches finales (ex: #presentation)",
@@ -2314,14 +2317,14 @@ async def scanner_fil_presentations(
                     image_url = att.url
                     break
 
-        # Si le message actuel est du texte et que le suivant contient l'image
+        # Si le message courant est du texte et le suivant est l'image associée
         if texte and not image_url and (i + 1 < total):
             next_msg = messages[i + 1]
             if next_msg.attachments:
                 for att in next_msg.attachments:
                     if att.content_type and att.content_type.startswith("image/"):
                         image_url = att.url
-                        i += 1  # Consomme le message photo
+                        i += 1
                         break
 
         if texte:
@@ -2346,7 +2349,7 @@ async def scanner_fil_presentations(
 
         await salon_destination.send(embed=embed)
         total_publies += 1
-        await asyncio.sleep(1.2)
+        await asyncio.sleep(2.0)
 
     await salon_destination.send(f"✨ **Les {total_publies} fiches d'aventuriers ont été publiées avec succès !**")
     await interaction.followup.send(
