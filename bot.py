@@ -1,6 +1,5 @@
 import os
 import re
-import json
 import time
 import itertools
 import asyncio
@@ -8,7 +7,6 @@ import datetime
 import random
 import unicodedata
 from zoneinfo import ZoneInfo
-from pydantic import BaseModel
 
 import discord
 from discord import app_commands
@@ -22,7 +20,7 @@ from google import genai
 TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-# Modèle économique et rapide Flash
+# Modèle d'origine inchangé
 MODEL_NAME = "gemini-3.5-flash-lite"
 
 # Salons & Catégories fixes
@@ -2129,52 +2127,49 @@ async def terminer_epreuve(interaction: discord.Interaction):
 
 
 # ========================================================
-# 15. EXTRACTION & PRÉSENTATIONS (APPEL ASYNC DIRECT)
+# 15. PRÉSENTATIONS (EXTRACTION PAR IA)
 # ========================================================
 
 async def analyser_candidat_ia(texte: str) -> dict:
-    """Appel direct et asynchrone à Gemini pour extraire le prénom et corriger le texte."""
     if not texte:
         return {"nom": "Candidat", "texte": ""}
 
     prompt = (
-        "Voici une présentation d'un candidat pour un jeu :\n\n"
+        "Voici la présentation d'un participant à un jeu :\n\n"
         f"\"\"\"{texte}\"\"\"\n\n"
-        "TÂCHES :\n"
-        "1. Extrais UNIQUEMENT le prénom de la personne présentée (ex: Thomas, Simon, Sarah, etc.).\n"
-        "2. Corrige les fautes d'orthographe et la ponctuation du texte sans en modifier le style.\n\n"
-        "Format de réponse STRICT attendu (sans texte avant ni après) :\n"
-        "PRENOM: [Le prénom seul]\n"
-        "TEXTE: [Le texte corrigé]"
+        "Consignes :\n"
+        "1. Donne le prénom de la personne qui se présente.\n"
+        "2. Corrige les fautes d'orthographe et la ponctuation sans modifier le style.\n\n"
+        "Format de réponse obligatoire :\n"
+        "PRENOM: <prénom seul>\n"
+        "TEXTE: <texte corrigé>"
     )
 
     try:
-        # Appel asynchrone officiel du SDK google-genai
-        response = await gemini_client.aio.models.generate_content(
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
             model=MODEL_NAME,
             contents=prompt
         )
         
         rep = response.text.strip()
-        prenom = ""
-        texte_propre = texte.strip()
 
-        for ligne in rep.split("\n"):
-            if ligne.startswith("PRENOM:"):
-                prenom = ligne.replace("PRENOM:", "").strip().replace(".", "").replace(",", "").capitalize()
-                break
-        
+        prenom_match = re.search(r"PRENOM\s*:\s*\**([A-Za-zÀ-ÿ\-]+)\**", rep, re.IGNORECASE)
+        prenom = prenom_match.group(1).capitalize() if prenom_match else ""
+
+        texte_propre = texte.strip()
         if "TEXTE:" in rep:
-            texte_propre = rep.split("TEXTE:")[1].strip()
+            texte_propre = rep.split("TEXTE:", 1)[1].strip()
 
         if prenom:
             return {"nom": prenom, "texte": texte_propre}
 
     except Exception as e:
-        print(f"❌ ERREUR API GEMINI : {e}")
+        print(f"Erreur lors de l'appel Gemini : {e}")
 
-    # Fallback si coupure réseau ou erreur API
-    return {"nom": "Candidat", "texte": texte.strip()}
+    lignes = [l.strip() for l in texte.split("\n") if l.strip()]
+    premier_mot = lignes[0].split()[0].replace(":", "").capitalize() if lignes else "Candidat"
+    return {"nom": premier_mot, "texte": texte.strip()}
 
 
 def creer_embed_presentation_pure(
@@ -2317,7 +2312,6 @@ async def scanner_fil_presentations(
                     image_url = att.url
                     break
 
-        # Si le message courant est du texte et le suivant est l'image associée
         if texte and not image_url and (i + 1 < total):
             next_msg = messages[i + 1]
             if next_msg.attachments:
@@ -2356,6 +2350,7 @@ async def scanner_fil_presentations(
         f"✅ Terminé ! **{total_publies}/{nombre_candidats} fiches** publiées dans {salon_destination.mention}.",
         ephemeral=True
     )
+
 
 # ==========================================
 # DÉMARRAGE DU BOT
