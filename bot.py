@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import time
 import itertools
 import asyncio
@@ -7,6 +8,7 @@ import datetime
 import random
 import unicodedata
 from zoneinfo import ZoneInfo
+from pydantic import BaseModel
 
 import discord
 from discord import app_commands
@@ -20,7 +22,7 @@ from google import genai
 TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-# Modèle économique et rapide Flash-Lite
+# Modèle économique et rapide Flash
 MODEL_NAME = "gemini-2.5-flash"
 
 # Salons & Catégories fixes
@@ -171,7 +173,6 @@ def trouver_role_personnel(member: discord.Member, role_equipe: discord.Role = N
     pseudo_global_clean = nettoyer_texte(member.name)
     role_equipe_clean = nettoyer_texte(role_equipe.name) if role_equipe else ""
 
-    # 1. Correspondance exacte nom de rôle <-> pseudo
     for r in member.roles:
         if r.is_default():
             continue
@@ -179,7 +180,6 @@ def trouver_role_personnel(member: discord.Member, role_equipe: discord.Role = N
         if r_clean in (nom_membre_clean, pseudo_global_clean):
             return r
 
-    # 2. Premier rôle valide non générique
     for r in member.roles:
         r_clean = nettoyer_texte(r.name)
         if r.is_default() or (role_equipe and r.id == role_equipe.id):
@@ -2128,27 +2128,26 @@ async def terminer_epreuve(interaction: discord.Interaction):
     )
 
 
-import json
+# ========================================================
+# 15. PRÉSENTATIONS (EXTRACTION PYDANTIC & STRUCTURATION)
+# ========================================================
 
-# ========================================================
-# 15. EXTRACTION ROBUSTE DU PRÉNOM & CORRECTION PAR IA (JSON)
-# ========================================================
+class ProfilCandidat(BaseModel):
+    prenom: str
+    texte_corrige: str
 
 async def analyser_candidat_ia(texte: str) -> dict:
-    """Extrait avec précision le prénom du candidat via JSON strict et corrige le texte."""
+    """Extrait le prénom et nettoie le texte via le schéma structuré Pydantic de Gemini."""
     if not texte:
-        return {"nom": "CANDIDAT", "texte": ""}
+        return {"nom": "Candidat", "texte": ""}
 
     prompt = (
-        "Tu es un analyseur de fiches de présentation pour un jeu d'aventure.\n"
-        "Voici un message rédigé par un candidat (ou copié par un organisateur) :\n\n"
+        "Lis cette présentation d'un participant à un jeu de survie/aventure :\n\n"
         f"\"\"\"{texte}\"\"\"\n\n"
-        "INSTRUCTIONS STRICTES :\n"
-        "1. Trouve le véritable prénom du candidat dans le texte (ex: 'Thomas', 'Sarah', 'Jean-Luc', 'Maxime'). "
-        "Si aucun prénom n'est explicitement donné, cherche un pseudo ou surnom par lequel il se désigne. "
-        "Ne mets JAMAIS 'Aventurier' ou 'Inconnu' si un prénom ou pseudo existe.\n"
-        "2. Nettoie et aère le texte en corrigeant les fautes d'orthographe et de grammaire sans altérer le ton ni supprimer d'éléments.\n"
-        "3. Réponds UNIQUEMENT sous forme d'un objet JSON valide avec les clés 'prenom' et 'texte_corrige'."
+        "1. Extrais UNIQUEMENT le prénom réel (ou le pseudo) de la personne qui se présente "
+        "(ex: si le texte dit 'Je m'appelle Thomas...', le prénom est 'Thomas'). "
+        "Ne mets jamais un pronom comme 'Je', 'Moi', ni 'Aventurier'.\n"
+        "2. Corrige les fautes d'orthographe et aère le texte sans changer le style."
     )
 
     try:
@@ -2156,28 +2155,24 @@ async def analyser_candidat_ia(texte: str) -> dict:
             model=MODEL_NAME,
             contents=prompt,
             config={
-                "response_mime_type": "application/json"
-            }
+                "response_mime_type": "application/json",
+                "response_schema": ProfilCandidat,
+            },
         )
-        data = json.loads(response.text.strip())
+        
+        data = json.loads(response.text)
         prenom = data.get("prenom", "").strip().capitalize()
         texte_propre = data.get("texte_corrige", "").strip()
 
-        if not prenom:
-            # Recherche de repli sur les premiers mots du texte
-            premier_mot = texte.strip().split()[0].replace(":", "").replace(",", "")
-            prenom = premier_mot.capitalize() if len(premier_mot) > 2 else "Candidat"
-
         return {
-            "nom": prenom,
+            "nom": prenom if prenom else "Candidat",
             "texte": texte_propre if texte_propre else texte.strip()
         }
     except Exception as e:
-        print(f"Erreur IA JSON : {e}")
-        # Secours propre sans écraser par 'Aventurier'
-        lignes = [l.strip() for l in texte.split("\n") if l.strip()]
-        prenom_secours = lignes[0].split()[0].replace(":", "").capitalize() if lignes else "Candidat"
-        return {"nom": prenom_secours, "texte": texte.strip()}
+        print(f"Erreur API Gemini : {e}")
+        match = re.search(r"(?:m'appelle|moi c'est|suis|prénom\s*:?)\s*([A-Za-zÀ-ÿ\-]+)", texte, re.IGNORECASE)
+        nom_secours = match.group(1).capitalize() if match else "Candidat"
+        return {"nom": nom_secours, "texte": texte.strip()}
 
 
 def creer_embed_presentation_pure(
@@ -2197,6 +2192,66 @@ def creer_embed_presentation_pure(
 
     embed.set_footer(text=f"Aventurier : {prenom} • Fiche officielle")
     return embed
+
+
+@bot.tree.command(
+    name="formater_presentation",
+    description="Publie la présentation d'un message unique sous forme de fiche propre avec sa photo."
+)
+@app_commands.describe(
+    message_id_ou_lien="L'ID du message ou son lien Discord",
+    salon_destination="Optionnel : salon où envoyer l'embed (par défaut : salon actuel)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def formater_presentation(
+    interaction: discord.Interaction,
+    message_id_ou_lien: str,
+    salon_destination: discord.TextChannel = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    dest_channel = salon_destination or interaction.channel
+
+    msg_id = message_id_ou_lien.strip().split("/")[-1]
+    try:
+        msg_id_int = int(msg_id)
+    except ValueError:
+        await interaction.followup.send("❌ Lien ou ID de message invalide.", ephemeral=True)
+        return
+
+    source_msg = None
+    try:
+        source_msg = await interaction.channel.fetch_message(msg_id_int)
+    except Exception:
+        for ch in guild.text_channels:
+            try:
+                source_msg = await ch.fetch_message(msg_id_int)
+                if source_msg:
+                    break
+            except Exception:
+                continue
+
+    if not source_msg:
+        await interaction.followup.send("❌ Message introuvable sur le serveur.", ephemeral=True)
+        return
+
+    texte_brut = source_msg.content.strip()
+    image_url = None
+    if source_msg.attachments:
+        for att in source_msg.attachments:
+            if att.content_type and att.content_type.startswith("image/"):
+                image_url = att.url
+                break
+
+    res_ia = await analyser_candidat_ia(texte_brut)
+    embed = creer_embed_presentation_pure(
+        prenom=res_ia["nom"],
+        texte=res_ia["texte"],
+        image_url=image_url
+    )
+
+    await dest_channel.send(embed=embed)
+    await interaction.followup.send(f"✅ Fiche publiée dans {dest_channel.mention} !", ephemeral=True)
 
 
 # ========================================================
@@ -2245,7 +2300,6 @@ async def scanner_fil_presentations(
         ephemeral=True
     )
 
-    # 1. Reconstruction par paire (Texte ➔ Photo)
     paires = []
     i = 0
     total = len(messages)
@@ -2261,27 +2315,23 @@ async def scanner_fil_presentations(
                     image_url = att.url
                     break
 
-        # Si le message courant est un texte seul, on cherche la photo dans le suivant
         if texte and not image_url and (i + 1 < total):
             next_msg = messages[i + 1]
             if next_msg.attachments:
                 for att in next_msg.attachments:
                     if att.content_type and att.content_type.startswith("image/"):
                         image_url = att.url
-                        i += 1  # Consomme le message de la photo
+                        i += 1
                         break
 
-        # On n'ajoute que s'il y a du texte
         if texte:
             paires.append({"texte": texte, "image_url": image_url})
 
-        # Arrêt dès qu'on a le nombre de paires requis
         if len(paires) >= nombre_candidats:
             break
 
         i += 1
 
-    # 2. Traitement IA et envoi
     total_publies = 0
     for item in paires:
         res_ia = await analyser_candidat_ia(item["texte"])
@@ -2303,6 +2353,7 @@ async def scanner_fil_presentations(
         f"✅ Terminé ! **{total_publies}/{nombre_candidats} fiches** publiées dans {salon_destination.mention}.",
         ephemeral=True
     )
+
 
 # ==========================================
 # DÉMARRAGE DU BOT
