@@ -2128,59 +2128,56 @@ async def terminer_epreuve(interaction: discord.Interaction):
     )
 
 
+import json
+
 # ========================================================
-# 15. EXTRACTION DU PRÉNOM & CORRECTION PAR IA
+# 15. EXTRACTION ROBUSTE DU PRÉNOM & CORRECTION PAR IA (JSON)
 # ========================================================
 
 async def analyser_candidat_ia(texte: str) -> dict:
-    """Extrait le prénom du candidat et corrige la ponctuation/orthographe."""
+    """Extrait avec précision le prénom du candidat via JSON strict et corrige le texte."""
     if not texte:
-        return {"nom": "Aventurier", "texte": ""}
+        return {"nom": "CANDIDAT", "texte": ""}
 
     prompt = (
-        "Tu es l'arbitre d'un jeu de survie (type Koh-Lanta / Survivor).\n"
-        "Voici le texte de présentation d'un candidat :\n\n"
+        "Tu es un analyseur de fiches de présentation pour un jeu d'aventure.\n"
+        "Voici un message rédigé par un candidat (ou copié par un organisateur) :\n\n"
         f"\"\"\"{texte}\"\"\"\n\n"
-        "TÂCHES :\n"
-        "1. Extrais UNIQUEMENT le prénom du candidat présenté (ex: 'Thomas', 'Jean', 'Sarah').\n"
-        "2. Corrige les fautes d'orthographe et la ponctuation du texte sans modifier le style ni supprimer de phrases.\n\n"
-        "Format de réponse STRICT attendu (2 lignes) :\n"
-        "NOM: [Prénom seul]\n"
-        "TEXTE: [Texte corrigé]"
+        "INSTRUCTIONS STRICTES :\n"
+        "1. Trouve le véritable prénom du candidat dans le texte (ex: 'Thomas', 'Sarah', 'Jean-Luc', 'Maxime'). "
+        "Si aucun prénom n'est explicitement donné, cherche un pseudo ou surnom par lequel il se désigne. "
+        "Ne mets JAMAIS 'Aventurier' ou 'Inconnu' si un prénom ou pseudo existe.\n"
+        "2. Nettoie et aère le texte en corrigeant les fautes d'orthographe et de grammaire sans altérer le ton ni supprimer d'éléments.\n"
+        "3. Réponds UNIQUEMENT sous forme d'un objet JSON valide avec les clés 'prenom' et 'texte_corrige'."
     )
 
     try:
         response = gemini_client.models.generate_content(
             model=MODEL_NAME,
-            contents=prompt
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json"
+            }
         )
-        lignes = response.text.strip().split("\n")
-        nom_trouve = ""
-        lignes_texte = []
+        data = json.loads(response.text.strip())
+        prenom = data.get("prenom", "").strip().capitalize()
+        texte_propre = data.get("texte_corrige", "").strip()
 
-        for l in lignes:
-            if l.startswith("NOM:"):
-                nom_trouve = l.replace("NOM:", "").strip()
-            elif l.startswith("TEXTE:"):
-                lignes_texte.append(l.replace("TEXTE:", "").strip())
-            else:
-                lignes_texte.append(l.strip())
-
-        texte_propre = "\n".join([t for t in lignes_texte if t])
-
-        # Secours Regex si l'IA ne renvoie pas le format
-        if not nom_trouve:
-            match = re.search(r"(?:je m'appelle|moi c'est|je suis|prénom\s*:\s*)\s*([A-Za-zÀ-ÿ\-]+)", texte, re.IGNORECASE)
-            nom_trouve = match.group(1).capitalize() if match else "Aventurier"
+        if not prenom:
+            # Recherche de repli sur les premiers mots du texte
+            premier_mot = texte.strip().split()[0].replace(":", "").replace(",", "")
+            prenom = premier_mot.capitalize() if len(premier_mot) > 2 else "Candidat"
 
         return {
-            "nom": nom_trouve,
+            "nom": prenom,
             "texte": texte_propre if texte_propre else texte.strip()
         }
-    except Exception:
-        match = re.search(r"(?:je m'appelle|moi c'est|je suis)\s*([A-Za-zÀ-ÿ\-]+)", texte, re.IGNORECASE)
-        nom_trouve = match.group(1).capitalize() if match else "Aventurier"
-        return {"nom": nom_trouve, "texte": texte.strip()}
+    except Exception as e:
+        print(f"Erreur IA JSON : {e}")
+        # Secours propre sans écraser par 'Aventurier'
+        lignes = [l.strip() for l in texte.split("\n") if l.strip()]
+        prenom_secours = lignes[0].split()[0].replace(":", "").capitalize() if lignes else "Candidat"
+        return {"nom": prenom_secours, "texte": texte.strip()}
 
 
 def creer_embed_presentation_pure(
@@ -2198,29 +2195,35 @@ def creer_embed_presentation_pure(
     if image_url:
         embed.set_image(url=image_url)
 
-    embed.set_footer(text=f"Aventurier : {prenom} • Fiche de présentation")
+    embed.set_footer(text=f"Aventurier : {prenom} • Fiche officielle")
     return embed
 
 
 # ========================================================
-# 16. SCAN DU FIL PAR PAIRES (TEXTE ➔ IMAGE)
+# 16. SCAN DU FIL PAR PAIRES (AVEC COMPTEUR DE JOUEURS)
 # ========================================================
 
 @bot.tree.command(
     name="scanner_fil_presentations",
-    description="Extrait chaque binôme Texte ➔ Photo du fil et publie les fiches avec les prénoms."
+    description="Extrait exactement le nombre demandé de présentations (Texte ➔ Photo) depuis un fil."
 )
 @app_commands.describe(
-    salon_destination="Le salon où afficher les fiches générées (ex: #presentation)",
+    salon_destination="Le salon où afficher les fiches finales (ex: #presentation)",
+    nombre_candidats="Nombre exact de candidats à extraire (ex: 18)",
     fil="Optionnel : Le fil contenant les présentations (par défaut : fil actuel)"
 )
 @app_commands.check(est_orga_ou_admin)
 async def scanner_fil_presentations(
     interaction: discord.Interaction,
     salon_destination: discord.TextChannel,
+    nombre_candidats: int,
     fil: discord.Thread = None
 ):
     await interaction.response.defer(ephemeral=True)
+
+    if nombre_candidats <= 0:
+        await interaction.followup.send("❌ Le nombre de candidats doit être supérieur à 0.", ephemeral=True)
+        return
 
     source_thread = fil
     if not source_thread:
@@ -2230,7 +2233,7 @@ async def scanner_fil_presentations(
             await interaction.followup.send("❌ Exécute la commande dans le fil ou mentionne-le.", ephemeral=True)
             return
 
-    raw_messages = [msg async for msg in source_thread.history(limit=200, oldest_first=True)]
+    raw_messages = [msg async for msg in source_thread.history(limit=250, oldest_first=True)]
     messages = [m for m in raw_messages if not m.author.bot and (m.content.strip() or m.attachments)]
 
     if not messages:
@@ -2238,11 +2241,11 @@ async def scanner_fil_presentations(
         return
 
     await interaction.followup.send(
-        f"⏳ Extraction des fiches depuis {source_thread.mention} vers {salon_destination.mention}...",
+        f"⏳ Extraction de **{nombre_candidats} candidats** depuis {source_thread.mention} vers {salon_destination.mention}...",
         ephemeral=True
     )
 
-    # 1. Parcours par paires séquentielles (Texte ➔ Photo)
+    # 1. Reconstruction par paire (Texte ➔ Photo)
     paires = []
     i = 0
     total = len(messages)
@@ -2258,7 +2261,7 @@ async def scanner_fil_presentations(
                     image_url = att.url
                     break
 
-        # Si ce message est du texte et le suivant est la photo
+        # Si le message courant est un texte seul, on cherche la photo dans le suivant
         if texte and not image_url and (i + 1 < total):
             next_msg = messages[i + 1]
             if next_msg.attachments:
@@ -2268,27 +2271,22 @@ async def scanner_fil_presentations(
                         i += 1  # Consomme le message de la photo
                         break
 
-        if texte or image_url:
+        # On n'ajoute que s'il y a du texte
+        if texte:
             paires.append({"texte": texte, "image_url": image_url})
+
+        # Arrêt dès qu'on a le nombre de paires requis
+        if len(paires) >= nombre_candidats:
+            break
+
         i += 1
 
-    # 2. Traitement IA & Publication directe
+    # 2. Traitement IA et envoi
     total_publies = 0
-    prenoms_vus = set()
-
     for item in paires:
-        if not item["texte"]:
-            continue
-
         res_ia = await analyser_candidat_ia(item["texte"])
         prenom = res_ia["nom"]
         texte_corrige = res_ia["texte"]
-
-        # Évite les doublons accidentels
-        cle_unique = prenom.lower()
-        if cle_unique in prenoms_vus and cle_unique != "aventurier":
-            continue
-        prenoms_vus.add(cle_unique)
 
         embed = creer_embed_presentation_pure(
             prenom=prenom,
@@ -2298,11 +2296,11 @@ async def scanner_fil_presentations(
 
         await salon_destination.send(embed=embed)
         total_publies += 1
-        await asyncio.sleep(1.2)  # Pause anti-spam Discord
+        await asyncio.sleep(1.2)
 
-    await salon_destination.send(f"✨ **{total_publies} fiches d'aventuriers publiées avec succès !**")
+    await salon_destination.send(f"✨ **Les {total_publies} fiches d'aventuriers ont été publiées avec succès !**")
     await interaction.followup.send(
-        f"✅ **{total_publies} fiches** créées dans {salon_destination.mention} !",
+        f"✅ Terminé ! **{total_publies}/{nombre_candidats} fiches** publiées dans {salon_destination.mention}.",
         ephemeral=True
     )
 
