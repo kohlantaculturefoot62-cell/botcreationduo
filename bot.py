@@ -2683,6 +2683,116 @@ async def corriger_salon_questions(
         ephemeral=True
     )
 
+# ========================================================
+# 18. FORMATAGE & PUBLICATION DES ANNONCES ORGAS
+# ========================================================
+
+async def formater_annonce_ia(texte_brut: str) -> str:
+    """Corrige l'orthographe, aère et optimise la mise en page Discord sans altérer le fond."""
+    prompt = (
+        "Tu es l'assistant de communication officiel d'un jeu d'aventure / téléréalité (type Koh-Lanta / Survivor).\n"
+        "Voici le texte brut d'une annonce rédigée par l'organisation pour les candidats :\n\n"
+        f"\"\"\"{texte_brut}\"\"\"\n\n"
+        "CONSIGNES DE MISE EN PAGE DISCORD :\n"
+        "1. Ne change JAMAIS les consignes, les règles, les horaires ou le sens du texte.\n"
+        "2. Corrige les fautes d'orthographe, la grammaire et la ponctuation.\n"
+        "3. Aère le texte de façon fluide et lisible pour mobile et PC (retours à la ligne, mise en gras **...** des éléments clés).\n"
+        "4. Sois sobre sur les émojis : 1 à 2 émojis bien placés au total (ex: 📢, ⚠️, 🌴), pas de surcharge visuelle.\n"
+        "5. Renvoie UNIQUEMENT le texte formaté prêt à être publié, sans aucune formule de politesse introductive."
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception as e:
+        print(f"Erreur formatage annonce Gemini : {e}")
+        return texte_brut.strip()
+
+
+class AnnonceValidationView(discord.ui.View):
+    def __init__(self, texte_ia: str, texte_original: str, salon_destination: discord.TextChannel):
+        super().__init__(timeout=600)
+        self.texte_ia = texte_ia
+        self.texte_original = texte_original
+        self.salon_destination = salon_destination
+
+    @discord.ui.button(label="📢 Publier la version mise en page", style=discord.ButtonStyle.green)
+    async def publier_ia(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for chunk in [self.texte_ia[i:i+1900] for i in range(0, len(self.texte_ia), 1900)]:
+            await self.salon_destination.send(chunk)
+        
+        self.disable_all_items()
+        await interaction.response.edit_message(content=f"✅ **Annonce (version IA) publiée avec succès dans {self.salon_destination.mention} !**", view=self)
+
+    @discord.ui.button(label="📄 Publier le texte d'origine", style=discord.ButtonStyle.grey)
+    async def publier_original(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for chunk in [self.texte_original[i:i+1900] for i in range(0, len(self.texte_original), 1900)]:
+            await self.salon_destination.send(chunk)
+        
+        self.disable_all_items()
+        await interaction.response.edit_message(content=f"✅ **Annonce (texte original) publiée avec succès dans {self.salon_destination.mention} !**", view=self)
+
+    @discord.ui.button(label="❌ Annuler", style=discord.ButtonStyle.red)
+    async def annuler(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.disable_all_items()
+        await interaction.response.edit_message(content="❌ **Publication annulée.**", view=self)
+
+
+@bot.tree.command(
+    name="formater_annonce",
+    description="Récupère, aère et corrige les derniers messages d'annonce avec choix avant envoi."
+)
+@app_commands.describe(
+    salon_destination="Le salon où l'annonce finale sera postée (ex: #annonces)",
+    salon_source="Optionnel : salon contenant le brouillon d'orga (par défaut : salon actuel)",
+    nombre_messages="Nombre de messages successifs du brouillon à fusionner (par défaut : 1)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def formater_annonce(
+    interaction: discord.Interaction,
+    salon_destination: discord.TextChannel,
+    salon_source: discord.TextChannel = None,
+    nombre_messages: int = 1
+):
+    await interaction.response.defer(ephemeral=True)
+
+    src_channel = salon_source or interaction.channel
+    raw_messages = [msg async for msg in src_channel.history(limit=nombre_messages * 3, oldest_first=False)]
+    
+    # Récupération des messages non-bots
+    messages_valides = [m for m in raw_messages if not m.author.bot and m.content.strip()][:nombre_messages]
+
+    if not messages_valides:
+        await interaction.followup.send(f"❌ Aucun message trouvé dans {src_channel.mention}.", ephemeral=True)
+        return
+
+    # Remise dans l'ordre chronologique (du plus vieux au plus récent)
+    messages_valides.reverse()
+    texte_brut = "\n\n".join([m.content.strip() for m in messages_valides])
+
+    texte_ameliore = await formater_annonce_ia(texte_brut)
+
+    # Aperçu comparatif éphémère pour l'Orga
+    apercu_texte = (
+        f"📋 **APERÇU DE L'ANNONCE POUR {salon_destination.mention}**\n\n"
+        f"**✨ Version Propre (Aérée & Corrigée) :**\n"
+        f"```text\n{texte_ameliore[:1000]}\n```\n"
+        f"**📄 Version d'origine :**\n"
+        f"```text\n{texte_brut[:600]}\n```\n"
+        "👉 *Clique sur l'une des options ci-dessous pour valider la publication :*"
+    )
+
+    view = AnnonceValidationView(
+        texte_ia=texte_ameliore,
+        texte_original=texte_brut,
+        salon_destination=salon_destination
+    )
+
+    await interaction.followup.send(apercu_texte, view=view, ephemeral=True)
 
 # ==========================================
 # DÉMARRAGE DU BOT
