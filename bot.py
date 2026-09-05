@@ -2684,8 +2684,46 @@ async def corriger_salon_questions(
     )
 
 # ========================================================
-# 18. FORMATAGE & PUBLICATION DES ANNONCES ORGAS
+# 18. GESTION DES ANNONCES (FORMATAGE, COPIER/COLLER & PUBLICATION)
 # ========================================================
+
+SALON_ARCHIVES_ANNONCES_ID = 1545823386700087456
+
+def decouper_texte_intelligent(texte: str, limite: int = 1900) -> list[str]:
+    """Découpe un texte long sans jamais couper au milieu d'un mot ou d'une phrase."""
+    if len(texte) <= limite:
+        return [texte]
+
+    morceaux = []
+    texte_restant = texte.strip()
+
+    while len(texte_restant) > limite:
+        # 1. Cherche un double saut de ligne
+        coupure = texte_restant.rfind("\n\n", 0, limite)
+        
+        # 2. Sinon saut de ligne simple
+        if coupure == -1:
+            coupure = texte_restant.rfind("\n", 0, limite)
+            
+        # 3. Sinon sur un espace
+        if coupure == -1:
+            coupure = texte_restant.rfind(" ", 0, limite)
+            
+        # 4. Secours si un mot dépasse la limite
+        if coupure == -1:
+            coupure = limite
+
+        morceau = texte_restant[:coupure].strip()
+        if morceau:
+            morceaux.append(morceau)
+
+        texte_restant = texte_restant[coupure:].strip()
+
+    if texte_restant:
+        morceaux.append(texte_restant)
+
+    return morceaux
+
 
 async def formater_annonce_ia(texte_brut: str) -> str:
     """Corrige l'orthographe, aère et optimise la mise en page Discord sans altérer le fond."""
@@ -2713,43 +2751,14 @@ async def formater_annonce_ia(texte_brut: str) -> str:
         return texte_brut.strip()
 
 
-class AnnonceValidationView(discord.ui.View):
-    def __init__(self, texte_ia: str, texte_original: str, salon_destination: discord.TextChannel):
-        super().__init__(timeout=600)
-        self.texte_ia = texte_ia
-        self.texte_original = texte_original
-        self.salon_destination = salon_destination
-
-    @discord.ui.button(label="📢 Publier la version mise en page", style=discord.ButtonStyle.green)
-    async def publier_ia(self, interaction: discord.Interaction, button: discord.ui.Button):
-        for chunk in [self.texte_ia[i:i+1900] for i in range(0, len(self.texte_ia), 1900)]:
-            await self.salon_destination.send(chunk)
-        
-        self.disable_all_items()
-        await interaction.response.edit_message(content=f"✅ **Annonce (version IA) publiée avec succès dans {self.salon_destination.mention} !**", view=self)
-
-    @discord.ui.button(label="📄 Publier le texte d'origine", style=discord.ButtonStyle.grey)
-    async def publier_original(self, interaction: discord.Interaction, button: discord.ui.Button):
-        for chunk in [self.texte_original[i:i+1900] for i in range(0, len(self.texte_original), 1900)]:
-            await self.salon_destination.send(chunk)
-        
-        self.disable_all_items()
-        await interaction.response.edit_message(content=f"✅ **Annonce (texte original) publiée avec succès dans {self.salon_destination.mention} !**", view=self)
-
-    @discord.ui.button(label="❌ Annuler", style=discord.ButtonStyle.red)
-    async def annuler(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.disable_all_items()
-        await interaction.response.edit_message(content="❌ **Publication annulée.**", view=self)
-
-
 @bot.tree.command(
     name="formater_annonce",
-    description="Récupère, aère et corrige les derniers messages d'annonce avec choix avant envoi."
+    description="Met en page l'annonce dans le salon test avec bloc copiable."
 )
 @app_commands.describe(
-    salon_destination="Le salon où l'annonce finale sera postée (ex: #annonces)",
+    salon_destination="Le salon de test/brouillon où afficher le résultat",
     salon_source="Optionnel : salon contenant le brouillon d'orga (par défaut : salon actuel)",
-    nombre_messages="Nombre de messages successifs du brouillon à fusionner (par défaut : 1)"
+    nombre_messages="Nombre de messages successifs à fusionner (par défaut : 1)"
 )
 @app_commands.check(est_orga_ou_admin)
 async def formater_annonce(
@@ -2763,36 +2772,120 @@ async def formater_annonce(
     src_channel = salon_source or interaction.channel
     raw_messages = [msg async for msg in src_channel.history(limit=nombre_messages * 3, oldest_first=False)]
     
-    # Récupération des messages non-bots
     messages_valides = [m for m in raw_messages if not m.author.bot and m.content.strip()][:nombre_messages]
 
     if not messages_valides:
         await interaction.followup.send(f"❌ Aucun message trouvé dans {src_channel.mention}.", ephemeral=True)
         return
 
-    # Remise dans l'ordre chronologique (du plus vieux au plus récent)
     messages_valides.reverse()
     texte_brut = "\n\n".join([m.content.strip() for m in messages_valides])
 
     texte_ameliore = await formater_annonce_ia(texte_brut)
 
-    # Aperçu comparatif éphémère pour l'Orga
-    apercu_texte = (
-        f"📋 **APERÇU DE L'ANNONCE POUR {salon_destination.mention}**\n\n"
-        f"**✨ Version Propre (Aérée & Corrigée) :**\n"
-        f"```text\n{texte_ameliore[:1000]}\n```\n"
-        f"**📄 Version d'origine :**\n"
-        f"```text\n{texte_brut[:600]}\n```\n"
-        "👉 *Clique sur l'une des options ci-dessous pour valider la publication :*"
+    # 1. Affichage du rendu visuel réel
+    chunks = decouper_texte_intelligent(texte_ameliore, limite=1900)
+    for bloc in chunks:
+        await salon_destination.send(bloc)
+
+    # 2. Bloc de code brut pour copier/coller en 1 clic
+    chunks_bruts = decouper_texte_intelligent(texte_ameliore, limite=1850)
+    for i, chunk_b in enumerate(chunks_bruts, 1):
+        suffixe = f" (Partie {i}/{len(chunks_bruts)})" if len(chunks_bruts) > 1 else ""
+        await salon_destination.send(f"📋 **Texte brut à copier/coller{suffixe} :**\n```{chunk_b}```")
+
+    await interaction.followup.send(
+        f"✅ **Annonce mise en page et bloc copiable envoyés dans {salon_destination.mention} !**",
+        ephemeral=True
     )
 
-    view = AnnonceValidationView(
-        texte_ia=texte_ameliore,
-        texte_original=texte_brut,
-        salon_destination=salon_destination
-    )
 
-    await interaction.followup.send(apercu_texte, view=view, ephemeral=True)
+@bot.tree.command(
+    name="publier_annonce",
+    description="Publie l'annonce du salon test chez les candidats, l'archive et vide le salon test."
+)
+@app_commands.describe(
+    salon_candidats="Le salon public où les candidats doivent lire l'annonce (ex: #annonces)",
+    salon_test="Optionnel : le salon de travail/brouillon à publier (par défaut : salon actuel)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def publier_annonce(
+    interaction: discord.Interaction,
+    salon_candidats: discord.TextChannel,
+    salon_test: discord.TextChannel = None
+):
+    await interaction.response.defer(ephemeral=True)
+
+    source_channel = salon_test or interaction.channel
+    
+    # 1. Récupération de tous les messages non-bots du salon test
+    messages = [msg async for msg in source_channel.history(limit=50, oldest_first=True)]
+    messages_annonces = []
+
+    for m in messages:
+        if m.author.bot:
+            continue
+        contenu = m.content.strip()
+        # On ignore les messages qui étaient des blocs copiables ou des commandes
+        if contenu.startswith("📋 **Texte brut") or contenu.startswith("```"):
+            continue
+        if contenu:
+            messages_annonces.append(contenu)
+
+    # Si aucun message utilisateur classique n'est trouvé, on prend le contenu des blocs de code
+    if not messages_annonces:
+        for m in messages:
+            contenu = m.content.strip()
+            if "```" in contenu:
+                match = re.search(r"```(?:text)?\n?(.*?)\n?```", contenu, re.DOTALL)
+                if match:
+                    messages_annonces.append(match.group(1).strip())
+
+    if not messages_annonces:
+        await interaction.followup.send(f"❌ Aucun texte d'annonce trouvé dans {source_channel.mention}.", ephemeral=True)
+        return
+
+    texte_complet = "\n\n".join(messages_annonces)
+    morceaux = decouper_texte_intelligent(texte_complet, limite=1900)
+
+    # 2. Publication officielle sur le salon des candidats
+    for bloc in morceaux:
+        await salon_candidats.send(bloc)
+        await asyncio.sleep(0.4)
+
+    # 3. Archivage dans le salon dédié
+    salon_archive = bot.get_channel(SALON_ARCHIVES_ANNONCES_ID)
+    if salon_archive:
+        date_str = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y à %H:%M")
+        embed_arch = discord.Embed(
+            title=f"📦 ARCHIVE ANNONCE — {date_str}",
+            description=texte_complet if len(texte_complet) <= 3900 else None,
+            color=discord.Color.blue()
+        )
+        embed_arch.set_footer(text=f"Posté dans #{salon_candidats.name} par {interaction.user.display_name}")
+
+        if len(texte_complet) > 3900:
+            await salon_archive.send(f"📦 **ARCHIVE ANNONCE — {date_str} (Posté dans {salon_candidats.mention})**")
+            for bloc in morceaux:
+                await salon_archive.send(bloc)
+        else:
+            await salon_archive.send(embed=embed_arch)
+
+    # 4. Nettoyage du salon test
+    for m in messages:
+        try:
+            await m.delete()
+            await asyncio.sleep(0.2)
+        except Exception:
+            pass
+
+    await interaction.followup.send(
+        f"✅ **Annonce publiée avec succès !**\n"
+        f"- 📢 Diffusée dans {salon_candidats.mention}\n"
+        f"- 📦 Archivée dans <#{SALON_ARCHIVES_ANNONCES_ID}>\n"
+        f"- 🧹 {source_channel.mention} a été vidé.",
+        ephemeral=True
+    )
 
 # ==========================================
 # DÉMARRAGE DU BOT
