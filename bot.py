@@ -2884,6 +2884,115 @@ async def publier_annonce(interaction: discord.Interaction):
         ephemeral=True
     )
 
+# ========================================================
+# 19. GESTION DES PRÉFIXES DE PSEUDOS (TAGS RÔLES)
+# ========================================================
+
+async def appliquer_tag_role(
+    guild: discord.Guild,
+    nom_role: str,
+    tag: str
+) -> dict:
+    """Ajoute un préfixe (ex: [SPEC]) aux pseudos des membres possédant un rôle."""
+    role = discord.utils.get(guild.roles, name=nom_role)
+    if not role:
+        return {"succes": False, "erreur": f"Rôle **{nom_role}** introuvable."}
+
+    tag_propre = f"{tag.strip()} "
+    modifies = 0
+    deja_faits = 0
+    erreurs = 0
+
+    async for member in guild.fetch_members(limit=None):
+        if member.bot or role not in member.roles:
+            continue
+
+        pseudo_actuel = member.display_name
+
+        # Vérifie si le tag (insensible à la casse) est déjà au début du pseudo
+        if pseudo_actuel.lower().startswith(tag.lower()):
+            deja_faits += 1
+            continue
+
+        # Vérification hiérarchie Discord (le bot ne peut pas modifier un rôle plus haut que lui)
+        if member.top_role >= guild.me.top_role and member.id != guild.me.id:
+            erreurs += 1
+            continue
+
+        # Limite stricte de Discord à 32 caractères pour un pseudo
+        longueur_dispo = 32 - len(tag_propre)
+        nouveau_pseudo = f"{tag_propre}{pseudo_actuel[:longueur_dispo].strip()}"
+
+        try:
+            await member.edit(nick=nouveau_pseudo, reason=f"Application du tag {tag}")
+            modifies += 1
+            await asyncio.sleep(0.4)  # Anti rate-limit Discord
+        except Exception as e:
+            print(f"Impossible de renommer {member.display_name}: {e}")
+            erreurs += 1
+
+    return {
+        "succes": True,
+        "modifies": modifies,
+        "deja_faits": deja_faits,
+        "erreurs": erreurs,
+        "total": len([m for m in role.members if not m.bot])
+    }
+
+
+@bot.tree.command(
+    name="taguer_spectateurs",
+    description="Ajoute automatiquement le préfixe [SPEC] devant le nom de tous les Spectateurs."
+)
+@app_commands.check(est_orga_ou_admin)
+async def taguer_spectateurs(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    resultat = await appliquer_tag_role(
+        guild=interaction.guild,
+        nom_role=ROLE_SPECTATEURS_NAME,
+        tag="[SPEC]"
+    )
+
+    if not resultat["succes"]:
+        await interaction.followup.send(f"❌ {resultat['erreur']}", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        f"👁️ **Tags Spectateurs appliqués !**\n"
+        f"- ✏️ **{resultat['modifies']}** membre(s) renommé(s)\n"
+        f"- ⏩ **{resultat['deja_faits']}** avaient déjà le tag\n"
+        f"- ⚠️ **{resultat['erreurs']}** ignoré(s) (permissions supérieures au bot)",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="taguer_orgas",
+    description="Ajoute automatiquement le préfixe [ORGA] devant le nom de tous les Orgas."
+)
+@app_commands.check(est_orga_ou_admin)
+async def taguer_orgas(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    resultat = await appliquer_tag_role(
+        guild=interaction.guild,
+        nom_role=ROLE_ORGAS_NAME,
+        tag="[ORGA]"
+    )
+
+    if not resultat["succes"]:
+        await interaction.followup.send(f"❌ {resultat['erreur']}", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        f"🛠️ **Tags Orgas appliqués !**\n"
+        f"- ✏️ **{resultat['modifies']}** membre(s) renommé(s)\n"
+        f"- ⏩ **{resultat['deja_faits']}** avaient déjà le tag\n"
+        f"- ⚠️ **{resultat['erreurs']}** ignoré(s) (permissions supérieures au bot)",
+        ephemeral=True
+    )
+
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
