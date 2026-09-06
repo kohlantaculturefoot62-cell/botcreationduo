@@ -906,7 +906,7 @@ async def vider_categorie(interaction: discord.Interaction, nom_categorie: str):
 
 
 # ========================================================
-# 7. PERMISSIONS SPECTATEURS
+# 7. PERMISSIONS SPECTATEURS (SÉCURISÉES ANTI-RATE LIMIT)
 # ========================================================
 
 @bot.tree.command(
@@ -930,12 +930,25 @@ async def ajouter_spectateurs_salon(interaction: discord.Interaction, salon: dis
         return
 
     overwrites = get_spectateur_overwrites()
-    await target_channel.set_permissions(role_spectateurs, overwrite=overwrites, reason=f"Accès spectateur ajouté par {interaction.user.display_name}")
-
-    await interaction.followup.send(
-        f"👁️ Accès **Spectateurs** (lecture seule stricte) appliqué au salon {target_channel.mention} !",
-        ephemeral=True
-    )
+    
+    try:
+        await target_channel.set_permissions(
+            role_spectateurs, 
+            overwrite=overwrites, 
+            reason=f"Accès spectateur ajouté par {interaction.user.display_name}"
+        )
+        await interaction.followup.send(
+            f"👁️ Accès **Spectateurs** appliqué au salon {target_channel.mention} !",
+            ephemeral=True
+        )
+    except discord.HTTPException as e:
+        if e.status == 429:
+            await interaction.followup.send(
+                "⏳ **Discord est temporairement surchargé (Rate Limit).** Réessaye dans 2 minutes.",
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send(f"❌ Erreur Discord : {e}", ephemeral=True)
 
 
 @bot.tree.command(
@@ -970,17 +983,23 @@ async def ajouter_spectateurs_categorie(interaction: discord.Interaction, nom_ca
 
     for ch in channels_list:
         try:
-            await ch.set_permissions(role_spectateurs, overwrite=overwrites, reason=f"Accès spectateurs par lot ({interaction.user.display_name})")
+            await ch.set_permissions(
+                role_spectateurs, 
+                overwrite=overwrites, 
+                reason=f"Accès spectateurs par lot ({interaction.user.display_name})"
+            )
             mis_a_jour += 1
-            await asyncio.sleep(0.3)
-        except Exception:
-            pass
+            await asyncio.sleep(1.0)  # Délai de sécurité pour éviter le blocage Cloudflare
+        except discord.HTTPException as e:
+            if e.status == 429:
+                await asyncio.sleep(5.0)  # Pause forcée en cas de rate-limit
+            else:
+                pass
 
     await interaction.followup.send(
-        f"👁️ Accès **Spectateurs** appliqué avec succès sur **{mis_a_jour}/{len(channels_list)} salon(s)** de la catégorie **{category.name}** !",
+        f"👁️ Accès **Spectateurs** appliqué sur **{mis_a_jour}/{len(channels_list)} salon(s)** de **{category.name}** !",
         ephemeral=True
     )
-
 
 # ==========================================
 # 8. RÉSUMÉS IA & JOURNALISME
