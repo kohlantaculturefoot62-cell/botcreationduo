@@ -239,24 +239,30 @@ def decouper_texte_intelligent(texte: str, limite: int = 1900) -> list[str]:
 # =======================================================
 
 async def poster_questions_automatiques(texte_recap: str):
-    """Génère des questions d'interview ciblées (confessionnaux) et générales (conseil) basées sur l'aventure."""
+    """Génère des questions d'interview neutres, objectives et sans indice pour les confessionnaux et le conseil."""
     salon_q = bot.get_channel(SALON_QUESTIONS_RECAP_ID)
     if not salon_q:
         print(f"❌ Salon questions introuvable ({SALON_QUESTIONS_RECAP_ID})")
         return
 
     prompt_q = (
-        "Tu es le chef d'orchestre, interviewer et showrunner d'un jeu de survie/stratégie (type Koh-Lanta / Survivor / Secret Story).\n"
-        "En te basant sur le Journal Stratégique et les dynamiques de la journée ci-dessous :\n\n"
+        "Tu es le journaliste/interviewer professionnel et STRICTEMENT IMPARTIAL d'un jeu d'aventure et de stratégie (type Koh-Lanta / Survivor).\n"
+        "Voici le Journal Stratégique de la journée :\n\n"
         f"{texte_recap}\n\n"
-        "Rédige une FICHE DE QUESTIONS pour l'équipe d'organisation (Staff/Orgas) afin d'animer les confessionnaux et préparer le prochain conseil.\n\n"
-        "Structure OBLIGATOIRE du message :\n\n"
-        "## 🎯 1. QUESTIONS CIBLÉES (CONFESSIONNAUX INDIVIDUELS)\n"
-        "Identifie 3 ou 4 candidats au cœur des stratégies, tensions ou trahisons du jour. Pour chacun :\n"
-        "- **👤 [Nom du Candidat]** : 2 questions piquantes et ouvertes pour le pousser à assumer ses choix, justifier un revirement ou avouer un doute (au tutoiement, ton journalistique).\n\n"
-        "## ⚖️ 2. QUESTIONS GÉNÉRALES & TRIBUNE (CONSEIL / DÉBAT)\n"
-        "- Formule 3 questions percutantes à poser à la cantonade / en public pour lancer des débats sur l'ambiance, les non-dits, le mérite sur le camp ou la confiance globale depuis le début du jeu.\n\n"
-        "Consignes : Sois percutant, pertinent et pousse les joueurs dans leurs retranchements sans jamais révéler directement les secrets des autres."
+        "Rédige une FICHE DE QUESTIONS OBJECTIVES pour l'équipe d'organisation (Staff/Orgas).\n\n"
+        "RÈGLES D'OR ABSOLUES :\n"
+        "1. NEUTRALITÉ ET OBJECTIVITÉ TOTALE : Ne porte aucun jugement, aucune morale, aucune accusation.\n"
+        "2. ZÉRO INDICATION / NON-DIVULGATION : La question ne doit JAMAIS donner d'indice sur les alliances cachées, les complots en cours, les votes secrets ou ce que les autres disent dans leur dos.\n"
+        "3. QUESTIONS OUVERTES : Conçues comme un miroir neutre pour pousser le joueur à formuler sa propre perception, ses réflexions et ses dilemmes sans l'influencer.\n\n"
+        "STRUCTURE ATTENDUE :\n\n"
+        "## 🎙️ 1. QUESTIONS CONFESSIONNAL (INDIVIDUELLES & NEUTRES)\n"
+        "Sélectionne 3 à 4 candidats clés de la journée. Pour chacun :\n"
+        "- **👤 [Nom du Candidat]**\n"
+        "  - *Question 1 :* [Question ouverte sur son ressenti, sa confiance ou sa position actuelle dans l'aventure]\n"
+        "  - *Question 2 :* [Question neutre sur un choix, un dilemme ou l'approche qu'il compte adopter pour la suite]\n\n"
+        "## ⚖️ 2. QUESTIONS DÉBAT & CONSEIL (GÉNÉRALES & SANS SPOIL)\n"
+        "- 3 questions d'ambiance générale pour la tribu (la vie sur le camp, la fatigue, la difficulté d'anticiper les votes, l'évolution des affinités sans citer de noms).\n\n"
+        "Renvoie UNIQUEMENT le texte formaté, prêt à être utilisé par le staff."
     )
 
     try:
@@ -270,7 +276,7 @@ async def poster_questions_automatiques(texte_recap: str):
         paris_tz = ZoneInfo("Europe/Paris")
         date_str = datetime.datetime.now(paris_tz).strftime("%d/%m/%Y")
 
-        header = f"📋 **SUGGESTIONS DE QUESTIONS D'INTERVIEWS & CONSEIL — {date_str}**\n*(Généré pour les Orgas)*\n\n"
+        header = f"🎙️ **SUGGESTIONS D'INTERVIEWS NEUTRES & CONSEIL — {date_str}**\n*(Réservé aux Orgas • Zéro indication aux joueurs)*\n\n"
         full_msg = header + questions_texte
 
         for chunk in decouper_texte_intelligent(full_msg, 1900):
@@ -278,7 +284,7 @@ async def poster_questions_automatiques(texte_recap: str):
             await asyncio.sleep(0.3)
 
     except Exception as e:
-        print(f"Erreur génération questions résumé : {e}")
+        print(f"Erreur génération questions neutres : {e}")
 
 
 async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channel: discord.TextChannel):
