@@ -1802,7 +1802,7 @@ async def chrono_stop(
 
 
 # ========================================================
-# 14. QUIZ & ÉPREUVES (VRAI DÉCOMPTE SECONDES FLUIDE)
+# 14. QUIZ & ÉPREUVES AUTOMATISÉES (STABLE & ANTI-LAG)
 # ========================================================
 
 class GlobalQuizLancementView(discord.ui.View):
@@ -1829,7 +1829,7 @@ class GlobalQuizLancementView(discord.ui.View):
         questions = CONFIG_EPREUVE_GLOBALE["questions"]
 
         if not questions:
-            await channel.send("❌ Erreur : Aucune question chargée.")
+            await channel.send("❌ Erreur : Aucune question chargée dans la configuration.")
             return
 
         ETATS_EPREUVES_SALONS[channel.id] = {
@@ -1868,51 +1868,30 @@ class GlobalQuizLancementView(discord.ui.View):
             duree = int(q["secondes"])
             texte_q = q["question"]
 
-            # Message 1 : La question (fixe, grand format)
-            q_msg = await channel.send(f"# {texte_q}")
-            
-            # Message 2 : Le chronomètre dynamique (édité à intervalle régulier)
-            chrono_msg = await channel.send(f"⏱️ **Temps restant : `{duree}s`**")
+            now = datetime.datetime.now(datetime.timezone.utc)
+            fin_timestamp = int((now + datetime.timedelta(seconds=duree)).timestamp())
+
+            # Affichage grand format sans boucle edit qui sature l'API
+            texte_msg = (
+                f"# {texte_q}\n\n"
+                f"⏱️ **Temps :** `{duree}s` — **Fin :** <t:{fin_timestamp}:R> *(à <t:{fin_timestamp}:T>)*"
+            )
+            q_msg = await channel.send(texte_msg)
 
             def check_reponse(m: discord.Message):
                 return m.channel.id == channel.id and m.author.id == self.candidat.id
 
             debut_question = time.perf_counter()
-            reponse_recue = False
             reponse_msg = None
             temps_pris = float(duree)
 
-            # Tâche asynchrone d'écoute de message (en continu)
-            tache_ecoute = asyncio.create_task(bot.wait_for("message", check=check_reponse))
-
-            # Boucle d'actualisation du chrono toutes les 2 secondes (anti rate-limit)
-            while not tache_ecoute.done():
-                ecoule = time.perf_counter() - debut_question
-                restant = max(0, int(duree - ecoule))
-
-                if restant <= 0:
-                    break
+            try:
+                # Écoute directe et continue
+                reponse_msg = await bot.wait_for("message", timeout=duree, check=check_reponse)
+                temps_pris = round(time.perf_counter() - debut_question, 2)
 
                 try:
-                    reponse_msg = await asyncio.wait_for(asyncio.shield(tache_ecoute), timeout=2.0)
-                    reponse_recue = True
-                    temps_pris = round(time.perf_counter() - debut_question, 2)
-                    break
-                except asyncio.TimeoutError:
-                    if not tache_ecoute.done():
-                        r_actuel = max(0, int(duree - (time.perf_counter() - debut_question)))
-                        try:
-                            await chrono_msg.edit(content=f"⏱️ **Temps restant : `{r_actuel}s`**")
-                        except Exception:
-                            pass
-
-            if not reponse_recue and not tache_ecoute.done():
-                tache_ecoute.cancel()
-
-            # Traitement de la réponse
-            if reponse_recue and reponse_msg:
-                try:
-                    await chrono_msg.edit(content=f"✅ **Réponse validée en `{temps_pris}s` !**")
+                    await q_msg.edit(content=f"# {texte_q}\n\n✅ **Réponse validée en `{temps_pris}s`**")
                 except Exception:
                     pass
 
@@ -1923,9 +1902,10 @@ class GlobalQuizLancementView(discord.ui.View):
                     "temps": temps_pris,
                     "statut": "✅ Répondu"
                 })
-            else:
+
+            except asyncio.TimeoutError:
                 try:
-                    await chrono_msg.edit(content="🛑 **TEMPS ÉCOULÉ !**")
+                    await q_msg.edit(content=f"# {texte_q}\n\n🛑 **TEMPS ÉCOULÉ !**")
                 except Exception:
                     pass
 
@@ -1941,7 +1921,6 @@ class GlobalQuizLancementView(discord.ui.View):
             await asyncio.sleep(2.0)
             try:
                 await q_msg.delete()
-                await chrono_msg.delete()
                 if reponse_msg:
                     await reponse_msg.delete()
             except Exception:
@@ -1970,7 +1949,7 @@ class GlobalQuizLancementView(discord.ui.View):
 
         ETATS_EPREUVES_SALONS.pop(channel.id, None)
 
-        # Temps total
+        # Calcul du temps total net
         temps_total_brut = round(sum(r["temps"] for r in resultats), 2)
         minutes = int(temps_total_brut // 60)
         sec_rest = round(temps_total_brut % 60, 2)
@@ -1982,7 +1961,7 @@ class GlobalQuizLancementView(discord.ui.View):
             f"⏱️ **Temps total cumulé :** `{temps_total_texte}`\n\nMerci !"
         )
 
-        # Envoi aux Orgas
+        # Envoi des résultats aux Orgas
         result_channel = bot.get_channel(RESULTATS_CHANNEL_ID)
         if result_channel:
             bonnes_reponses = sum(1 for r in resultats if r["statut"] == "✅ Répondu")
@@ -2015,6 +1994,228 @@ class GlobalQuizLancementView(discord.ui.View):
             else:
                 await result_channel.send(embed=embed_recap_orga)
 
+
+# ========================================================
+# COMMANDES ORGAS ÉPREUVE
+# ========================================================
+
+@bot.tree.command(
+    name="configurer_epreuve",
+    description="Étape 1 : Charge et enregistre la banque de questions pour tous les candidats."
+)
+@app_commands.describe(
+    salon_questions="Le salon secret où se trouvent les questions",
+    temps_par_defaut="Temps par défaut en secondes si non spécifié (ex: 15)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def configurer_epreuve(
+    interaction: discord.Interaction,
+    salon_questions: discord.TextChannel,
+    temps_par_defaut: int = 15
+):
+    await interaction.response.defer(ephemeral=True)
+    global CONFIG_EPREUVE_GLOBALE
+
+    questions = []
+    async for msg in salon_questions.history(limit=25, oldest_first=False):
+        if not msg.author.bot and msg.content.strip():
+            for ligne in msg.content.strip().split("\n"):
+                ligne = ligne.strip()
+                if not ligne:
+                    continue
+                if "|" in ligne:
+                    parties = ligne.split("|")
+                    q_txt = parties[0].strip()
+                    try:
+                        t_sec = int(parties[1].strip())
+                    except ValueError:
+                        t_sec = temps_par_defaut
+                else:
+                    q_txt = ligne
+                    t_sec = temps_par_defaut
+
+                questions.append({"question": q_txt, "secondes": t_sec})
+            if questions:
+                break
+
+    if not questions:
+        await interaction.followup.send("❌ Aucune question valide trouvée dans le salon source.", ephemeral=True)
+        return
+
+    CONFIG_EPREUVE_GLOBALE["questions"] = questions
+    CONFIG_EPREUVE_GLOBALE["temps_par_defaut"] = temps_par_defaut
+    CONFIG_EPREUVE_GLOBALE["active"] = True
+
+    await interaction.followup.send(
+        f"✅ **Configuration enregistrée avec succès !**\n"
+        f"- 📝 **{len(questions)} questions** chargées depuis {salon_questions.mention}.\n"
+        f"- ⏱️ **Temps de base :** `{temps_par_defaut}s` par question.\n"
+        f"- 📬 Les récaps seront envoyés sur <#{RESULTATS_CHANNEL_ID}>.\n\n"
+        f"👉 *Lance maintenant `/lancer_epreuve`.*",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="lancer_epreuve",
+    description="Étape 2 : Déploie l'épreuve pour un candidat précis (ou en masse sur une catégorie)."
+)
+@app_commands.describe(
+    candidat="Optionnel : le candidat ciblé pour qui déployer l'épreuve",
+    salon_cible="Optionnel : le salon où déployer (par défaut : salon actuel)",
+    nom_categorie="Optionnel : nom de la catégorie pour déployer dans tous les confessionnaux en masse"
+)
+@app_commands.check(est_orga_ou_admin)
+async def lancer_epreuve(
+    interaction: discord.Interaction,
+    candidat: discord.Member = None,
+    salon_cible: discord.TextChannel = None,
+    nom_categorie: str = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    if not CONFIG_EPREUVE_GLOBALE["active"] or not CONFIG_EPREUVE_GLOBALE["questions"]:
+        await interaction.followup.send("❌ Aucune épreuve n'est configurée. Lance d'abord `/configurer_epreuve`.", ephemeral=True)
+        return
+
+    if candidat:
+        target_ch = salon_cible or interaction.channel
+        if not isinstance(target_ch, discord.TextChannel):
+            await interaction.followup.send("❌ Le salon cible doit être un salon textuel.", ephemeral=True)
+            return
+
+        view = GlobalQuizLancementView(candidat=candidat)
+        embed_invit = discord.Embed(
+            title="🏺 ÉPREUVE DE RAPIDITÉ",
+            description=(
+                f"Bienvenue {candidat.mention} pour ton épreuve.\n\n"
+                f"📌 **Consignes :**\n"
+                f"- Les questions s'enchaînent automatiquement.\n"
+                f"- Écris ta réponse directement ici.\n"
+                f"- Les questions et réponses s'effaceront au fur et à mesure pour la confidentialité.\n\n"
+                f"👉 **Clique sur le bouton vert ci-dessous dès que tu es prêt :**"
+            ),
+            color=discord.Color.dark_gold()
+        )
+
+        await target_ch.send(embed=embed_invit, view=view)
+        await interaction.followup.send(
+            f"🚀 **Épreuve déployée pour {candidat.mention}** dans {target_ch.mention} !",
+            ephemeral=True
+        )
+        return
+
+    if nom_categorie:
+        cat_clean = nettoyer_texte(nom_categorie)
+        category = discord.utils.find(lambda c: nettoyer_texte(c.name) == cat_clean, guild.categories)
+        if not category:
+            await interaction.followup.send(f"❌ Catégorie **{nom_categorie}** introuvable.", ephemeral=True)
+            return
+
+        salons_cibles = [ch for ch in category.channels if isinstance(ch, discord.TextChannel)]
+        deplois = 0
+
+        for ch in salons_cibles:
+            candidat_trouve = None
+            for cible, overwrite in ch.overwrites.items():
+                if isinstance(cible, discord.Member) and not cible.bot:
+                    candidat_trouve = cible
+                    break
+                elif isinstance(cible, discord.Role) and cible.name not in [ROLE_ORGAS_NAME, ROLE_SPECTATEURS_NAME, "@everyone"]:
+                    for m in ch.guild.members:
+                        if cible in m.roles and not m.bot:
+                            candidat_trouve = m
+                            break
+                    if candidat_trouve:
+                        break
+
+            if not candidat_trouve:
+                continue
+
+            view = GlobalQuizLancementView(candidat=candidat_trouve)
+            embed_invit = discord.Embed(
+                title="🏺 ÉPREUVE DE RAPIDITÉ",
+                description=(
+                    f"Bienvenue {candidat_trouve.mention} pour ton épreuve.\n\n"
+                    f"📌 **Consignes :**\n"
+                    f"- Les questions s'enchaînent automatiquement.\n"
+                    f"- Écris ta réponse directement ici.\n"
+                    f"- Les questions et réponses s'effaceront au fur et à mesure pour la confidentialité.\n\n"
+                    f"👉 **Clique sur le bouton vert ci-dessous dès que tu es prêt :**"
+                ),
+                color=discord.Color.dark_gold()
+            )
+
+            await ch.send(embed=embed_invit, view=view)
+            deplois += 1
+            await asyncio.sleep(0.4)
+
+        await interaction.followup.send(
+            f"🚀 **Épreuve déployée sur {deplois} salon(s)** de la catégorie **{category.name}** !",
+            ephemeral=True
+        )
+        return
+
+    await interaction.followup.send("❌ Veuillez renseigner un `candidat` ou un `nom_categorie`.", ephemeral=True)
+
+
+@bot.tree.command(
+    name="pause_epreuve",
+    description="Met en pause l'épreuve : laisse finir la question en cours, puis bloque avant la suivante."
+)
+@app_commands.describe(salon="Optionnel : salon ciblé (par défaut : salon actuel)")
+@app_commands.check(est_orga_ou_admin)
+async def pause_epreuve(interaction: discord.Interaction, salon: discord.TextChannel = None):
+    ch = salon or interaction.channel
+    if ch.id not in ETATS_EPREUVES_SALONS:
+        await interaction.response.send_message("❌ Aucune épreuve active trouvée dans ce salon.", ephemeral=True)
+        return
+
+    ETATS_EPREUVES_SALONS[ch.id]["pause_demandee"] = True
+    ETATS_EPREUVES_SALONS[ch.id]["event"].clear()
+
+    await interaction.response.send_message(
+        f"⏸️ **Pause programmée dans {ch.mention} !**\n"
+        f"Le candidat termine sa question actuelle, puis l'épreuve se mettra en pause avant la suivante.",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="reprendre_epreuve",
+    description="Reprend une épreuve mise en pause dans un salon."
+)
+@app_commands.describe(salon="Optionnel : salon à relancer (par défaut : salon actuel)")
+@app_commands.check(est_orga_ou_admin)
+async def reprendre_epreuve(interaction: discord.Interaction, salon: discord.TextChannel = None):
+    ch = salon or interaction.channel
+    if ch.id not in ETATS_EPREUVES_SALONS or not ETATS_EPREUVES_SALONS[ch.id]["pause_demandee"]:
+        await interaction.response.send_message("❌ L'épreuve n'est pas en attente de reprise dans ce salon.", ephemeral=True)
+        return
+
+    ETATS_EPREUVES_SALONS[ch.id]["pause_demandee"] = False
+    ETATS_EPREUVES_SALONS[ch.id]["event"].set()
+
+    await interaction.response.send_message(f"▶️ **Épreuve relancée avec succès dans {ch.mention} !**", ephemeral=True)
+
+
+@bot.tree.command(
+    name="terminer_epreuve",
+    description="Étape 3 : Clôture définitivement l'épreuve en cours et réinitialise la configuration."
+)
+@app_commands.check(est_orga_ou_admin)
+async def terminer_epreuve(interaction: discord.Interaction):
+    global CONFIG_EPREUVE_GLOBALE
+    CONFIG_EPREUVE_GLOBALE["active"] = False
+    CONFIG_EPREUVE_GLOBALE["questions"] = []
+
+    await interaction.response.send_message(
+        "🛑 **Épreuve clôturée !**\n"
+        "- Les boutons encore actifs ne peuvent plus lancer de questions.\n"
+        "- La configuration en mémoire a été réinitialisée.",
+        ephemeral=True
+    )
 # ========================================================
 # 15. PRÉSENTATIONS (EXTRACTION PAR IA)
 # ========================================================
