@@ -3223,16 +3223,16 @@ async def taguer_orgas(interaction: discord.Interaction):
 
 
 # ========================================================
-# 19. ROAST ADAPTATIF (SPECTATEURS VS CANDIDATS VS ORGAS)
+# 19. ROAST ADAPTATIF PROFOND & PSYCHOLOGIQUE
 # ========================================================
 
 @bot.tree.command(
     name="roast",
-    description="Génère un roast adapté selon que le membre est Candidat, Spectateur ou Orga."
+    description="Génère un roast sur-mesure, profond et imaginatif basé sur l'analyse des messages."
 )
 @app_commands.describe(
     cible="Le membre à roast",
-    contexte="Optionnel : contexte particulier (ex: a raté son épreuve, ouvre trop sa bouche en tribune...)"
+    contexte="Optionnel : contexte particulier pour orienter la pique"
 )
 @app_commands.check(est_orga_ou_admin)
 async def roast_cmd(
@@ -3248,59 +3248,50 @@ async def roast_cmd(
 
     if role_orga and role_orga in cible.roles:
         statut = "ORGA"
-        instruction_statut = (
-            "La cible est un ORGANISATEUR / STAFF du jeu. "
-            "Clashe-le sur ses règles tordues, ses retards d'animation ou son abus de pouvoir bienveillant."
-        )
+        instruction_statut = "La cible fait partie de l'organisation. Moque-toi de son besoin de contrôle, de ses fails techniques ou de son complexe de supériorité mal placé."
     elif role_spectateur and role_spectateur in cible.roles:
         statut = "SPECTATEUR"
-        instruction_statut = (
-            "La cible est un SIMPLE SPECTATEUR / TÉLÉSPECTATEUR. "
-            "Clashe-le sur le fait qu'il est confortablement assis dans son canapé à juger les autres alors qu'il ne tiendrait pas 2 heures sur l'île, "
-            "ses prédictions éclatées au sol et son statut d'éternel observateur."
-        )
+        instruction_statut = "La cible est un spectateur. Frappe sur son côté 'expert de canapé', ses théories du complot ridicules, ou le fait qu'il parle beaucoup pour quelqu'un qui n'a pas le courage de jouer."
     else:
         statut = "CANDIDAT"
-        instruction_statut = (
-            "La cible est un CANDIDAT ACTIF de l'aventure. "
-            "Clashe-le sur sa stratégie bancale, ses promesses en l'air dans les duos, son manque de lucidité, ses éliminations frôlées ou sa passivité sur le camp."
-        )
+        instruction_statut = "La cible est un candidat. Cherche la faille psychologique : paranoïa, excès de confiance pathétique, manipulation ratée, ou invisibilité totale dans le jeu."
 
     messages_recents = []
     maintenant = datetime.datetime.now(datetime.timezone.utc)
-    depuis = maintenant - datetime.timedelta(days=2)
+    depuis = maintenant - datetime.timedelta(days=3) # Élargi à 3 jours pour plus de matière
 
     for ch in guild.text_channels:
         if ch.name.startswith("🔒arch-") or ch.name.lower() == "log-deplacements":
             continue
 
         try:
-            async for msg in ch.history(limit=40, after=depuis, oldest_first=False):
+            async for msg in ch.history(limit=50, after=depuis, oldest_first=False):
                 if msg.author.id == cible.id and msg.content.strip():
-                    messages_recents.append(f"[#{ch.name}] {msg.content.strip()[:150]}")
-                if len(messages_recents) >= 20:
+                    messages_recents.append(f"- {msg.content.strip()[:200]}")
+                if len(messages_recents) >= 25:
                     break
         except Exception:
             continue
 
-        if len(messages_recents) >= 20:
+        if len(messages_recents) >= 25:
             break
 
-    contexte_messages = "\n".join(messages_recents) if messages_recents else "Aucun message récent détecté."
-    contexte_orga = f"Contexte additionnel : {contexte}" if contexte else ""
+    contexte_messages = "\n".join(messages_recents) if messages_recents else "Aucun message récent. (Utilise ce silence abyssal pour la clasher sur son inexistence)."
+    contexte_orga = f"Contexte imposé : {contexte}" if contexte else ""
 
     prompt = (
-        "Tu es l'arbitre et présentateur emblématique d'un jeu de survie et de stratégie (type Koh-Lanta / Survivor).\n"
-        "Ton ton est ultra-sarcastique, incisif, piquant et très drôle, sans jamais tomber dans la vulgarité ou les insultes haineuses.\n\n"
-        f"CIBLE DU ROAST : {cible.display_name}\n"
-        f"STATUT DÉTECTÉ : {statut}\n"
-        f"CONSIGNE DE CADRAGE : {instruction_statut}\n\n"
-        f"EXTRAITS DE SES MESSAGES RÉCENTS SUR LE SERVEUR :\n{contexte_messages}\n\n"
+        "Tu es un sniper de la punchline, un profiler cynique, fin et extrêmement observateur.\n"
+        "Ta mission est de détruire l'ego de la cible avec un 'roast' (clash) profond, très imaginatif et sur-mesure.\n\n"
+        f"CIBLE : {cible.display_name} (Statut : {statut})\n"
+        f"DIRECTIVE DE STATUT : {instruction_statut}\n\n"
+        f"SES VRAIS MESSAGES SUR LE SERVEUR POUR T'INSPIRER :\n{contexte_messages}\n\n"
         f"{contexte_orga}\n\n"
-        "CONSIGNES DE FORME :\n"
-        "1. Adapte l'attaque à son statut (Spectateur = critiqueur de canapé / Candidat = joueur perdu).\n"
-        "2. Fais un texte court, direct et percutant (2 à 4 phrases maximum).\n"
-        "3. Renvoie UNIQUEMENT le texte du clash sans aucun mot avant ou après."
+        "RÈGLES D'OR POUR UN ROAST MAGISTRAL :\n"
+        "1. INTERDICTION ABSOLUE d'utiliser les phrases génériques de télé-réalité (ex: 'ton flambeau est éteint', 'la tribu a décidé', 'stratégie éclatée'). Sois beaucoup plus créatif et inattendu.\n"
+        "2. ANALYSE PROFONDE : Sers-toi de SES mots. Moque-toi de ses tics de langage, de ses fautes, de son angoisse visible ou de ses certitudes aveugles.\n"
+        "3. TONE : Cinglant, théâtral, psychologique. Frappe là où ça fait mal avec élégance et sarcasme.\n"
+        "4. FORMAT : 3 à 5 phrases qui montent crescendo en intensité.\n"
+        "5. Ne mets aucun texte d'introduction ni de conclusion, juste la punchline directe."
     )
 
     try:
@@ -3311,7 +3302,7 @@ async def roast_cmd(
         )
         punchline = response.text.strip()
     except Exception as e:
-        punchline = f"{cible.mention}, même le bot a eu pitié de toi tellement tes messages parlent d'eux-mêmes."
+        punchline = f"{cible.mention}, j'allais te roast, mais ton propre historique de messages est déjà une humiliation suffisante."
 
     badge = "🍿 [SPECTATEUR]" if statut == "SPECTATEUR" else ("🛠️ [STAFF]" if statut == "ORGA" else "🌴 [CANDIDAT]")
     await interaction.followup.send(f"🔥 **ROAST — {badge}** {cible.mention}\n\n{punchline}")
