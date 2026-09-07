@@ -3223,16 +3223,16 @@ async def taguer_orgas(interaction: discord.Interaction):
 
 
 # ========================================================
-# 19. ROAST ADAPTATIF PROFOND & PSYCHOLOGIQUE
+# 19. ROAST ADAPTATIF DRÔLE & BIENVEILLANT (SECOND DEGRÉ)
 # ========================================================
 
 @bot.tree.command(
     name="roast",
-    description="Génère un roast sur-mesure, profond et imaginatif basé sur l'analyse des messages."
+    description="Envoie un taquet plein d'esprit, drôle et bon enfant (100% second degré)."
 )
 @app_commands.describe(
-    cible="Le membre à roast",
-    contexte="Optionnel : contexte particulier pour orienter la pique"
+    cible="Le membre à taquiner",
+    contexte="Optionnel : contexte particulier pour orienter la vanne"
 )
 @app_commands.check(est_orga_ou_admin)
 async def roast_cmd(
@@ -3248,17 +3248,17 @@ async def roast_cmd(
 
     if role_orga and role_orga in cible.roles:
         statut = "ORGA"
-        instruction_statut = "La cible fait partie de l'organisation. Moque-toi de son besoin de contrôle, de ses fails techniques ou de son complexe de supériorité mal placé."
+        instruction_statut = "La cible est un Orga. Taquine-le gentiment sur son zèle, ses règles alambiquées, ses retards d'animation ou ses airs de grand maître du jeu."
     elif role_spectateur and role_spectateur in cible.roles:
         statut = "SPECTATEUR"
-        instruction_statut = "La cible est un spectateur. Frappe sur son côté 'expert de canapé', ses théories du complot ridicules, ou le fait qu'il parle beaucoup pour quelqu'un qui n'a pas le courage de jouer."
+        instruction_statut = "La cible est un Spectateur. Taquine-le sur son rôle de sélectionneur assis dans son canapé, son stock infini de popcorn et ses pronostics toujours à côté de la plaque."
     else:
         statut = "CANDIDAT"
-        instruction_statut = "La cible est un candidat. Cherche la faille psychologique : paranoïa, excès de confiance pathétique, manipulation ratée, ou invisibilité totale dans le jeu."
+        instruction_statut = "La cible est un Candidat. Taquine-le sur ses hésitations stratégiques, ses fausses promesses maladroites, sa discrétion sur le camp ou ses talents d'acteur ratés."
 
     messages_recents = []
     maintenant = datetime.datetime.now(datetime.timezone.utc)
-    depuis = maintenant - datetime.timedelta(days=3) # Élargi à 3 jours pour plus de matière
+    depuis = maintenant - datetime.timedelta(days=3)
 
     for ch in guild.text_channels:
         if ch.name.startswith("🔒arch-") or ch.name.lower() == "log-deplacements":
@@ -3276,22 +3276,21 @@ async def roast_cmd(
         if len(messages_recents) >= 25:
             break
 
-    contexte_messages = "\n".join(messages_recents) if messages_recents else "Aucun message récent. (Utilise ce silence abyssal pour la clasher sur son inexistence)."
-    contexte_orga = f"Contexte imposé : {contexte}" if contexte else ""
+    contexte_messages = "\n".join(messages_recents) if messages_recents else "Aucun message récent (chambre-le gentiment sur son mode fantôme)."
+    contexte_orga = f"Contexte imposé par l'organisation : {contexte}" if contexte else ""
 
     prompt = (
-        "Tu es un sniper de la punchline, un profiler cynique, fin et extrêmement observateur.\n"
-        "Ta mission est de détruire l'ego de la cible avec un 'roast' (clash) profond, très imaginatif et sur-mesure.\n\n"
-        f"CIBLE : {cible.display_name} (Statut : {statut})\n"
-        f"DIRECTIVE DE STATUT : {instruction_statut}\n\n"
-        f"SES VRAIS MESSAGES SUR LE SERVEUR POUR T'INSPIRER :\n{contexte_messages}\n\n"
+        "Tu es un humoriste et maître de cérémonie dans un jeu d'aventure amical.\n"
+        "Ton rôle est d'envoyer un roast plein d'esprit, drôle, créatif et taquin, mais avec BIENVEILLANCE et complicité.\n\n"
+        f"CIBLE DU ROAST : {cible.display_name} (Statut : {statut})\n"
+        f"CADRAGE STATUT : {instruction_statut}\n\n"
+        f"SES MESSAGES SUR LE SERVEUR :\n{contexte_messages}\n\n"
         f"{contexte_orga}\n\n"
-        "RÈGLES D'OR POUR UN ROAST MAGISTRAL :\n"
-        "1. INTERDICTION ABSOLUE d'utiliser les phrases génériques de télé-réalité (ex: 'ton flambeau est éteint', 'la tribu a décidé', 'stratégie éclatée'). Sois beaucoup plus créatif et inattendu.\n"
-        "2. ANALYSE PROFONDE : Sers-toi de SES mots. Moque-toi de ses tics de langage, de ses fautes, de son angoisse visible ou de ses certitudes aveugles.\n"
-        "3. TONE : Cinglant, théâtral, psychologique. Frappe là où ça fait mal avec élégance et sarcasme.\n"
-        "4. FORMAT : 3 à 5 phrases qui montent crescendo en intensité.\n"
-        "5. Ne mets aucun texte d'introduction ni de conclusion, juste la punchline directe."
+        "RÈGLES D'OR DE LA BIENVEILLANCE ET DE L'HUMOUR :\n"
+        "1. SECOND DEGRÉ ABSOLU : C'est du chambrage entre potes. Reste bon enfant, zéro méchanceté gratuite, zéro attaque personnelle dégradante.\n"
+        "2. CRÉATIF ET INATTENDU : Évite les clichés réchauffés de télé-réalité. Rebondis avec finesse sur ses messages, ses tics de langage, son énergie ou ses contradictions dans le jeu.\n"
+        "3. FORME : 2 à 4 phrases bien ficelées qui font sourire la personne et tout le serveur.\n"
+        "4. Renvoie UNIQUEMENT le texte du roast sans message introductif."
     )
 
     try:
@@ -3302,10 +3301,10 @@ async def roast_cmd(
         )
         punchline = response.text.strip()
     except Exception as e:
-        punchline = f"{cible.mention}, j'allais te roast, mais ton propre historique de messages est déjà une humiliation suffisante."
+        punchline = f"{cible.mention}, j'allais te sortir ma meilleure vanne, mais ta présence ici est déjà un divertissement en soi !"
 
     badge = "🍿 [SPECTATEUR]" if statut == "SPECTATEUR" else ("🛠️ [STAFF]" if statut == "ORGA" else "🌴 [CANDIDAT]")
-    await interaction.followup.send(f"🔥 **ROAST — {badge}** {cible.mention}\n\n{punchline}")
+    await interaction.followup.send(f"🔥 **ROAST (100% Love & Second Degré) — {badge}** {cible.mention}\n\n{punchline}")
 
 
 # ==========================================
