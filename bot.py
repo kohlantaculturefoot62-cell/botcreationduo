@@ -3136,6 +3136,96 @@ async def resume_spectateurs_cmd(interaction: discord.Interaction):
     else:
         await interaction.followup.send(f"❌ {msg}", ephemeral=True)
 
+
+# ========================================================
+# NOUVELLE FONCTION & COMMANDE : PRÉSENTATION ORGAS
+# ========================================================
+
+SALON_PRESENTATION_ORGAS_ID = 1546603467580383332
+
+def creer_embed_presentation_orga(
+    prenom: str,
+    texte: str,
+    image_url: str = None
+) -> discord.Embed:
+    """Génère la fiche officielle d'un membre de l'organisation."""
+    embed = discord.Embed(
+        title=f"🛠️ {prenom.upper()} — ORGANISATION",
+        description=texte,
+        color=discord.Color.red()
+    )
+
+    if image_url:
+        embed.set_image(url=image_url)
+
+    embed.set_footer(text=f"Organisateur : {prenom} • Fiche Staff Officielle")
+    return embed
+
+
+@bot.tree.command(
+    name="formater_presentation_orga",
+    description="Publie la fiche de présentation soignée d'un orga dans le salon dédié aux orgas."
+)
+@app_commands.describe(
+    message_id_ou_lien="L'ID du message ou son lien Discord contenant la présentation de l'orga",
+    salon_destination="Optionnel : salon où envoyer l'embed (par défaut : salon de présentation des orgas)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def formater_presentation_orga(
+    interaction: discord.Interaction,
+    message_id_ou_lien: str,
+    salon_destination: discord.TextChannel = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    dest_channel = salon_destination or bot.get_channel(SALON_PRESENTATION_ORGAS_ID) or interaction.channel
+
+    msg_id = message_id_ou_lien.strip().split("/")[-1]
+    try:
+        msg_id_int = int(msg_id)
+    except ValueError:
+        await interaction.followup.send("❌ Lien ou ID de message invalide.", ephemeral=True)
+        return
+
+    source_msg = None
+    try:
+        source_msg = await interaction.channel.fetch_message(msg_id_int)
+    except Exception:
+        for ch in guild.text_channels:
+            try:
+                source_msg = await ch.fetch_message(msg_id_int)
+                if source_msg:
+                    break
+            except Exception:
+                continue
+
+    if not source_msg:
+        await interaction.followup.send("❌ Message introuvable sur le serveur.", ephemeral=True)
+        return
+
+    texte_brut = source_msg.content.strip()
+    image_url = None
+    if source_msg.attachments:
+        for att in source_msg.attachments:
+            if att.content_type and att.content_type.startswith("image/"):
+                image_url = att.url
+                break
+
+    # Analyse et mise en page IA
+    res_ia = await analyser_candidat_ia(texte_brut)
+    embed = creer_embed_presentation_orga(
+        prenom=res_ia["nom"],
+        texte=res_ia["texte"],
+        image_url=image_url
+    )
+
+    await dest_channel.send(embed=embed)
+    await interaction.followup.send(
+        f"✅ Fiche Orga de **{res_ia['nom']}** publiée avec succès dans {dest_channel.mention} !",
+        ephemeral=True
+    )
+    
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
