@@ -2490,22 +2490,25 @@ def creer_embed_presentation_pure(
 
 
 @bot.tree.command(
-    name="formater_presentation",
-    description="Publie la présentation d'un message unique sous forme de fiche propre avec sa photo."
+    name="formater_presentation_orga",
+    description="Publie la fiche soignée d'un orga (détection automatique ou prénom forcé)."
 )
 @app_commands.describe(
-    message_id_ou_lien="L'ID du message ou son lien Discord",
-    salon_destination="Optionnel : salon où envoyer l'embed (par défaut : salon actuel)"
+    message_id_ou_lien="L'ID du message ou son lien Discord contenant la présentation de l'orga",
+    prenom_force="Optionnel : forcer un prénom précis si l'IA risque de se tromper (ex: Sarah)",
+    salon_destination="Optionnel : salon où envoyer l'embed (par défaut : salon orgas)"
 )
 @app_commands.check(est_orga_ou_admin)
-async def formater_presentation(
+async def formater_presentation_orga(
     interaction: discord.Interaction,
     message_id_ou_lien: str,
+    prenom_force: str = None,
     salon_destination: discord.TextChannel = None
 ):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
-    dest_channel = salon_destination or interaction.channel
+
+    dest_channel = salon_destination or bot.get_channel(SALON_PRESENTATION_ORGAS_ID) or interaction.channel
 
     msg_id = message_id_ou_lien.strip().split("/")[-1]
     try:
@@ -2538,15 +2541,23 @@ async def formater_presentation(
                 image_url = att.url
                 break
 
+    # Traitement IA (nettoyage et correction)
     res_ia = await analyser_candidat_ia(texte_brut)
-    embed = creer_embed_presentation_pure(
-        prenom=res_ia["nom"],
+
+    # Prénom forcé si précisé, sinon détection IA
+    prenom_final = prenom_force.strip().capitalize() if prenom_force else res_ia["nom"]
+
+    embed = creer_embed_presentation_orga(
+        prenom=prenom_final,
         texte=res_ia["texte"],
         image_url=image_url
     )
 
     await dest_channel.send(embed=embed)
-    await interaction.followup.send(f"✅ Fiche publiée dans {dest_channel.mention} !", ephemeral=True)
+    await interaction.followup.send(
+        f"✅ Fiche Orga de **{prenom_final}** publiée avec succès dans {dest_channel.mention} !",
+        ephemeral=True
+    )
 
 
 # ========================================================
