@@ -2557,6 +2557,7 @@ async def formater_presentation_orga(
     await interaction.followup.send(
         f"✅ Fiche Orga de **{prenom_final}** publiée avec succès dans {dest_channel.mention} !",
         ephemeral=True
+ 
     )
 
 
