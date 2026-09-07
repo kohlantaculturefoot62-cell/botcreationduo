@@ -239,20 +239,24 @@ def decouper_texte_intelligent(texte: str, limite: int = 1900) -> list[str]:
 # =======================================================
 
 async def poster_questions_automatiques(texte_recap: str):
-    """Formule 3 questions de lecture sur le résumé et les publie dans le salon dédié."""
+    """Génère des questions d'interview ciblées (confessionnaux) et générales (conseil) basées sur l'aventure."""
     salon_q = bot.get_channel(SALON_QUESTIONS_RECAP_ID)
     if not salon_q:
         print(f"❌ Salon questions introuvable ({SALON_QUESTIONS_RECAP_ID})")
         return
 
     prompt_q = (
-        "Tu es l'organisateur du jeu. En te basant STRICTEMENT sur le résumé du jour suivant :\n\n"
+        "Tu es le chef d'orchestre, interviewer et showrunner d'un jeu de survie/stratégie (type Koh-Lanta / Survivor / Secret Story).\n"
+        "En te basant sur le Journal Stratégique et les dynamiques de la journée ci-dessous :\n\n"
         f"{texte_recap}\n\n"
-        "Formule exactement 3 questions d'observation courtes et précises pour vérifier que les candidats ont bien lu le résumé.\n"
-        "Format strict attendu (une par ligne) :\n"
-        "Question ? | Temps_en_secondes\n"
-        "(Exemple : Qui a proposé de voter contre Alex ? | 15)\n\n"
-        "Ne mets aucun commentaire autour, seulement les 3 lignes."
+        "Rédige une FICHE DE QUESTIONS pour l'équipe d'organisation (Staff/Orgas) afin d'animer les confessionnaux et préparer le prochain conseil.\n\n"
+        "Structure OBLIGATOIRE du message :\n\n"
+        "## 🎯 1. QUESTIONS CIBLÉES (CONFESSIONNAUX INDIVIDUELS)\n"
+        "Identifie 3 ou 4 candidats au cœur des stratégies, tensions ou trahisons du jour. Pour chacun :\n"
+        "- **👤 [Nom du Candidat]** : 2 questions piquantes et ouvertes pour le pousser à assumer ses choix, justifier un revirement ou avouer un doute (au tutoiement, ton journalistique).\n\n"
+        "## ⚖️ 2. QUESTIONS GÉNÉRALES & TRIBUNE (CONSEIL / DÉBAT)\n"
+        "- Formule 3 questions percutantes à poser à la cantonade / en public pour lancer des débats sur l'ambiance, les non-dits, le mérite sur le camp ou la confiance globale depuis le début du jeu.\n\n"
+        "Consignes : Sois percutant, pertinent et pousse les joueurs dans leurs retranchements sans jamais révéler directement les secrets des autres."
     )
 
     try:
@@ -262,7 +266,17 @@ async def poster_questions_automatiques(texte_recap: str):
             contents=prompt_q
         )
         questions_texte = reponse_q.text.strip()
-        await salon_q.send(f"📋 **BANQUE DE QUESTIONS DU JOUR (SUR LE RÉSUMÉ)**\n\n{questions_texte}")
+        
+        paris_tz = ZoneInfo("Europe/Paris")
+        date_str = datetime.datetime.now(paris_tz).strftime("%d/%m/%Y")
+
+        header = f"📋 **SUGGESTIONS DE QUESTIONS D'INTERVIEWS & CONSEIL — {date_str}**\n*(Généré pour les Orgas)*\n\n"
+        full_msg = header + questions_texte
+
+        for chunk in decouper_texte_intelligent(full_msg, 1900):
+            await salon_q.send(chunk)
+            await asyncio.sleep(0.3)
+
     except Exception as e:
         print(f"Erreur génération questions résumé : {e}")
 
