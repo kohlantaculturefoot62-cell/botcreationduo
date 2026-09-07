@@ -3173,15 +3173,15 @@ def creer_embed_presentation_orga(
     embed.set_footer(text=f"Organisateur : {prenom} • Fiche Staff Officielle")
     return embed
 # ========================================================
-# 21. COMMANDE DE ROAST / TAQUINERIE DU JEU
+# 21. COMMANDE DE ROAST / TAQUINERIE MULTI-SALONS
 # ========================================================
 
 @bot.tree.command(
     name="roast",
-    description="Envoie un taquet/roast bien placé et personnalisé à un membre."
+    description="Génère un roast sur-mesure en analysant les messages du membre sur tout le serveur."
 )
 @app_commands.describe(
-    cible="La personne à roast (joueur, spectateur ou orga)",
+    cible="Le membre à roast (joueur, spectateur ou orga)",
     contexte="Optionnel : préciser un contexte particulier (ex: a raté l'épreuve, dort sur le camp...)"
 )
 @app_commands.check(est_orga_ou_admin)
@@ -3191,30 +3191,44 @@ async def roast_cmd(
     contexte: str = None
 ):
     await interaction.response.defer()
+    guild = interaction.guild
 
-    # Récupération de quelques messages récents de la cible pour nourrir le roast
+    # 1. Récupération des messages de la cible à travers les salons accessibles
     messages_recents = []
-    try:
-        async for msg in interaction.channel.history(limit=50):
-            if msg.author.id == cible.id and msg.content.strip():
-                messages_recents.append(msg.content[:150])
-            if len(messages_recents) >= 3:
-                break
-    except Exception:
-        pass
+    maintenant = datetime.datetime.now(datetime.timezone.utc)
+    depuis = maintenant - datetime.timedelta(days=2)
 
-    contexte_messages = "\n".join(messages_recents) if messages_recents else "Aucun message récent."
-    contexte_orga = f"Contexte supplémentaire donné par l'organisation : {contexte}" if contexte else ""
+    for ch in guild.text_channels:
+        # Ignore les salons d'archives ou de logs techniques
+        if ch.name.startswith("🔒arch-") or ch.name.lower() == "log-deplacements":
+            continue
 
+        try:
+            async for msg in ch.history(limit=50, after=depuis, oldest_first=False):
+                if msg.author.id == cible.id and msg.content.strip():
+                    messages_recents.append(f"[#{ch.name}] {msg.content.strip()[:150]}")
+                if len(messages_recents) >= 20:
+                    break
+        except Exception:
+            continue
+
+        if len(messages_recents) >= 20:
+            break
+
+    contexte_messages = "\n".join(messages_recents) if messages_recents else "Aucun message récent trouvé sur le serveur."
+    contexte_orga = f"Contexte additionnel fourni par l'organisation : {contexte}" if contexte else ""
+
+    # 2. Prompt Gemini avec le profil complet des messages récents
     prompt = (
-        "Tu es Denis Brogniart / un présentateur de télé-réalité de survie sarcastique et sans pitié.\n"
-        f"Ta mission : envoyer un roast percutant, drôle et bien senti à {cible.display_name}.\n\n"
-        f"MESSAGES RÉCENTS DE LA CIBLE :\n{contexte_messages}\n\n"
+        "Tu es l'arbitre / présentateur emblématique d'un jeu de survie et de stratégie (type Koh-Lanta / Survivor / Secret Story).\n"
+        "Ton style : sarcastique, piquant, lucide et chambreur, mais sans méchanceté gratuite ni insultes réelles.\n\n"
+        f"CANDIDAT CIBLÉ : {cible.display_name}\n\n"
+        f"EXTRAIT DE SES DERNIERS MESSAGES SUR LE SERVEUR :\n{contexte_messages}\n\n"
         f"{contexte_orga}\n\n"
         "CONSIGNES STRICTES :\n"
-        "1. Fais un clash court (2 à 4 phrases maximum), incisif et mémorable.\n"
-        "2. Reste dans l'ambiance jeu de stratégie, survie, épreuves ratées, manipulation ratée, ou passivité.\n"
-        "3. Sois tranchant et drôle sans tomber dans la vulgarité pure, les insultes dégradantes ou la haine.\n"
+        "1. Appuie-toi sur ses propres propos, ses contradictions, ses plaintes ou son style de jeu pour le clasher.\n"
+        "2. Reste concis (2 à 4 phrases percutantes max).\n"
+        "3. Ne sors jamais du cadre du jeu (stratégie éclatée, fausses promesses, passivité sur le camp, épreuves ratées).\n"
         "4. Renvoie UNIQUEMENT le texte du roast, prêt à être envoyé."
     )
 
@@ -3226,7 +3240,7 @@ async def roast_cmd(
         )
         punchline = response.text.strip()
     except Exception as e:
-        punchline = f"{cible.mention}, même l'IA refuse de te roast tellement ta stratégie est transparente."
+        punchline = f"{cible.mention}, même l'IA a refusé de compiler tes messages tellement ta stratégie n'a ni queue ni tête."
 
     await interaction.followup.send(f"🔥 {cible.mention}\n\n{punchline}")
     
