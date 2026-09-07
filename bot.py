@@ -3173,16 +3173,16 @@ def creer_embed_presentation_orga(
     embed.set_footer(text=f"Organisateur : {prenom} • Fiche Staff Officielle")
     return embed
 # ========================================================
-# 21. COMMANDE DE ROAST / TAQUINERIE MULTI-SALONS
+# 21. COMMANDE DE ROAST INTELLIGENTE (SPECTATEURS VS CANDIDATS)
 # ========================================================
 
 @bot.tree.command(
     name="roast",
-    description="Génère un roast sur-mesure en analysant les messages du membre sur tout le serveur."
+    description="Génère un roast adapté selon que le membre est Candidat, Spectateur ou Orga."
 )
 @app_commands.describe(
-    cible="Le membre à roast (joueur, spectateur ou orga)",
-    contexte="Optionnel : préciser un contexte particulier (ex: a raté l'épreuve, dort sur le camp...)"
+    cible="Le membre à roast",
+    contexte="Optionnel : contexte particulier (ex: a raté son épreuve, ouvre trop sa bouche en tribune...)"
 )
 @app_commands.check(est_orga_ou_admin)
 async def roast_cmd(
@@ -3193,18 +3193,41 @@ async def roast_cmd(
     await interaction.response.defer()
     guild = interaction.guild
 
-    # 1. Récupération des messages de la cible à travers les salons accessibles
+    # 1. Détection du statut du joueur
+    role_spectateur = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    role_orga = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+
+    if role_orga and role_orga in cible.roles:
+        statut = "ORGA"
+        instruction_statut = (
+            "La cible est un ORGANISATEUR / STAFF du jeu. "
+            "Clashe-le sur ses règles tordues, ses retards d'animation ou son abus de pouvoir bienveillant."
+        )
+    elif role_spectateur and role_spectateur in cible.roles:
+        statut = "SPECTATEUR"
+        instruction_statut = (
+            "La cible est un SIMPLE SPECTATEUR / TÉLÉSPECTATEUR. "
+            "Clashe-le sur le fait qu'il est confortablement assis dans son canapé à juger les autres alors qu'il ne tiendrait pas 2 heures sur l'île, "
+            "ses prédictions éclatées au sol et son statut d'éternel observateur."
+        )
+    else:
+        statut = "CANDIDAT"
+        instruction_statut = (
+            "La cible est un CANDIDAT ACTIF de l'aventure. "
+            "Clashe-le sur sa stratégie bancale, ses promesses en l'air dans les duos, son manque de lucidité, ses éliminations frôlées ou sa passivité sur le camp."
+        )
+
+    # 2. Récupération des 20 derniers messages sur le serveur (48h)
     messages_recents = []
     maintenant = datetime.datetime.now(datetime.timezone.utc)
     depuis = maintenant - datetime.timedelta(days=2)
 
     for ch in guild.text_channels:
-        # Ignore les salons d'archives ou de logs techniques
         if ch.name.startswith("🔒arch-") or ch.name.lower() == "log-deplacements":
             continue
 
         try:
-            async for msg in ch.history(limit=50, after=depuis, oldest_first=False):
+            async for msg in ch.history(limit=40, after=depuis, oldest_first=False):
                 if msg.author.id == cible.id and msg.content.strip():
                     messages_recents.append(f"[#{ch.name}] {msg.content.strip()[:150]}")
                 if len(messages_recents) >= 20:
@@ -3215,21 +3238,22 @@ async def roast_cmd(
         if len(messages_recents) >= 20:
             break
 
-    contexte_messages = "\n".join(messages_recents) if messages_recents else "Aucun message récent trouvé sur le serveur."
-    contexte_orga = f"Contexte additionnel fourni par l'organisation : {contexte}" if contexte else ""
+    contexte_messages = "\n".join(messages_recents) if messages_recents else "Aucun message récent détecté."
+    contexte_orga = f"Contexte additionnel : {contexte}" if contexte else ""
 
-    # 2. Prompt Gemini avec le profil complet des messages récents
+    # 3. Prompt avec cadrage selon le statut
     prompt = (
-        "Tu es l'arbitre / présentateur emblématique d'un jeu de survie et de stratégie (type Koh-Lanta / Survivor / Secret Story).\n"
-        "Ton style : sarcastique, piquant, lucide et chambreur, mais sans méchanceté gratuite ni insultes réelles.\n\n"
-        f"CANDIDAT CIBLÉ : {cible.display_name}\n\n"
-        f"EXTRAIT DE SES DERNIERS MESSAGES SUR LE SERVEUR :\n{contexte_messages}\n\n"
+        "Tu es l'arbitre et présentateur emblématique d'un jeu de survie et de stratégie (type Koh-Lanta / Survivor).\n"
+        "Ton ton est ultra-sarcastique, incisif, piquant et très drôle, sans jamais tomber dans la vulgarité ou les insultes haineuses.\n\n"
+        f"CIBLE DU ROAST : {cible.display_name}\n"
+        f"STATUT DÉTECTÉ : {statut}\n"
+        f"CONSIGNE DE CADRAGE : {instruction_statut}\n\n"
+        f"EXTRAITS DE SES MESSAGES RÉCENTS SUR LE SERVEUR :\n{contexte_messages}\n\n"
         f"{contexte_orga}\n\n"
-        "CONSIGNES STRICTES :\n"
-        "1. Appuie-toi sur ses propres propos, ses contradictions, ses plaintes ou son style de jeu pour le clasher.\n"
-        "2. Reste concis (2 à 4 phrases percutantes max).\n"
-        "3. Ne sors jamais du cadre du jeu (stratégie éclatée, fausses promesses, passivité sur le camp, épreuves ratées).\n"
-        "4. Renvoie UNIQUEMENT le texte du roast, prêt à être envoyé."
+        "CONSIGNES DE FORME :\n"
+        "1. Adapte l'attaque à son statut (Spectateur = critiqueur de canapé / Candidat = joueur perdu).\n"
+        "2. Fais un texte court, direct et percutant (2 à 4 phrases maximum).\n"
+        "3. Renvoie UNIQUEMENT le texte du clash sans aucun mot avant ou après."
     )
 
     try:
@@ -3240,9 +3264,10 @@ async def roast_cmd(
         )
         punchline = response.text.strip()
     except Exception as e:
-        punchline = f"{cible.mention}, même l'IA a refusé de compiler tes messages tellement ta stratégie n'a ni queue ni tête."
+        punchline = f"{cible.mention}, même le bot a eu pitié de toi tellement tes messages parlent d'eux-mêmes."
 
-    await interaction.followup.send(f"🔥 {cible.mention}\n\n{punchline}")
+    badge = "🍿 [SPECTATEUR]" if statut == "SPECTATEUR" else ("🛠️ [STAFF]" if statut == "ORGA" else "🌴 [CANDIDAT]")
+    await interaction.followup.send(f"🔥 **ROAST — {badge}** {cible.mention}\n\n{punchline}")
     
 # ==========================================
 # DÉMARRAGE DU BOT
