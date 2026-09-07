@@ -3306,7 +3306,101 @@ async def roast_cmd(
     badge = "🍿 [SPECTATEUR]" if statut == "SPECTATEUR" else ("🛠️ [STAFF]" if statut == "ORGA" else "🌴 [CANDIDAT]")
     await interaction.followup.send(f"🔥 **ROAST (100% Love & Second Degré) — {badge}** {cible.mention}\n\n{punchline}")
 
+# ========================================================
+# 20. COMMANDE DE PRAISE / COMPLIMENT THÉÂTRAL & DRÔLE
+# ========================================================
 
+@bot.tree.command(
+    name="praise",
+    description="Envoie une ode / compliment exagéré, hilarant et plein d'amour à un membre."
+)
+@app_commands.describe(
+    cible="Le membre à glorifier",
+    contexte="Optionnel : contexte particulier (ex: a carry l'épreuve, met l'ambiance, orga au top...)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def praise_cmd(
+    interaction: discord.Interaction,
+    cible: discord.Member,
+    contexte: str = None
+):
+    await interaction.response.defer()
+    guild = interaction.guild
+
+    # 1. Détection du statut
+    role_spectateur = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    role_orga = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+
+    if role_orga and role_orga in cible.roles:
+        statut = "ORGA"
+        instruction_statut = (
+            "La cible est un Orga. Glorifie son travail de génie, sa patience infinie avec les candidats "
+            "et son statut de divinité bienveillante qui fait tourner la boutique."
+        )
+    elif role_spectateur and role_spectateur in cible.roles:
+        statut = "SPECTATEUR"
+        instruction_statut = (
+            "La cible est un Spectateur. Traite-le comme l'analyste le plus brillant de la commu, "
+            "le roi incontesté du popcorn et le pilier moral de la tribune."
+        )
+    else:
+        statut = "CANDIDAT"
+        instruction_statut = (
+            "La cible est un Candidat. Encense sa présence solaire, son génie tactique (même s'il est bancal), "
+            "son mental d'acier ou sa simple capacité à survivre avec panache."
+        )
+
+    # 2. Collecte des messages récents (sur 3 jours)
+    messages_recents = []
+    maintenant = datetime.datetime.now(datetime.timezone.utc)
+    depuis = maintenant - datetime.timedelta(days=3)
+
+    for ch in guild.text_channels:
+        if ch.name.startswith("🔒arch-") or ch.name.lower() == "log-deplacements":
+            continue
+
+        try:
+            async for msg in ch.history(limit=50, after=depuis, oldest_first=False):
+                if msg.author.id == cible.id and msg.content.strip():
+                    messages_recents.append(f"- {msg.content.strip()[:200]}")
+                if len(messages_recents) >= 25:
+                    break
+        except Exception:
+            continue
+
+        if len(messages_recents) >= 25:
+            break
+
+    contexte_messages = "\n".join(messages_recents) if messages_recents else "Aucun message récent (glorifie son aura mystérieuse et son silence de légende)."
+    contexte_orga = f"Contexte imposé par l'organisation : {contexte}" if contexte else ""
+
+    prompt = (
+        "Tu es le fan numéro un, poète officiel et maître de cérémonie lyrique d'un jeu d'aventure.\n"
+        "Ton rôle est de faire un compliment ULTRA-EXAGÉRÉ, hilarant, plein d'emphase et d'amour à la cible.\n\n"
+        f"CIBLE : {cible.display_name} (Statut : {statut})\n"
+        f"CADRAGE STATUT : {instruction_statut}\n\n"
+        f"SES MESSAGES SUR LE SERVEUR :\n{contexte_messages}\n\n"
+        f"{contexte_orga}\n\n"
+        "RÈGLES D'OR DE LA GLORIFICATION :\n"
+        "1. EXAGÉRATION TOTALE : Traite la personne comme une légende vivante, un monument de charisme ou un stratège niveau 3000 QI.\n"
+        "2. ANCRAGE DRÔLE : Utilise ses vrais messages, tics de phrases ou faits d'armes pour transformer des détails banals en exploits mythiques.\n"
+        "3. FORME : 2 à 4 phrases lyriques, rythmées et solennelles.\n"
+        "4. Renvoie UNIQUEMENT le texte du compliment sans formule d'introduction."
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        eloge = response.text.strip()
+    except Exception as e:
+        eloge = f"{cible.mention}, même les étoiles refusent de briller quand tu es là tellement tu leur fais de l'ombre !"
+
+    badge = "🍿 [SPECTATEUR STAR]" if statut == "SPECTATEUR" else ("🛠️ [DIVINITÉ DU STAFF]" if statut == "ORGA" else "🌴 [LÉGENDE DE L'ÎLE]")
+    await interaction.followup.send(f"👑 **PRAISE & GLOIRE — {badge}** {cible.mention}\n\n{eloge}")
+    
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
