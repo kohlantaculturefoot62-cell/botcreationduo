@@ -3172,7 +3172,63 @@ def creer_embed_presentation_orga(
 
     embed.set_footer(text=f"Organisateur : {prenom} • Fiche Staff Officielle")
     return embed
+# ========================================================
+# 21. COMMANDE DE ROAST / TAQUINERIE DU JEU
+# ========================================================
 
+@bot.tree.command(
+    name="roast",
+    description="Envoie un taquet/roast bien placé et personnalisé à un membre."
+)
+@app_commands.describe(
+    cible="La personne à roast (joueur, spectateur ou orga)",
+    contexte="Optionnel : préciser un contexte particulier (ex: a raté l'épreuve, dort sur le camp...)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def roast_cmd(
+    interaction: discord.Interaction,
+    cible: discord.Member,
+    contexte: str = None
+):
+    await interaction.response.defer()
+
+    # Récupération de quelques messages récents de la cible pour nourrir le roast
+    messages_recents = []
+    try:
+        async for msg in interaction.channel.history(limit=50):
+            if msg.author.id == cible.id and msg.content.strip():
+                messages_recents.append(msg.content[:150])
+            if len(messages_recents) >= 3:
+                break
+    except Exception:
+        pass
+
+    contexte_messages = "\n".join(messages_recents) if messages_recents else "Aucun message récent."
+    contexte_orga = f"Contexte supplémentaire donné par l'organisation : {contexte}" if contexte else ""
+
+    prompt = (
+        "Tu es Denis Brogniart / un présentateur de télé-réalité de survie sarcastique et sans pitié.\n"
+        f"Ta mission : envoyer un roast percutant, drôle et bien senti à {cible.display_name}.\n\n"
+        f"MESSAGES RÉCENTS DE LA CIBLE :\n{contexte_messages}\n\n"
+        f"{contexte_orga}\n\n"
+        "CONSIGNES STRICTES :\n"
+        "1. Fais un clash court (2 à 4 phrases maximum), incisif et mémorable.\n"
+        "2. Reste dans l'ambiance jeu de stratégie, survie, épreuves ratées, manipulation ratée, ou passivité.\n"
+        "3. Sois tranchant et drôle sans tomber dans la vulgarité pure, les insultes dégradantes ou la haine.\n"
+        "4. Renvoie UNIQUEMENT le texte du roast, prêt à être envoyé."
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        punchline = response.text.strip()
+    except Exception as e:
+        punchline = f"{cible.mention}, même l'IA refuse de te roast tellement ta stratégie est transparente."
+
+    await interaction.followup.send(f"🔥 {cible.mention}\n\n{punchline}")
     
 # ==========================================
 # DÉMARRAGE DU BOT
