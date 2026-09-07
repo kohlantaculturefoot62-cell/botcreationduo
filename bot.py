@@ -3400,7 +3400,120 @@ async def praise_cmd(
 
     badge = "🍿 [SPECTATEUR STAR]" if statut == "SPECTATEUR" else ("🛠️ [DIVINITÉ DU STAFF]" if statut == "ORGA" else "🌴 [LÉGENDE DE L'ÎLE]")
     await interaction.followup.send(f"👑 **PRAISE & GLOIRE — {badge}** {cible.mention}\n\n{eloge}")
-    
+
+# ========================================================
+# 22. STATISTIQUES D'ACTIVITÉ : COMPTEUR DE MESSAGES
+# ========================================================
+
+@bot.tree.command(
+    name="stats_messages_candidats",
+    description="Affiche le nombre de messages envoyés par chaque candidat dans les salons de jeu."
+)
+@app_commands.describe(
+    periode="Période d'analyse des messages",
+    role_equipe="Optionnel : filtrer uniquement les candidats d'une équipe précise"
+)
+@app_commands.choices(periode=[
+    app_commands.Choice(name="📅 Aujourd'hui (depuis 00h00 heure de Paris)", value="aujourdhui"),
+    app_commands.Choice(name="⏱️ Dernières 24 heures", value="24h"),
+    app_commands.Choice(name="⏳ Dernières 48 heures", value="48h"),
+    app_commands.Choice(name="♾️ Tout l'historique récent (Max 300 msg/salon)", value="tout")
+])
+@app_commands.check(est_orga_ou_admin)
+async def stats_messages_candidats(
+    interaction: discord.Interaction,
+    periode: app_commands.Choice[str] = None,
+    role_equipe: discord.Role = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    # 1. Définition de la borne temporelle
+    choix_periode = periode.value if periode else "aujourdhui"
+    tz_paris = ZoneInfo("Europe/Paris")
+    maintenant = datetime.datetime.now(tz_paris)
+
+    date_limite_utc = None
+    if choix_periode == "aujourdhui":
+        debut_jour_paris = maintenant.replace(hour=0, minute=0, second=0, microsecond=0)
+        date_limite_utc = debut_jour_paris.astimezone(datetime.timezone.utc)
+        texte_periode = f"Aujourd'hui ({maintenant.strftime('%d/%m/%Y')} depuis 00h00)"
+    elif choix_periode == "24h":
+        date_limite_utc = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+        texte_periode = "Dernières 24 heures"
+    elif choix_periode == "48h":
+        date_limite_utc = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=48)
+        texte_periode = "Dernières 48 heures"
+    else:
+        texte_periode = "Historique récent complet"
+
+    # 2. Identification des candidats cibles
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+
+    compteur_candidats = {} # {member_id: {"nom": str, "count": int, "mention": str}}
+
+    async for member in guild.fetch_members(limit=None):
+        if member.bot:
+            continue
+        # Filtre optionnel sur une équipe
+        if role_equipe and role_equipe not in member.roles:
+            continue
+        # Ignore les orgas et purs spectateurs
+        if role_orgas and role_orgas in member.roles:
+            continue
+        if role_spectateurs and role_spectateurs in member.roles and not role_equipe:
+            continue
+
+        compteur_candidats[member.id] = {
+            "nom": member.display_name,
+            "mention": member.mention,
+            "count": 0
+        }
+
+    if not compteur_candidats:
+        await interaction.followup.send("❌ Aucun candidat trouvé pour cette sélection.", ephemeral=True)
+        return
+
+    # 3. Parcours des salons de jeu
+    total_messages_jeu = 0
+    for channel in guild.text_channels:
+        if not est_categorie_candidate(channel.category) and channel.name.lower() != "log-deplacements":
+            continue
+        if channel.name.startswith("🔒arch-"):
+            continue
+
+        try:
+            async for msg in channel.history(limit=300, after=date_limite_utc, oldest_first=False):
+                if not msg.author.bot and msg.author.id in compteur_candidats:
+                    compteur_candidats[msg.author.id]["count"] += 1
+                    total_messages_jeu += 1
+        except Exception:
+            continue
+
+    # 4. Tri par nombre décroissant de messages
+    classement = sorted(compteur_candidats.values(), key=lambda x: x["count"], reverse=True)
+
+    # 5. Formatage de l'embed
+    lignes_stats = []
+    for i, c in enumerate(classement, 1):
+        icone = "🥇" if i == 1 else ("🥈" if i == 2 else ("🥉" if i == 3 else f"`#{i}`"))
+        lignes_stats.append(f"{icone} **{c['nom']}** ({c['mention']}) : **{c['count']}** message(s)")
+
+    description = f"⏱️ **Période :** `{texte_periode}`\n"
+    description += f"💬 **Total messages analysés :** `{total_messages_jeu}`\n"
+    if role_equipe:
+        description += f"👥 **Équipe :** {role_equipe.mention}\n"
+    description += "\n━━━━━━━━━━━━━━━━━━━━━━\n\n" + "\n".join(lignes_stats)
+
+    embed = discord.Embed(
+        title="📊 ACTIVITÉ & STATISTIQUES DES CANDIDATS",
+        description=description if len(description) <= 3900 else description[:3900] + "\n...",
+        color=discord.Color.blue()
+    )
+    embed.set_footer(text="Comptabilisé dans les camps, confessionnaux et duos.")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
