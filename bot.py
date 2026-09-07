@@ -30,6 +30,16 @@ CATEGORY_QUATUOR_ID = 1541397227744927835
 RESULTATS_CHANNEL_ID = 1545186500960985148
 SALON_REMARQUES_QUESTIONS_ID = 1545503543405060178
 
+# Nouveaux Salons Résumés & Spectateurs
+SALON_QUESTIONS_RECAP_ID = 1546598533333909728
+SALON_CHAT_SPECTATEURS_ID = 1544355721024635061
+SALON_RECAP_SPECTATEURS_ID = 1546598600555888670
+
+# Salons Annonces
+SALON_ANNONCES_TRAVAIL_ID = 1545823720676003890
+SALON_ANNONCES_CANDIDATS_ID = 1537439670340681828
+SALON_ARCHIVES_ANNONCES_ID = 1545823386700087456
+
 # Planification des tâches automatiques (Fuseau Paris)
 HEURE_RECAP = datetime.time(hour=23, minute=0, tzinfo=ZoneInfo("Europe/Paris"))
 HEURE_QUESTIONS = datetime.time(hour=9, minute=0, tzinfo=ZoneInfo("Europe/Paris"))
@@ -194,16 +204,91 @@ def trouver_role_personnel(member: discord.Member, role_equipe: discord.Role = N
 
     return None
 
+def decouper_texte_intelligent(texte: str, limite: int = 1900) -> list[str]:
+    """Découpe un texte long sans jamais couper au milieu d'un mot ou d'une phrase."""
+    if len(texte) <= limite:
+        return [texte]
+
+    morceaux = []
+    texte_restant = texte.strip()
+
+    while len(texte_restant) > limite:
+        coupure = texte_restant.rfind("\n\n", 0, limite)
+        if coupure == -1:
+            coupure = texte_restant.rfind("\n", 0, limite)
+        if coupure == -1:
+            coupure = texte_restant.rfind(" ", 0, limite)
+        if coupure == -1:
+            coupure = limite
+
+        morceau = texte_restant[:coupure].strip()
+        if morceau:
+            morceaux.append(morceau)
+
+        texte_restant = texte_restant[coupure:].strip()
+
+    if texte_restant:
+        morceaux.append(texte_restant)
+
+    return morceaux
+
 
 # =======================================================
 # 1. FONCTIONS DE RÉCAPITULATIF JOURNALIER GLOBAL
 # =======================================================
 
+async def poster_questions_automatiques(texte_recap: str):
+    """Formule 3 questions de lecture sur le résumé et les publie dans le salon dédié."""
+    salon_q = bot.get_channel(SALON_QUESTIONS_RECAP_ID)
+    if not salon_q:
+        print(f"❌ Salon questions introuvable ({SALON_QUESTIONS_RECAP_ID})")
+        return
+
+    prompt_q = (
+        "Tu es l'organisateur du jeu. En te basant STRICTEMENT sur le résumé du jour suivant :\n\n"
+        f"{texte_recap}\n\n"
+        "Formule exactement 3 questions d'observation courtes et précises pour vérifier que les candidats ont bien lu le résumé.\n"
+        "Format strict attendu (une par ligne) :\n"
+        "Question ? | Temps_en_secondes\n"
+        "(Exemple : Qui a proposé de voter contre Alex ? | 15)\n\n"
+        "Ne mets aucun commentaire autour, seulement les 3 lignes."
+    )
+
+    try:
+        reponse_q = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt_q
+        )
+        questions_texte = reponse_q.text.strip()
+        await salon_q.send(f"📋 **BANQUE DE QUESTIONS DU JOUR (SUR LE RÉSUMÉ)**\n\n{questions_texte}")
+    except Exception as e:
+        print(f"Erreur génération questions résumé : {e}")
+
+
 async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channel: discord.TextChannel):
-    """Scanne les salons cibles (et log-deplacements) des dernières 24h et publie une synthèse IA."""
+    """Scanne l'historique et les salons cibles pour générer un résumé narratif et des questions."""
     now = datetime.datetime.now(datetime.timezone.utc)
     depuis = now - datetime.timedelta(hours=24)
 
+    # 1. Extraction de la mémoire des 5 derniers récaps
+    historique_recaps = []
+    async for msg in target_channel.history(limit=15, oldest_first=False):
+        if msg.author.id == bot.user.id and msg.content.strip():
+            # Ignore les messages de questions ou autres
+            if not msg.content.startswith("📋"):
+                historique_recaps.append(msg.content[:1500])
+        if len(historique_recaps) >= 5:
+            break
+
+    historique_recaps.reverse()
+    texte_contexte_passe = (
+        "\n\n--- [RÉCAP PRÉCÉDENT] ---\n\n".join(historique_recaps)
+        if historique_recaps
+        else "Aucun récapitulatif antérieur (Début de l'aventure)."
+    )
+
+    # 2. Collecte des discussions de la journée en cours
     salons_transcripts = []
 
     for channel in guild.text_channels:
@@ -247,18 +332,22 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
 
     prompt = (
         "Tu es l'arbitre en chef et showrunner d'un jeu de stratégie et de survie (type Koh-Lanta / Survivor / Secret Story).\n"
-        "Voici l'ensemble des discussions de la journée échangées dans les différents espaces de jeu (Camps, Duos, Équipes, Confessionnaux) "
-        "ainsi que les journaux de logs (déplacements, objets, événements) :\n\n"
+        "=== HISTORIQUE DES 5 DERNIERS JOURS (POUR LE CONTEXTE NARRATIF) ===\n"
+        f"{texte_contexte_passe}\n\n"
+        "=== DISCUSSIONS DE LA JOURNÉE EN COURS À RÉSUMER ===\n"
         f"{full_context}\n\n"
-        "Rédige le **Journal de Bord Stratégique Global de la Journée** pour l'équipe d'organisation (Orgas/Spectateurs).\n"
-        "Structure ta réponse avec des titres clairs et des emojis :\n"
-        "1. 🌍 **Synthèse Générale & Ambiance Globale**\n"
-        "2. 🤝 **Alliances, Pactes & Négociations**\n"
-        "3. 🎯 **Cibles, Votes & Stratégies d'Élimination**\n"
-        "4. ⚠️ **Trahisons, Secrets & Double-Jeu**\n"
-        "5. 🎙️ **Points Clés des Confessionnaux & Duos**\n"
-        "6. 🗺️ **Mouvements & Événements Importants (Logs)**\n"
-        "7. 📌 **Résumé rapide par zone/salon actif**"
+        "Rédige le **Journal de Bord Stratégique Global de la Journée** pour l'équipe d'organisation.\n"
+        "Consignes :\n"
+        "1. Prends en compte l'historique pour comprendre l'évolution des alliances et des trahisons.\n"
+        "2. Structure ta réponse avec des titres clairs et des emojis :\n"
+        "   - 🌍 **Synthèse Générale & Ambiance Globale**\n"
+        "   - 🤝 **Alliances, Pactes & Négociations**\n"
+        "   - 🎯 **Cibles, Votes & Stratégies d'Élimination**\n"
+        "   - ⚠️ **Trahisons, Secrets & Double-Jeu**\n"
+        "   - 🎙️ **Points Clés des Confessionnaux & Duos**\n"
+        "   - 🗺️ **Mouvements & Événements Importants (Logs)**\n"
+        "   - 📌 **Résumé rapide par zone/salon actif**\n"
+        "3. Ne mentionne pas de métadonnées inutiles, reste focalisé sur le récit."
     )
 
     max_tentatives = 3
@@ -275,9 +364,12 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
             header = f"📰 **JOURNAL STRATÉGIQUE GLOBAL DU {date_str}**\n*(Réservé aux Orgas, Spectateurs et Admins)*\n\n"
             full_message = header + recap_text
 
-            for chunk in [full_message[i:i + 1900] for i in range(0, len(full_message), 1900)]:
+            for chunk in decouper_texte_intelligent(full_message, 1900):
                 await target_channel.send(chunk)
+                await asyncio.sleep(0.3)
             
+            # Envoi automatique des questions dans l'autre salon
+            await poster_questions_automatiques(recap_text)
             return
 
         except Exception as e:
@@ -347,15 +439,66 @@ async def generer_questions_confessionnal(target_recap_channel: discord.TextChan
 # 3. TÂCHES AUTOMATIQUES & ÉVÉNEMENTS
 # ==========================================
 
+async def traiter_resume_spectateurs(guild: discord.Guild):
+    """Extrait le chat spectateurs et génère le résumé binaire dans le salon dédié."""
+    chat_spec = guild.get_channel(SALON_CHAT_SPECTATEURS_ID)
+    dest_spec = guild.get_channel(SALON_RECAP_SPECTATEURS_ID)
+
+    if not chat_spec or not dest_spec:
+        return False, "Salon de chat ou de destination introuvable."
+
+    paris_tz = ZoneInfo("Europe/Paris")
+    maintenant = datetime.datetime.now(paris_tz)
+    debut_journee = maintenant.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    messages = []
+    async for msg in chat_spec.history(limit=1000, after=debut_journee, oldest_first=True):
+        if not msg.author.bot and msg.content.strip():
+            messages.append(f"[{msg.author.display_name}] : {msg.content.strip()}")
+
+    if not messages:
+        return False, "Aucun message envoyé par les spectateurs aujourd'hui."
+
+    texte_brut = "\n".join(messages)
+
+    prompt = (
+        "Tu es l'observateur officiel d'un jeu de stratégie. Voici l'intégralité des discussions "
+        "du salon des spectateurs aujourd'hui :\n\n"
+        f"{texte_brut[:25000]}\n\n"
+        "Rédige un récapitulatif scindé STRICTEMENT en 2 parties distinctes :\n\n"
+        "## 🍿 1. DISCUSSIONS HORS-SUJET & BRUITS DE COULOIR\n"
+        "- Résume les débats inutiles, délires, blagues, mèmes et hors-sujets abordés.\n\n"
+        "## 🧠 2. ANALYSES STRATÉGIQUES & AVIS PERTINENTS\n"
+        "- Résume leurs théories lucides, observations sur les erreurs/masterclass des candidats et pronostics de votes.\n\n"
+        "Garde un ton synthétique, fluide et structuré."
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        rapport = response.text.strip()
+    except Exception as e:
+        return False, f"Erreur IA : {e}"
+
+    date_str = maintenant.strftime("%d/%m/%Y")
+    await dest_spec.send(f"📊 **RÉSUMÉ DU CHAT SPECTATEURS — {date_str}**")
+    for bloc in decouper_texte_intelligent(rapport, limite=1900):
+        await dest_spec.send(bloc)
+
+    return True, f"Résumé spectateurs envoyé dans {dest_spec.mention} !"
+
+
 @tasks.loop(time=HEURE_RECAP)
 async def tache_recap_quotidien():
     """Tâche automatique planifiée chaque soir à 23h00."""
-    if RECAP_CHANNEL_ID == 0:
-        return
-    channel = bot.get_channel(RECAP_CHANNEL_ID)
-    if channel:
-        await generer_et_envoyer_recap_quotidien(channel.guild, channel)
-
+    if RECAP_CHANNEL_ID != 0:
+        channel = bot.get_channel(RECAP_CHANNEL_ID)
+        if channel:
+            await generer_et_envoyer_recap_quotidien(channel.guild, channel)
+            await traiter_resume_spectateurs(channel.guild)
 
 @tasks.loop(time=HEURE_QUESTIONS)
 async def tache_questions_matin():
@@ -368,16 +511,16 @@ async def tache_questions_matin():
         date_str = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y")
         header = f"🎙️ **FICHES CONFESSIONNAL DU {date_str} — SUGGESTIONS D'INTERVIEWS**\n*(Pour les Orgas)*\n\n"
         full_msg = header + questions_text
-        for chunk in [full_msg[i:i + 1900] for i in range(0, len(full_msg), 1900)]:
+        for chunk in decouper_texte_intelligent(full_msg, 1900):
             await channel.send(chunk)
 
 
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    if not tache_recap_quotidien.is_running() and RECAP_CHANNEL_ID != 0:
+    if not tache_recap_quotidien.is_running():
         tache_recap_quotidien.start()
-    if not tache_questions_matin.is_running() and RECAP_CHANNEL_ID != 0:
+    if not tache_questions_matin.is_running():
         tache_questions_matin.start()
     print(f"🤖 Bot connecté en tant que : {bot.user}")
 
@@ -650,7 +793,7 @@ async def creer_trio(
 @app_commands.describe(
     role_1="Rôle du premier candidat",
     role_2="Rôle du deuxième candidat",
-    role_3="Rôle du troisième candidat",
+    role_3="Rôle du third candidat",
     role_4="Rôle du quatrième candidat"
 )
 @app_commands.check(est_orga_ou_admin)
@@ -2703,39 +2846,6 @@ async def corriger_salon_questions(
 # 18. GESTION DES ANNONCES (FORMATAGE, COPIER/COLLER & PUBLICATION)
 # ========================================================
 
-SALON_ANNONCES_TRAVAIL_ID = 1545823720676003890
-SALON_ANNONCES_CANDIDATS_ID = 1537439670340681828
-SALON_ARCHIVES_ANNONCES_ID = 1545823386700087456
-
-def decouper_texte_intelligent(texte: str, limite: int = 1900) -> list[str]:
-    """Découpe un texte long sans jamais couper au milieu d'un mot ou d'une phrase."""
-    if len(texte) <= limite:
-        return [texte]
-
-    morceaux = []
-    texte_restant = texte.strip()
-
-    while len(texte_restant) > limite:
-        coupure = texte_restant.rfind("\n\n", 0, limite)
-        if coupure == -1:
-            coupure = texte_restant.rfind("\n", 0, limite)
-        if coupure == -1:
-            coupure = texte_restant.rfind(" ", 0, limite)
-        if coupure == -1:
-            coupure = limite
-
-        morceau = texte_restant[:coupure].strip()
-        if morceau:
-            morceaux.append(morceau)
-
-        texte_restant = texte_restant[coupure:].strip()
-
-    if texte_restant:
-        morceaux.append(texte_restant)
-
-    return morceaux
-
-
 async def formater_annonce_ia(texte_brut: str) -> str:
     """Corrige l'orthographe, aère et optimise la mise en page Discord sans altérer le fond."""
     prompt = (
@@ -3008,6 +3118,23 @@ async def taguer_orgas(interaction: discord.Interaction):
         f"- ⚠️ **{resultat['erreurs']}** ignoré(s) (permissions supérieures au bot)",
         ephemeral=True
     )
+
+# ========================================================
+# 20. RÉSUMÉ SPECTATEURS (MANUEL & AUTO)
+# ========================================================
+
+@bot.tree.command(
+    name="resume_spectateurs",
+    description="Génère à la demande le récapitulatif du salon spectateurs (Hors-sujet vs Analyses)."
+)
+@app_commands.check(est_orga_ou_admin)
+async def resume_spectateurs_cmd(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    succes, msg = await traiter_resume_spectateurs(interaction.guild)
+    if succes:
+        await interaction.followup.send(f"✅ {msg}", ephemeral=True)
+    else:
+        await interaction.followup.send(f"❌ {msg}", ephemeral=True)
 
 # ==========================================
 # DÉMARRAGE DU BOT
