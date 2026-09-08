@@ -3514,6 +3514,86 @@ async def stats_messages_candidats(
     embed.set_footer(text="Comptabilisé dans les camps, confessionnaux et duos.")
 
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ========================================================
+# 23. ROAST HARDCORE (ANALYSE COMPORTEMENTALE PURE)
+# ========================================================
+
+@bot.tree.command(
+    name="roast_hardcore",
+    description="Analyse au laser les messages d'un membre pour un clash chirurgical, inventif et sans filtre KL."
+)
+@app_commands.describe(
+    cible="Le membre à passer au crible",
+    contexte="Optionnel : un détail ou contexte particulier pour appuyer là où ça fait mal"
+)
+@app_commands.check(est_orga_ou_admin)
+async def roast_hardcore_cmd(
+    interaction: discord.Interaction,
+    cible: discord.Member,
+    contexte: str = None
+):
+    await interaction.response.defer()
+    guild = interaction.guild
+
+    # 1. Collecte approfondie des messages (jusqu'à 30 messages sur les 4 derniers jours)
+    messages_recents = []
+    maintenant = datetime.datetime.now(datetime.timezone.utc)
+    depuis = maintenant - datetime.timedelta(days=4)
+
+    for ch in guild.text_channels:
+        if ch.name.startswith("🔒arch-") or ch.name.lower() == "log-deplacements":
+            continue
+
+        try:
+            async for msg in ch.history(limit=60, after=depuis, oldest_first=False):
+                if msg.author.id == cible.id and msg.content.strip():
+                    messages_recents.append(f"[#{ch.name}] {msg.content.strip()[:200]}")
+                if len(messages_recents) >= 30:
+                    break
+        except Exception:
+            continue
+
+        if len(messages_recents) >= 30:
+            break
+
+    if not messages_recents:
+        await interaction.followup.send(
+            f"💀 {cible.mention}, même pas besoin d'analyse : tu n'as envoyé aucun message récent. "
+            "Difficile de clasher quelqu'un qui a le charisme et la présence d'un salon vide."
+        )
+        return
+
+    contexte_messages = "\n".join(messages_recents)
+    contexte_orga = f"Détail supplémentaire : {contexte}" if contexte else ""
+
+    # 2. Prompt chirurgical sans thématique Koh-Lanta
+    prompt = (
+        "Tu es un observateur cynique, un sniper d'ego et un maître du stand-up roast de haut niveau.\n"
+        "OUBLIE TOTALEMENT les références aux jeux de survie, îles, flambeaux ou télé-réalité. "
+        "Fais une autopsie brute, inventive et ultra-précise de la PERSONNE à travers ses propres écrits sur Discord.\n\n"
+        f"CIBLE DU CLASH : {cible.display_name}\n\n"
+        f"EXTRAITS DE SES VRAIS MESSAGES RÉCENTS SUR LE SERVEUR :\n{contexte_messages}\n\n"
+        f"{contexte_orga}\n\n"
+        "DIRECTIVES DU ROAST CHIRURGICAL :\n"
+        "1. PRÉCISION ET CITATIONS : Rebondis sur ses tournures exactes, ses hésitations, ses contradictions flagrantes, son usage excessif d'émojis/ponctuation ou ses postures ridicules.\n"
+        "2. ATTAQUE PSYCHOLOGIQUE : Moque-toi de son besoin d'attention, de ses justifications bancales, de sa fausse assurance ou de son énergie de victime incomprise.\n"
+        "3. SANS INSULTE NI HAINE : Pas de grossièretés basiques, d'insultes dégradantes ou de discrimination. L'impact doit venir de la justesse de l'observation et du cynisme élégant.\n"
+        "4. RYTHME : 3 à 5 phrases courtes, denses et percutantes qui montent en puissance.\n"
+        "5. Renvoie UNIQUEMENT le texte du clash, sans intro ni conclusion."
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        punchline = response.text.strip()
+    except Exception as e:
+        punchline = f"{cible.mention}, j'ai essayé d'analyser tes messages, mais le niveau de vide sidéral a fait surchauffer l'algorithme."
+
+    await interaction.followup.send(f"⚡ **ROAST HARDCORE — AUTOPSIE** {cible.mention}\n\n{punchline}")
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
