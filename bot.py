@@ -235,7 +235,7 @@ def decouper_texte_intelligent(texte: str, limite: int = 1900) -> list[str]:
 
 
 # =======================================================
-# 1. FONCTIONS DU RÉSUMÉ DU SOIR & QUESTIONS AUTOMATIQUES
+# 1. RÉSUMÉ DU SOIR CANDIDATS (AVEC BÊTISIER & QUESTIONS)
 # =======================================================
 
 async def poster_questions_automatiques(texte_recap: str):
@@ -266,12 +266,12 @@ async def poster_questions_automatiques(texte_recap: str):
     )
 
     try:
-        reponse_q = await asyncio.to_thread(
+        response = await asyncio.to_thread(
             gemini_client.models.generate_content,
             model=MODEL_NAME,
             contents=prompt_q
         )
-        questions_texte = reponse_q.text.strip()
+        questions_texte = response.text.strip()
         
         paris_tz = ZoneInfo("Europe/Paris")
         date_str = datetime.datetime.now(paris_tz).strftime("%d/%m/%Y")
@@ -281,14 +281,14 @@ async def poster_questions_automatiques(texte_recap: str):
 
         for chunk in decouper_texte_intelligent(full_msg, 1900):
             await salon_q.send(chunk)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.4)
 
     except Exception as e:
         print(f"Erreur génération questions neutres : {e}")
 
 
 async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channel: discord.TextChannel):
-    """Scanne les discussions de la journée (de 00h00 à 23h59 heure de Paris) et génère la synthèse."""
+    """Scanne les discussions de la journée (de 00h00 à 23h59 heure de Paris), intègre le bêtisier et génère la synthèse."""
     tz_paris = ZoneInfo("Europe/Paris")
     maintenant_paris = datetime.datetime.now(tz_paris)
     
@@ -299,7 +299,7 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
     historique_recaps = []
     async for msg in target_channel.history(limit=15, oldest_first=False):
         if msg.author.id == bot.user.id and msg.content.strip():
-            if not msg.content.startswith("📋"):
+            if not msg.content.startswith("📋") and not msg.content.startswith("🎙️"):
                 historique_recaps.append(msg.content[:1500])
         if len(historique_recaps) >= 5:
             break
@@ -311,7 +311,7 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
         else "Aucun récapitulatif antérieur (Début de l'aventure)."
     )
 
-    # 2. Collecte des discussions de la journée (filtrée à l'heure française)
+    # 2. Collecte des discussions de la journée
     salons_transcripts = []
 
     for channel in guild.text_channels:
@@ -374,6 +374,7 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
         "   - 🎙️ **Points Clés des Confessionnaux & Duos**\n"
         "   - 🗺️ **Mouvements & Événements Importants (Logs)**\n"
         "   - 📌 **Résumé rapide par zone/salon actif**\n"
+        "   - 🤡 **Le Bêtisier de l'Île (Moments Drôles & Perles)** : Relève 3 à 5 citations drôles, quiproquos, vannes, moments de panique comiques ou répliques lunaires sorties par les candidats aujourd'hui.\n"
         "4. Ne mentionne pas de métadonnées inutiles, reste focalisé sur le récit."
     )
 
@@ -392,26 +393,26 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
 
             for chunk in decouper_texte_intelligent(full_message, 1900):
                 await target_channel.send(chunk)
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.4)
             
-            # Envoi automatique des 3 questions dans le salon dédié
+            await asyncio.sleep(3)
             await poster_questions_automatiques(recap_text)
             return
 
         except Exception as e:
             if "503" in str(e) and tentative < max_tentatives - 1:
-                await asyncio.sleep(3)
+                await asyncio.sleep(4)
             else:
-                await target_channel.send("❌ Impossible de générer le journal aujourd'hui (serveurs IA surchargés).")
+                await target_channel.send(f"❌ Erreur lors de la génération du journal : {e}")
                 return
 
 
 # =======================================================
-# 2. RÉSUMÉ SPECTATEURS (TRAITEMENT À 23H00 ET MANUEL)
+# 2. RÉSUMÉ SPECTATEURS (AVEC BÊTISIER DE LA TRIBUNE)
 # =======================================================
 
 async def traiter_resume_spectateurs(guild: discord.Guild):
-    """Extrait le chat spectateurs et génère le résumé binaire (00h00 à 23h59 heure de Paris)."""
+    """Extrait le chat spectateurs et génère le résumé structuré avec son bêtisier."""
     chat_spec = guild.get_channel(SALON_CHAT_SPECTATEURS_ID)
     dest_spec = guild.get_channel(SALON_RECAP_SPECTATEURS_ID)
 
@@ -438,11 +439,13 @@ async def traiter_resume_spectateurs(guild: discord.Guild):
         "Tu es l'observateur officiel d'un jeu de stratégie. Voici l'intégralité des discussions "
         f"du salon des spectateurs aujourd'hui ({maintenant_paris.strftime('%d/%m/%Y')}) :\n\n"
         f"{texte_brut[:25000]}\n\n"
-        "Rédige un récapitulatif scindé STRICTEMENT en 2 parties distinctes :\n\n"
+        "Rédige un récapitulatif structuré STRICTEMENT en 3 parties distinctes :\n\n"
         "## 🍿 1. DISCUSSIONS HORS-SUJET & BRUITS DE COULOIR\n"
         "- Résume les débats inutiles, délires, blagues, mèmes et hors-sujets abordés.\n\n"
         "## 🧠 2. ANALYSES STRATÉGIQUES & AVIS PERTINENTS\n"
         "- Résume leurs théories lucides, observations sur les erreurs/masterclass des candidats et pronostics de votes.\n\n"
+        "## 🤡 3. LE BÊTISIER DE LA TRIBUNE (PERLES & PUNCHLINES DU CHAT)\n"
+        "- Relève 3 à 5 messages hilarants, réactions à chaud absurdes, clashs bon enfant ou punchlines mémorables postées par les spectateurs.\n\n"
         "Garde un ton synthétique, fluide et structuré."
     )
 
@@ -524,22 +527,22 @@ async def generer_questions_confessionnal(target_recap_channel: discord.TextChan
 # 4. TÂCHES AUTOMATIQUES PLANIFIÉES
 # ==========================================
 
-@tasks.loop(time=HEURE_RECAP)
+@tasks.loop(time=[HEURE_RECAP])
 async def tache_recap_quotidien():
-    """Tâche automatique exécutée chaque soir à 23h00 (Heure de Paris)."""
+    """Tâche automatique exécutée chaque soir à 23h00 précises (Heure de Paris)."""
     for guild in bot.guilds:
         try:
             target_channel = bot.get_channel(RECAP_CHANNEL_ID)
             if target_channel:
-                # 1. Journal joueurs + 2. Questions automatiques
                 await generer_et_envoyer_recap_quotidien(guild, target_channel)
-            # 3. Résumé Spectateurs
+            
+            await asyncio.sleep(5)
             await traiter_resume_spectateurs(guild)
         except Exception as e:
-            print(f"Erreur lors de la tâche automatique de 23h : {e}")
+            print(f"❌ Erreur lors de la tâche automatique de 23h : {e}")
 
 
-@tasks.loop(time=HEURE_QUESTIONS)
+@tasks.loop(time=[HEURE_QUESTIONS])
 async def tache_questions_matin():
     """Tâche automatique planifiée chaque matin à 09h00 (Heure de Paris)."""
     if RECAP_CHANNEL_ID == 0:
@@ -1388,7 +1391,7 @@ async def forcer_recap_jour(interaction: discord.Interaction):
 
 @bot.tree.command(
     name="resume_spectateurs",
-    description="Génère à la demande le récapitulatif du salon spectateurs (Hors-sujet vs Analyses)."
+    description="Génère à la demande le récapitulatif du salon spectateurs (Hors-sujet vs Analyses vs Bêtisier)."
 )
 @app_commands.check(est_orga_ou_admin)
 async def resume_spectateurs_cmd(interaction: discord.Interaction):
@@ -3020,12 +3023,10 @@ async def formater_annonce(
 
     texte_ameliore = await formater_annonce_ia(texte_brut)
 
-    # Rendu visuel
     chunks = decouper_texte_intelligent(texte_ameliore, limite=1900)
     for bloc in chunks:
         await dest_channel.send(bloc)
 
-    # Bloc copiable
     chunks_bruts = decouper_texte_intelligent(texte_ameliore, limite=1850)
     for i, chunk_b in enumerate(chunks_bruts, 1):
         suffixe = f" (Partie {i}/{len(chunks_bruts)})" if len(chunks_bruts) > 1 else ""
@@ -3306,6 +3307,7 @@ async def roast_cmd(
     badge = "🍿 [SPECTATEUR]" if statut == "SPECTATEUR" else ("🛠️ [STAFF]" if statut == "ORGA" else "🌴 [CANDIDAT]")
     await interaction.followup.send(f"🔥 **ROAST (100% Love & Second Degré) — {badge}** {cible.mention}\n\n{punchline}")
 
+
 # ========================================================
 # 20. COMMANDE DE PRAISE / COMPLIMENT THÉÂTRAL & DRÔLE
 # ========================================================
@@ -3327,7 +3329,6 @@ async def praise_cmd(
     await interaction.response.defer()
     guild = interaction.guild
 
-    # 1. Détection du statut
     role_spectateur = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
     role_orga = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
 
@@ -3350,7 +3351,6 @@ async def praise_cmd(
             "son mental d'acier ou sa simple capacité à survivre avec panache."
         )
 
-    # 2. Collecte des messages récents (sur 3 jours)
     messages_recents = []
     maintenant = datetime.datetime.now(datetime.timezone.utc)
     depuis = maintenant - datetime.timedelta(days=3)
@@ -3401,8 +3401,9 @@ async def praise_cmd(
     badge = "🍿 [SPECTATEUR STAR]" if statut == "SPECTATEUR" else ("🛠️ [DIVINITÉ DU STAFF]" if statut == "ORGA" else "🌴 [LÉGENDE DE L'ÎLE]")
     await interaction.followup.send(f"👑 **PRAISE & GLOIRE — {badge}** {cible.mention}\n\n{eloge}")
 
+
 # ========================================================
-# 22. STATISTIQUES D'ACTIVITÉ : COMPTEUR DE MESSAGES
+# 21. STATISTIQUES D'ACTIVITÉ : COMPTEUR DE MESSAGES
 # ========================================================
 
 @bot.tree.command(
@@ -3428,7 +3429,6 @@ async def stats_messages_candidats(
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    # 1. Définition de la borne temporelle
     choix_periode = periode.value if periode else "aujourdhui"
     tz_paris = ZoneInfo("Europe/Paris")
     maintenant = datetime.datetime.now(tz_paris)
@@ -3447,19 +3447,16 @@ async def stats_messages_candidats(
     else:
         texte_periode = "Historique récent complet"
 
-    # 2. Identification des candidats cibles
     role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
     role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
 
-    compteur_candidats = {} # {member_id: {"nom": str, "count": int, "mention": str}}
+    compteur_candidats = {}
 
     async for member in guild.fetch_members(limit=None):
         if member.bot:
             continue
-        # Filtre optionnel sur une équipe
         if role_equipe and role_equipe not in member.roles:
             continue
-        # Ignore les orgas et purs spectateurs
         if role_orgas and role_orgas in member.roles:
             continue
         if role_spectateurs and role_spectateurs in member.roles and not role_equipe:
@@ -3475,7 +3472,6 @@ async def stats_messages_candidats(
         await interaction.followup.send("❌ Aucun candidat trouvé pour cette sélection.", ephemeral=True)
         return
 
-    # 3. Parcours des salons de jeu
     total_messages_jeu = 0
     for channel in guild.text_channels:
         if not est_categorie_candidate(channel.category) and channel.name.lower() != "log-deplacements":
@@ -3491,10 +3487,8 @@ async def stats_messages_candidats(
         except Exception:
             continue
 
-    # 4. Tri par nombre décroissant de messages
     classement = sorted(compteur_candidats.values(), key=lambda x: x["count"], reverse=True)
 
-    # 5. Formatage de l'embed
     lignes_stats = []
     for i, c in enumerate(classement, 1):
         icone = "🥇" if i == 1 else ("🥈" if i == 2 else ("🥉" if i == 3 else f"`#{i}`"))
@@ -3515,8 +3509,9 @@ async def stats_messages_candidats(
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
+
 # ========================================================
-# 23. ROAST HARDCORE (ANALYSE COMPORTEMENTALE PURE)
+# 22. ROAST HARDCORE (ANALYSE COMPORTEMENTALE PURE)
 # ========================================================
 
 @bot.tree.command(
@@ -3536,7 +3531,6 @@ async def roast_hardcore_cmd(
     await interaction.response.defer()
     guild = interaction.guild
 
-    # 1. Collecte approfondie des messages (jusqu'à 30 messages sur les 4 derniers jours)
     messages_recents = []
     maintenant = datetime.datetime.now(datetime.timezone.utc)
     depuis = maintenant - datetime.timedelta(days=4)
@@ -3567,7 +3561,6 @@ async def roast_hardcore_cmd(
     contexte_messages = "\n".join(messages_recents)
     contexte_orga = f"Détail supplémentaire : {contexte}" if contexte else ""
 
-    # 2. Prompt chirurgical sans thématique Koh-Lanta
     prompt = (
         "Tu es un observateur cynique, un sniper d'ego et un maître du stand-up roast de haut niveau.\n"
         "OUBLIE TOTALEMENT les références aux jeux de survie, îles, flambeaux ou télé-réalité. "
@@ -3594,6 +3587,8 @@ async def roast_hardcore_cmd(
         punchline = f"{cible.mention}, j'ai essayé d'analyser tes messages, mais le niveau de vide sidéral a fait surchauffer l'algorithme."
 
     await interaction.followup.send(f"⚡ **ROAST HARDCORE — AUTOPSIE** {cible.mention}\n\n{punchline}")
+
+
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
