@@ -3756,7 +3756,54 @@ async def arreter_composition_equipes(interaction: discord.Interaction):
     await channel.send(embed=embed_fin)
     await interaction.response.send_message("✅ Session de composition des équipes clôturée.", ephemeral=True)age)
 
+# ========================================================
+# 25. COMMANDE DE TEASING D'ANNONCE (STYLE KOH-LANTA SOBRE)
+# ========================================================
 
+@bot.tree.command(
+    name="teasing_annonce",
+    description="Publie un message sobre de suspense avec compte à rebours dynamique avant une annonce."
+)
+@app_commands.describe(
+    minutes="Temps d'attente en minutes avant la révélation de l'annonce (ex: 10, 30, 60)",
+    titre_teasing="Optionnel : Intitulé sobre du teasing (ex: Conseil exceptionnel, Épreuve surprise...)",
+    salon_destination="Optionnel : Salon cible (par défaut : salon annonces candidats)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def teasing_annonce(
+    interaction: discord.Interaction,
+    minutes: int,
+    titre_teasing: str = "COMMUNICATION OFFICIELLE",
+    salon_destination: discord.TextChannel = None
+):
+    await interaction.response.defer(ephemeral=True)
+
+    dest_channel = salon_destination or bot.get_channel(SALON_ANNONCES_CANDIDATS_ID) or interaction.channel
+    if not isinstance(dest_channel, discord.TextChannel):
+        await interaction.followup.send("❌ Le salon cible doit être un salon textuel.", ephemeral=True)
+        return
+
+    maintenant_utc = datetime.datetime.now(datetime.timezone.utc)
+    fin_attente = maintenant_utc + datetime.timedelta(minutes=minutes)
+    timestamp_fin = int(fin_attente.timestamp())
+
+    embed_teasing = discord.Embed(
+        title=f"⏳ {titre_teasing.upper()}",
+        description=(
+            "Aventuriers, tenez-vous prêts.\n\n"
+            "Une décision majeure de l'organisation va être rendue publique.\n\n"
+            f"📢 **Publication de l'annonce :** <t:{timestamp_fin}:R> *(à <t:{timestamp_fin}:T>)*"
+        ),
+        color=discord.Color.dark_embed()
+    )
+    embed_teasing.set_footer(text="La sentence sera irrévocable • Restez attentifs")
+
+    await dest_channel.send(embed=embed_teasing)
+    await interaction.followup.send(
+        f"✅ Teasing programmé envoyé dans {dest_channel.mention} (fin : <t:{timestamp_fin}:T>) !",
+        ephemeral=True
+    )
+    
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
