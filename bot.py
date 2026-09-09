@@ -20,7 +20,7 @@ from google import genai
 TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-MODEL_NAME = "gemini-3.5-flash"
+MODEL_NAME = "gemini-3.5-flash-lite"
 
 # Salons & Catégories fixes
 RECAP_CHANNEL_ID = int(os.getenv("RECAP_CHANNEL_ID", 0))
@@ -107,6 +107,17 @@ CONFIG_EPREUVE_GLOBALE = {
 
 # Suivi de l'état d'épreuve par salon
 ETATS_EPREUVES_SALONS = {}
+
+# Suivi de la sélection d'équipes interactive (Draft)
+ETAT_COMPOSITION = {
+    "actif": False,
+    "channel_id": None,
+    "capitaine_1": None,  # discord.Member
+    "role_1": None,       # discord.Role
+    "capitaine_2": None,  # discord.Member
+    "role_2": None,       # discord.Role
+    "tour": 1             # 1 ou 2
+}
 
 
 # ==========================================
@@ -582,6 +593,60 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
     if not before.self_mute and after.self_mute:
         print(f"⚠️ INFO : {member.display_name} s'est MUTÉ.")
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    """Écouteur de messages pour la gestion de la draft d'équipes et commandes préfixes."""
+    if message.author.bot:
+        return
+
+    # Gestion de la draft interactive des équipes
+    if ETAT_COMPOSITION["actif"] and message.channel.id == ETAT_COMPOSITION["channel_id"]:
+        cap1 = ETAT_COMPOSITION["capitaine_1"]
+        cap2 = ETAT_COMPOSITION["capitaine_2"]
+        tour = ETAT_COMPOSITION["tour"]
+        
+        cap_actif = cap1 if tour == 1 else cap2
+        role_actif = ETAT_COMPOSITION["role_1"] if tour == 1 else ETAT_COMPOSITION["role_2"]
+        cap_suivant = cap2 if tour == 1 else cap1
+
+        if message.author.id == cap_actif.id:
+            if message.mentions:
+                cible = message.mentions[0]
+
+                role_1 = ETAT_COMPOSITION["role_1"]
+                role_2 = ETAT_COMPOSITION["role_2"]
+
+                if cible.bot:
+                    await message.channel.send(f"❌ {cap_actif.mention}, tu ne peux pas recruter un bot !")
+                    return
+
+                if role_1 in cible.roles or role_2 in cible.roles:
+                    await message.channel.send(f"⚠️ {cap_actif.mention}, **{cible.display_name}** a déjà été choisi dans une équipe !")
+                    return
+
+                try:
+                    await cible.add_roles(role_actif, reason=f"Choisi par le capitaine {cap_actif.display_name}")
+                    
+                    ETAT_COMPOSITION["tour"] = 2 if tour == 1 else 1
+
+                    embed_choix = discord.Embed(
+                        title="🤝 NOUVELLE RECRUE !",
+                        description=(
+                            f"🔴 **{cible.mention}** rejoint l'équipe {role_actif.mention} !\n\n"
+                            f"👉 **Au tour de {cap_suivant.mention}** de faire son choix (mentionne un candidat) !"
+                        ),
+                        color=role_actif.color if role_actif.color.value != 0 else discord.Color.gold()
+                    )
+                    await message.channel.send(embed=embed_choix)
+
+                except discord.Forbidden:
+                    await message.channel.send(f"❌ Erreur de permissions : le bot ne peut pas attribuer le rôle {role_actif.mention}.")
+                except Exception as e:
+                    await message.channel.send(f"❌ Erreur lors de l'attribution du rôle : {e}")
+
+    await bot.process_commands(message)
 
 
 @bot.tree.error
@@ -2036,7 +2101,6 @@ class GlobalQuizLancementView(discord.ui.View):
         }
         ETATS_EPREUVES_SALONS[channel.id]["event"].set()
 
-        # Décompte de départ
         msg_decompte = await channel.send("⚠️ **L'épreuve commence dans : 3**")
         for k in range(2, 0, -1):
             await asyncio.sleep(1)
@@ -3588,79 +3652,9 @@ async def roast_hardcore_cmd(
 
     await interaction.followup.send(f"⚡ **ROAST HARDCORE — AUTOPSIE** {cible.mention}\n\n{punchline}")
 
-# ==========================================
-# GESTION DE LA COMPOSITION DES ÉQUIPES
-# ==========================================
 
-ETAT_COMPOSITION = {
-    "actif": False,
-    "channel_id": None,
-    "capitaine_1": None,  # discord.Member
-    "role_1": None,       # discord.Role
-    "capitaine_2": None,  # discord.Member
-    "role_2": None,       # discord.Role
-    "tour": 1,            # 1 ou 2
-}
-
-@bot.event
-async def on_message(message: discord.Message):
-    # Ignorer les messages des bots
-    if message.author.bot:
-        return
-
-    # Gestion de la draft interactive des équipes
-    if ETAT_COMPOSITION["actif"] and message.channel.id == ETAT_COMPOSITION["channel_id"]:
-        cap1 = ETAT_COMPOSITION["capitaine_1"]
-        cap2 = ETAT_COMPOSITION["capitaine_2"]
-        tour = ETAT_COMPOSITION["tour"]
-        
-        cap_actif = cap1 if tour == 1 else cap2
-        role_actif = ETAT_COMPOSITION["role_1"] if tour == 1 else ETAT_COMPOSITION["role_2"]
-        cap_suivant = cap2 if tour == 1 else cap1
-
-        # Vérifier si l'auteur du message est bien le capitaine dont c'est le tour
-        if message.author.id == cap_actif.id:
-            # Vérifier si un membre est mentionné
-            if message.mentions:
-                cible = message.mentions[0]
-
-                # Sécurités : pas de bot, pas d'orga, pas déjà dans une équipe
-                role_1 = ETAT_COMPOSITION["role_1"]
-                role_2 = ETAT_COMPOSITION["role_2"]
-
-                if cible.bot:
-                    await message.channel.send(f"❌ {cap_actif.mention}, tu ne peux pas recruter un bot !")
-                    return
-
-                if role_1 in cible.roles or role_2 in cible.roles:
-                    await message.channel.send(f"⚠️ {cap_actif.mention}, **{cible.display_name}** a déjà été choisi dans une équipe !")
-                    return
-
-                # Attribution du rôle
-                try:
-                    await cible.add_roles(role_actif, reason=f"Choisi par le capitaine {cap_actif.display_name}")
-                    
-                    # Changement de tour
-                    ETAT_COMPOSITION["tour"] = 2 if tour == 1 else 1
-
-                    embed_choix = discord.Embed(
-                        title="🤝 NOUVELLE RECRUE !",
-                        description=(
-                            f"🔴 **{cible.mention}** rejoint l'équipe {role_actif.mention} !\n\n"
-                            f"👉 **Au tour de {cap_suivant.mention}** de faire son choix (mentionne un candidat) !"
-                        ),
-                        color=role_actif.color if role_actif.color.value != 0 else discord.Color.gold()
-                    )
-                    await message.channel.send(embed=embed_choix)
-
-                except discord.Forbidden:
-                    await message.channel.send(f"❌ Erreur de permissions : le bot ne peut pas attribuer le rôle {role_actif.mention}.")
-                except Exception as e:
-                    await message.channel.send(f"❌ Erreur lors de l'attribution du rôle : {e}")
-
-    # Indispensable si tu as des commandes classiques avec préfixe
-    await bot.process_commands(mess# ========================================================
-# 24. COMMANDES DE COMPOSITION INTERACTIVE DES ÉQUIPES
+# ========================================================
+# 23. COMMANDES DE COMPOSITION INTERACTIVE DES ÉQUIPES
 # ========================================================
 
 @bot.tree.command(
@@ -3690,7 +3684,6 @@ async def lancer_composition_equipes(
         await interaction.followup.send("❌ Les deux capitaines doivent être des membres distincts.", ephemeral=True)
         return
 
-    # Attribution immédiate des rôles aux capitaines respectifs
     try:
         await capitaine_1.add_roles(role_equipe_1, reason="Capitaine Équipe 1")
         await capitaine_2.add_roles(role_equipe_2, reason="Capitaine Équipe 2")
@@ -3698,7 +3691,6 @@ async def lancer_composition_equipes(
         await interaction.followup.send("❌ Erreur : Le bot n'a pas les permissions pour modifier les rôles de ces capitaines.", ephemeral=True)
         return
 
-    # Initialisation de l'état
     ETAT_COMPOSITION["actif"] = True
     ETAT_COMPOSITION["channel_id"] = target_channel.id
     ETAT_COMPOSITION["capitaine_1"] = capitaine_1
@@ -3754,10 +3746,11 @@ async def arreter_composition_equipes(interaction: discord.Interaction):
         color=discord.Color.dark_grey()
     )
     await channel.send(embed=embed_fin)
-    await interaction.response.send_message("✅ Session de composition des équipes clôturée.", ephemeral=True)age)
+    await interaction.response.send_message("✅ Session de composition des équipes clôturée.", ephemeral=True)
+
 
 # ========================================================
-# 25. COMMANDE DE TEASING D'ANNONCE (STYLE KOH-LANTA SOBRE)
+# 24. COMMANDE DE TEASING D'ANNONCE (STYLE KOH-LANTA SOBRE)
 # ========================================================
 
 @bot.tree.command(
@@ -3803,7 +3796,8 @@ async def teasing_annonce(
         f"✅ Teasing programmé envoyé dans {dest_channel.mention} (fin : <t:{timestamp_fin}:T>) !",
         ephemeral=True
     )
-    
+
+
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
