@@ -3750,7 +3750,7 @@ async def arreter_composition_equipes(interaction: discord.Interaction):
 
 
 # ========================================================
-# 24. COMMANDE DE TEASING D'ANNONCE (STYLE KOH-LANTA SOBRE & SOIGNÉ)
+# 24. COMMANDE DE TEASING D'ANNONCE (STYLE KOH-LANTA SOBRE & PROPRE)
 # ========================================================
 
 @bot.tree.command(
@@ -3776,7 +3776,6 @@ async def teasing_annonce(
         await interaction.followup.send("❌ Le salon cible doit être un salon textuel.", ephemeral=True)
         return
 
-    # Calcul du timestamp universel (calé automatiquement sur l'heure locale de chaque utilisateur)
     maintenant_utc = datetime.datetime.now(datetime.timezone.utc)
     fin_attente = maintenant_utc + datetime.timedelta(minutes=minutes)
     timestamp_fin = int(fin_attente.timestamp())
@@ -3790,10 +3789,9 @@ async def teasing_annonce(
             "Accès  : Tous les participants\n"
             "```\n"
             f"⏳ **Révélation :** <t:{timestamp_fin}:R> *(à <t:{timestamp_fin}:T>)*\n\n"
-            "⣀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀\n"
             "⚠️ *Restez attentifs sur ce salon. La sentence sera irrévocable.*"
         ),
-        color=discord.Color.from_rgb(220, 150, 30)  # Teinte ambrée / feu de camp
+        color=discord.Color.from_rgb(220, 150, 30)
     )
     embed_teasing.set_footer(
         text="Koh-Lanta • Message de l'Organisation",
@@ -3805,7 +3803,6 @@ async def teasing_annonce(
         f"✅ Teasing envoyé dans {dest_channel.mention} (Révélation : <t:{timestamp_fin}:T>) !",
         ephemeral=True
     )
-
 
 # ==========================================
 # DÉMARRAGE DU BOT
