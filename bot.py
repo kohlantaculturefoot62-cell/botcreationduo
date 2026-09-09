@@ -3750,16 +3750,16 @@ async def arreter_composition_equipes(interaction: discord.Interaction):
 
 
 # ========================================================
-# 24. COMMANDE DE TEASING D'ANNONCE (STYLE KOH-LANTA SOBRE)
+# 24. COMMANDE DE TEASING D'ANNONCE (STYLE KOH-LANTA SOBRE & SOIGNÉ)
 # ========================================================
 
 @bot.tree.command(
     name="teasing_annonce",
-    description="Publie un message sobre de suspense avec compte à rebours dynamique avant une annonce."
+    description="Publie un teasing sobre avec compte à rebours dynamique avant une annonce."
 )
 @app_commands.describe(
-    minutes="Temps d'attente en minutes avant la révélation de l'annonce (ex: 10, 30, 60)",
-    titre_teasing="Optionnel : Intitulé sobre du teasing (ex: Conseil exceptionnel, Épreuve surprise...)",
+    minutes="Temps d'attente en minutes avant l'annonce (ex: 5, 10, 30)",
+    titre_teasing="Optionnel : Intitulé du teasing (ex: Conseil, Épreuve, Destins Liés...)",
     salon_destination="Optionnel : Salon cible (par défaut : salon annonces candidats)"
 )
 @app_commands.check(est_orga_ou_admin)
@@ -3776,24 +3776,33 @@ async def teasing_annonce(
         await interaction.followup.send("❌ Le salon cible doit être un salon textuel.", ephemeral=True)
         return
 
+    # Calcul du timestamp universel (calé automatiquement sur l'heure locale de chaque utilisateur)
     maintenant_utc = datetime.datetime.now(datetime.timezone.utc)
     fin_attente = maintenant_utc + datetime.timedelta(minutes=minutes)
     timestamp_fin = int(fin_attente.timestamp())
 
     embed_teasing = discord.Embed(
-        title=f"⏳ {titre_teasing.upper()}",
+        title=f"📜 ━━━ **{titre_teasing.upper()}** ━━━",
         description=(
-            "Aventuriers, tenez-vous prêts.\n\n"
-            "Une décision majeure de l'organisation va être rendue publique.\n\n"
-            f"📢 **Publication de l'annonce :** <t:{timestamp_fin}:R> *(à <t:{timestamp_fin}:T>)*"
+            "🔥 **Aventuriers, tenez-vous prêts pour l'annonce qui arrive !**\n\n"
+            "```yaml\n"
+            "Statut : Transmission imminente\n"
+            "Accès  : Tous les participants\n"
+            "```\n"
+            f"⏳ **Révélation :** <t:{timestamp_fin}:R> *(à <t:{timestamp_fin}:T>)*\n\n"
+            "⣀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀\n"
+            "⚠️ *Restez attentifs sur ce salon. La sentence sera irrévocable.*"
         ),
-        color=discord.Color.dark_embed()
+        color=discord.Color.from_rgb(220, 150, 30)  # Teinte ambrée / feu de camp
     )
-    embed_teasing.set_footer(text="La sentence sera irrévocable • Restez attentifs")
+    embed_teasing.set_footer(
+        text="Koh-Lanta • Message de l'Organisation",
+        icon_url=interaction.guild.icon.url if interaction.guild.icon else None
+    )
 
     await dest_channel.send(embed=embed_teasing)
     await interaction.followup.send(
-        f"✅ Teasing programmé envoyé dans {dest_channel.mention} (fin : <t:{timestamp_fin}:T>) !",
+        f"✅ Teasing envoyé dans {dest_channel.mention} (Révélation : <t:{timestamp_fin}:T>) !",
         ephemeral=True
     )
 
