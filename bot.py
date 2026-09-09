@@ -20,7 +20,7 @@ from google import genai
 TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-MODEL_NAME = "gemini-3.5-flash-lite"
+MODEL_NAME = "gemini-3.5-flash"
 
 # Salons & Catégories fixes
 RECAP_CHANNEL_ID = int(os.getenv("RECAP_CHANNEL_ID", 0))
