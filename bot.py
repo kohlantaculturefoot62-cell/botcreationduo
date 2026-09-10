@@ -41,7 +41,7 @@ SALON_ARCHIVES_ANNONCES_ID = 1545823386700087456
 SALON_PRESENTATION_ORGAS_ID = 1546603467580383332
 
 # Planification des tâches automatiques (Fuseau Paris)
-HEURE_RECAP = datetime.time(hour=23, minute=0, tzinfo=ZoneInfo("Europe/Paris"))
+HEURE_RECAP = datetime.time(hour=23, minute=30, tzinfo=ZoneInfo("Europe/Paris"))
 HEURE_QUESTIONS = datetime.time(hour=9, minute=0, tzinfo=ZoneInfo("Europe/Paris"))
 
 MAX_CHANNELS_PER_CATEGORY = 45
@@ -299,7 +299,7 @@ async def poster_questions_automatiques(texte_recap: str):
 
 
 async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channel: discord.TextChannel):
-    """Scanne les discussions de la journée (de 00h00 à 23h59 heure de Paris), intègre le bêtisier et génère la synthèse."""
+    """Scanne les discussions de la journée (de 00h00 à 23h59 heure de Paris), intègre connexions, ranking et bêtisier."""
     tz_paris = ZoneInfo("Europe/Paris")
     maintenant_paris = datetime.datetime.now(tz_paris)
     
@@ -373,11 +373,11 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
         f"{texte_contexte_passe}\n\n"
         "=== DISCUSSIONS DE LA JOURNÉE EN COURS À RÉSUMER ===\n"
         f"{full_context}\n\n"
-        "Rédige le **Journal de Bord Stratégique Global de la Journée** pour l'équipe d'organisation.\n"
-        "Consignes :\n"
+        "Rédige le **Journal de Bord Stratégique Global de la Journée** pour l'équipe d'organisation avec une analyse experte.\n"
+        "Consignes de fond :\n"
         "1. Prends en compte l'historique pour comprendre l'évolution des alliances et des trahisons.\n"
         "2. Les horaires indiqués [HH:MM] sont en heure française (Paris).\n"
-        "3. Structure ta réponse avec des titres clairs et des emojis :\n"
+        "3. Structure ta réponse avec les sections obligatoires suivantes et des emojis :\n\n"
         "   - 🌍 **Synthèse Générale & Ambiance Globale**\n"
         "   - 🤝 **Alliances, Pactes & Négociations**\n"
         "   - 🎯 **Cibles, Votes & Stratégies d'Élimination**\n"
@@ -385,8 +385,13 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
         "   - 🎙️ **Points Clés des Confessionnaux & Duos**\n"
         "   - 🗺️ **Mouvements & Événements Importants (Logs)**\n"
         "   - 📌 **Résumé rapide par zone/salon actif**\n"
-        "   - 🤡 **Le Bêtisier de l'Île (Moments Drôles & Perles)** : Relève 3 à 5 citations drôles, quiproquos, vannes, moments de panique comiques ou répliques lunaires sorties par les candidats aujourd'hui.\n"
-        "4. Ne mentionne pas de métadonnées inutiles, reste focalisé sur le récit."
+        "   - 🕸️ **Cartographie des Connexions & Alliances Clés** : Résume précisément les liens de confiance avérés, les duos solides, les ponts entre factions et les joueurs isolés.\n"
+        "   - 🏆 **Baromètre & Power Ranking Stratégique** : Établis un ranking précis de la position de TOUS les candidats actifs observés aujourd'hui (qui est au sommet, qui est en pivot, qui est en grand danger) répartis en 3 tiers :\n"
+        "       🟢 *En position de force* (bien entourés, décideurs, sous le radar)\n"
+        "       🟡 *En équilibre / Statu quo* (charnières, suiveurs, marge de manœuvre moyenne)\n"
+        "       🔴 *En danger / Cibles directes* (isolés, ciblés au conseil, alliances percées)\n"
+        "   - 🤡 **Le Bêtisier de l'Île (Moments Drôles & Perles)** : Relève 3 à 5 citations drôles, quiproquos, vannes, moments de panique comiques ou répliques lunaires sorties par les candidats aujourd'hui.\n\n"
+        "4. Reste analytique, percutant et sans métadonnées superflues."
     )
 
     max_tentatives = 3
@@ -540,7 +545,7 @@ async def generer_questions_confessionnal(target_recap_channel: discord.TextChan
 
 @tasks.loop(time=[HEURE_RECAP])
 async def tache_recap_quotidien():
-    """Tâche automatique exécutée chaque soir à 23h00 précises (Heure de Paris)."""
+    """Tâche automatique exécutée chaque soir à 23h30 précises (Heure de Paris)."""
     for guild in bot.guilds:
         try:
             target_channel = bot.get_channel(RECAP_CHANNEL_ID)
@@ -550,7 +555,7 @@ async def tache_recap_quotidien():
             await asyncio.sleep(5)
             await traiter_resume_spectateurs(guild)
         except Exception as e:
-            print(f"❌ Erreur lors de la tâche automatique de 23h : {e}")
+            print(f"❌ Erreur lors de la tâche automatique de 23h30 : {e}")
 
 
 @tasks.loop(time=[HEURE_QUESTIONS])
@@ -775,7 +780,7 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
 
     targeted_channels = []
     for channel in guild.text_channels:
-        if (channel.name.startswith("duo-") or channel.name.startswith("🔗・") or channel.name.startswith("🔺・") or channel.name.startswith("🔶・")) and role_candidat in channel.overwrites:
+        if (channel.name.startswith("duo-") or channel.name.startswith("🔗・") or channel.name.startswith("🔺・")) and role_candidat in channel.overwrites:
             targeted_channels.append(channel)
 
     if not targeted_channels:
@@ -1480,7 +1485,7 @@ async def pause_taches(interaction: discord.Interaction):
         tache_questions_matin.stop()
 
     await interaction.response.send_message(
-        "⏸️ **Tâches automatiques mises en pause :**\n- 🌙 Récap du soir (23h00) : **Arrêté**\n- 🎙️ Questions du matin (09h00) : **Arrêté**",
+        "⏸️ **Tâches automatiques mises en pause :**\n- 🌙 Récap du soir (23h30) : **Arrêté**\n- 🎙️ Questions du matin (09h00) : **Arrêté**",
         ephemeral=True
     )
 
@@ -1497,7 +1502,7 @@ async def reprendre_taches(interaction: discord.Interaction):
         tache_questions_matin.start()
 
     await interaction.response.send_message(
-        "▶️ **Tâches automatiques réactivées :**\n- 🌙 Récap du soir (23h00) : **Actif**\n- 🎙️ Questions du matin (09h00) : **Actif**",
+        "▶️ **Tâches automatiques réactivées :**\n- 🌙 Récap du soir (23h30) : **Actif**\n- 🎙️ Questions du matin (09h00) : **Actif**",
         ephemeral=True
     )
 
@@ -1589,7 +1594,7 @@ async def tirage_boules(
         await message_principal.edit(embed=embed_update)
         await asyncio.sleep(3.5)
 
-    mentions_victimes = ", ".join([v.mention for v in victimes_boule_noire])
+    mentions_victimes = ", ".join([v.mention for v in制作_victimes_boule_noire := victimes_boule_noire])
     verdict_text = (
         f"{texte_revelations}"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -3803,6 +3808,8 @@ async def teasing_annonce(
         f"✅ Teasing envoyé dans {dest_channel.mention} (Révélation : <t:{timestamp_fin}:T>) !",
         ephemeral=True
     )
+
+
 # ========================================================
 # 25. SALONS D'ÉPREUVES GROUPÉES & VOCAUX INDIVIDUELS
 # ========================================================
@@ -3846,7 +3853,6 @@ async def creer_vocaux_individuels(
             guild.me: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True, mute_members=True)
         }
 
-        # Droits pour le candidat (par son rôle perso ou son compte)
         if role_perso:
             overwrites[role_perso] = discord.PermissionOverwrite(
                 view_channel=True, connect=True, speak=True, stream=True, use_voice_activation=True
@@ -3999,6 +4005,8 @@ async def supprimer_epreuve_groupe(interaction: discord.Interaction, salon: disc
             await interaction.followup.send(f"🗑️ Le salon d'épreuve **{nom_salon}** a été supprimé avec succès.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Impossible de supprimer le salon : {e}", ephemeral=True)
+
+
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
