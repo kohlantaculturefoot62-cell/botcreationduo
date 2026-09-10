@@ -780,7 +780,7 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
 
     targeted_channels = []
     for channel in guild.text_channels:
-        if (channel.name.startswith("duo-") or channel.name.startswith("🔗・") or channel.name.startswith("🔺・")) and role_candidat in channel.overwrites:
+        if (channel.name.startswith("duo-") or channel.name.startswith("🔗・") or channel.name.startswith("🔺・") or channel.name.startswith("🔶・")) and role_candidat in channel.overwrites:
             targeted_channels.append(channel)
 
     if not targeted_channels:
@@ -1594,7 +1594,7 @@ async def tirage_boules(
         await message_principal.edit(embed=embed_update)
         await asyncio.sleep(3.5)
 
-    mentions_victimes = ", ".join([v.mention for v in制作_victimes_boule_noire := victimes_boule_noire])
+    mentions_victimes = ", ".join([v.mention for v in victimes_boule_noire])
     verdict_text = (
         f"{texte_revelations}"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
