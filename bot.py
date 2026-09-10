@@ -4007,7 +4007,7 @@ async def supprimer_epreuve_groupe(interaction: discord.Interaction, salon: disc
         await interaction.followup.send(f"❌ Impossible de supprimer le salon : {e}", ephemeral=True)
 
 # ========================================================
-# 26. MESSAGE SECRET ÉPHÉMÈRE EN CONFESSIONNAL (ANTI-SPECTATEURS)
+# 26. MESSAGE SECRET ÉPHÉMÈRE EN CONFESSIONNAL (CORRIGÉ)
 # ========================================================
 
 class SecretConfessionnalView(discord.ui.View):
@@ -4018,15 +4018,18 @@ class SecretConfessionnalView(discord.ui.View):
 
     @discord.ui.button(label="👁️ RÉVÉLER MON CODE SECRET", style=discord.ButtonStyle.danger, custom_id="btn_reveal_secret")
     async def reveler_secret(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Sécurité : Seul le candidat propriétaire du salon (ou un admin) peut voir le contenu
+        # 1. Empêche l'expiration des 3 secondes (évite l'erreur 10062)
+        await interaction.response.defer(ephemeral=True)
+
+        # 2. Sécurité : Seul le candidat propriétaire du salon (ou un admin) peut voir le contenu
         if interaction.user.id != self.candidat_id and not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "⛔ **Accès refusé :** Ce secret est personnel et réservé au candidat de ce confessionnal.", 
                 ephemeral=True
             )
             return
 
-        # Affichage du secret STRICTEMENT invisible pour les spectateurs
+        # 3. Affichage du secret STRICTEMENT invisible pour les spectateurs
         embed_perso = discord.Embed(
             title="🗝️ TON CODE SECRET PERSONNEL",
             description=(
@@ -4036,7 +4039,7 @@ class SecretConfessionnalView(discord.ui.View):
             ),
             color=discord.Color.gold()
         )
-        await interaction.response.send_message(embed=embed_perso, ephemeral=True)
+        await interaction.followup.send(embed=embed_perso, ephemeral=True)
 
 
 @bot.tree.command(
