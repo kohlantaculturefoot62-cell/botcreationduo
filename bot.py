@@ -4006,6 +4006,76 @@ async def supprimer_epreuve_groupe(interaction: discord.Interaction, salon: disc
     except Exception as e:
         await interaction.followup.send(f"❌ Impossible de supprimer le salon : {e}", ephemeral=True)
 
+# ========================================================
+# 26. MESSAGE SECRET ÉPHÉMÈRE EN CONFESSIONNAL (ANTI-SPECTATEURS)
+# ========================================================
+
+class SecretConfessionnalView(discord.ui.View):
+    def __init__(self, candidat_id: int, texte_secret: str):
+        super().__init__(timeout=None) # Bouton persistant
+        self.candidat_id = candidat_id
+        self.texte_secret = texte_secret
+
+    @discord.ui.button(label="👁️ RÉVÉLER MON CODE SECRET", style=discord.ButtonStyle.danger, custom_id="btn_reveal_secret")
+    async def reveler_secret(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Sécurité : Seul le candidat propriétaire du salon (ou un admin) peut voir le contenu
+        if interaction.user.id != self.candidat_id and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "⛔ **Accès refusé :** Ce secret est personnel et réservé au candidat de ce confessionnal.", 
+                ephemeral=True
+            )
+            return
+
+        # Affichage du secret STRICTEMENT invisible pour les spectateurs
+        embed_perso = discord.Embed(
+            title="🗝️ TON CODE SECRET PERSONNEL",
+            description=(
+                f"Voici ta transmission secrète :\n\n"
+                f"```{self.texte_secret}```\n"
+                "*(Ce message est éphémère : tu es le seul à le voir sur ton écran)*"
+            ),
+            color=discord.Color.gold()
+        )
+        await interaction.response.send_message(embed=embed_perso, ephemeral=True)
+
+
+@bot.tree.command(
+    name="deposer_secret_confessionnal",
+    description="Dépose un bouton à secret dans le confessionnal (visible uniquement par le candidat en éphémère)."
+)
+@app_commands.describe(
+    candidat="Le candidat concerné",
+    texte_secret="Le code secret, énigme ou consigne confidentielle",
+    salon="Optionnel : confessionnal cible (par défaut : salon actuel)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def deposer_secret_confessionnal(
+    interaction: discord.Interaction,
+    candidat: discord.Member,
+    texte_secret: str,
+    salon: discord.TextChannel = None
+):
+    await interaction.response.defer(ephemeral=True)
+    target_channel = salon or interaction.channel
+
+    view = SecretConfessionnalView(candidat_id=candidat.id, texte_secret=texte_secret)
+
+    embed_annonce = discord.Embed(
+        title="🗝️ TRANSMISSION CONFIDENTIELLE DE L'ORGANISATION",
+        description=(
+            f"{candidat.mention}, une information secrète a été déposée dans ton confessionnal.\n\n"
+            "👉 **Clique sur le bouton rouge ci-dessous pour l'afficher sur ton écran.**\n\n"
+            "*(Sécurité active : aucun spectateur ne peut voir son contenu)*"
+        ),
+        color=discord.Color.dark_red()
+    )
+    embed_annonce.set_footer(text="Système de confidentialité Koh-Lanta")
+
+    await target_channel.send(content=candidat.mention, embed=embed_annonce, view=view)
+    await interaction.followup.send(
+        f"✅ Message secret déposé dans {target_channel.mention} pour {candidat.mention} (invisible aux spectateurs) !",
+        ephemeral=True
+    )
 
 # ==========================================
 # DÉMARRAGE DU BOT
