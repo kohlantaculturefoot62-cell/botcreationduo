@@ -60,7 +60,8 @@ CATEGORIES_CIBLES = [
     "equipe jaune",
     "destin lies",
     "destins lies",
-    "destin lie"
+    "destin lie",
+    "Alliés de l’ombre"
 ]
 
 # Rôles génériques à ignorer pour trouver le rôle personnel du joueur
