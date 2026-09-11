@@ -4208,6 +4208,122 @@ async def creer_salons_depuis_message(
         f"✅ **{len(salons_crees)} salons de binômes créés avec succès** dans **{current_category.name}** !\n\n" + "\n".join(salons_crees),
         ephemeral=True
     )
+
+# ========================================================
+# 27. ANNONCE OFFICIELLE DE LA COMPOSITION DES ÉQUIPES
+# ========================================================
+
+@bot.tree.command(
+    name="annoncer_equipes",
+    description="Génère une annonce visuelle soignée de la composition officielle des deux tribus."
+)
+@app_commands.describe(
+    role_equipe_1="Rôle de la première équipe (ex: @Tribu Rouge)",
+    role_equipe_2="Rôle de la deuxième équipe (ex: @Tribu Jaune)",
+    capitaine_1="Optionnel : Capitaine de la première équipe",
+    capitaine_2="Optionnel : Capitaine de la deuxième équipe",
+    nom_tribu_1="Optionnel : Nom personnalisé (ex: Coravu, Sambor, Korok...)",
+    nom_tribu_2="Optionnel : Nom personnalisé (ex: Simban, Matu, Takeo...)",
+    salon_destination="Optionnel : Salon cible (par défaut : salon annonces candidats)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def annoncer_equipes(
+    interaction: discord.Interaction,
+    role_equipe_1: discord.Role,
+    role_equipe_2: discord.Role,
+    capitaine_1: discord.Member = None,
+    capitaine_2: discord.Member = None,
+    nom_tribu_1: str = None,
+    nom_tribu_2: str = None,
+    salon_destination: discord.TextChannel = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    dest_channel = salon_destination or bot.get_channel(SALON_ANNONCES_CANDIDATS_ID) or interaction.channel
+    if not isinstance(dest_channel, discord.TextChannel):
+        await interaction.followup.send("❌ Le salon de destination doit être un salon textuel.", ephemeral=True)
+        return
+
+    # 1. Récupération et tri des membres des deux équipes (hors bots)
+    membres_1 = [m for m in role_equipe_1.members if not m.bot]
+    membres_2 = [m for m in role_equipe_2.members if not m.bot]
+
+    if not membres_1 and not membres_2:
+        await interaction.followup.send("❌ Aucun membre trouvé dans ces deux rôles d'équipe.", ephemeral=True)
+        return
+
+    # Formatage de la liste de la Tribu 1
+    lignes_tribu_1 = []
+    if capitaine_1 and capitaine_1 in membres_1:
+        lignes_tribu_1.append(f"👑 **{capitaine_1.display_name}** ({capitaine_1.mention}) `[Capitaine]`")
+    
+    for m in membres_1:
+        if capitaine_1 and m.id == capitaine_1.id:
+            continue
+        lignes_tribu_1.append(f"▫️ **{m.display_name}** ({m.mention})")
+
+    # Formatage de la liste de la Tribu 2
+    lignes_tribu_2 = []
+    if capitaine_2 and capitaine_2 in membres_2:
+        lignes_tribu_2.append(f"👑 **{capitaine_2.display_name}** ({capitaine_2.mention}) `[Capitaine]`")
+
+    for m in membres_2:
+        if capitaine_2 and m.id == capitaine_2.id:
+            continue
+        lignes_tribu_2.append(f"▫️ **{m.display_name}** ({m.mention})")
+
+    titre_1 = nom_tribu_1.upper() if nom_tribu_1 else role_equipe_1.name.upper()
+    titre_2 = nom_tribu_2.upper() if nom_tribu_2 else role_equipe_2.name.upper()
+
+    texte_tribu_1 = "\n".join(lignes_tribu_1) if lignes_tribu_1 else "*Aucun membre assigné*"
+    texte_tribu_2 = "\n".join(lignes_tribu_2) if lignes_tribu_2 else "*Aucun membre assigné*"
+
+    # 2. Construction de l'Embed d'annonce
+    embed = discord.Embed(
+        title="🌴 ━━━ COMPOSITION OFFICIELLE DES TRIBUS ━━━ 🌴",
+        description=(
+            "Aventuriers, le destin a parlé !\n"
+            "Les tribus sont désormais scellées. Voici la répartition officielle de vos équipes pour la suite de l'aventure :\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=discord.Color.gold()
+    )
+
+    # Détection de couleur ou icône thématique
+    nom_r1_clean = nettoyer_texte(role_equipe_1.name)
+    nom_r2_clean = nettoyer_texte(role_equipe_2.name)
+
+    emoji_1 = "🔴" if "rouge" in nom_r1_clean else ("🟡" if "jaune" in nom_r1_clean else ("🔵" if "bleu" in nom_r1_clean else "🛡️"))
+    emoji_2 = "🟡" if "jaune" in nom_r2_clean else ("🔴" if "rouge" in nom_r2_clean else ("🟢" if "vert" in nom_r2_clean else "⚔️"))
+
+    embed.add_field(
+        name=f"{emoji_1} TRIBU {titre_1} ({len(membres_1)} Aventuriers)",
+        value=f"{role_equipe_1.mention}\n\n{texte_tribu_1}\n\n━━━━━━━━━━━━━━━━━━━━",
+        inline=False
+    )
+
+    embed.add_field(
+        name=f"{emoji_2} TRIBU {titre_2} ({len(membres_2)} Aventuriers)",
+        value=f"{role_equipe_2.mention}\n\n{texte_tribu_2}",
+        inline=False
+    )
+
+    embed.set_footer(
+        text="Koh-Lanta • Que la meilleure tribu l'emporte !",
+        icon_url=guild.icon.url if guild.icon else None
+    )
+
+    # 3. Publication dans le salon cible
+    await dest_channel.send(
+        content=f"📢 **ANNONCE OFFICIELLE DES TRIBUS** — {role_equipe_1.mention} {role_equipe_2.mention}",
+        embed=embed
+    )
+
+    await interaction.followup.send(
+        f"✅ Composition des équipes publiée avec succès dans {dest_channel.mention} !",
+        ephemeral=True
+    )
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
