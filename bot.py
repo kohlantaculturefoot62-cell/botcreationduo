@@ -1,6 +1,8 @@
 import os
 import re
 import time
+import io
+import zipfile
 import itertools
 import asyncio
 import datetime
@@ -8,6 +10,7 @@ import random
 import unicodedata
 from zoneinfo import ZoneInfo
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -306,7 +309,6 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
     tz_paris = ZoneInfo("Europe/Paris")
     maintenant_paris = datetime.datetime.now(tz_paris)
     
-    # Borne de début : aujourd'hui à 00h00 (Heure de Paris)
     debut_journee_paris = maintenant_paris.replace(hour=0, minute=0, second=0, microsecond=0)
     debut_journee_utc = debut_journee_paris.astimezone(datetime.timezone.utc)
 
@@ -417,7 +419,6 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
             
             print(f"✅ Journal posté dans #{target_channel.name} ({target_channel.id})")
             
-            # Pause de respiration avant l'envoi séparé des questions
             await asyncio.sleep(4)
             await poster_questions_automatiques(recap_text)
             return
@@ -440,7 +441,7 @@ async def traiter_resume_spectateurs(guild: discord.Guild):
     dest_spec = guild.get_channel(SALON_RECAP_SPECTATEURS_ID)
 
     if not chat_spec or not dest_spec:
-        return False, "Salon de chat ou de destination spectateurs introuvable."
+        return False, f"Salon chat (`{SALON_CHAT_SPECTATEURS_ID}`) ou récap (`{SALON_RECAP_SPECTATEURS_ID}`) introuvable."
 
     paris_tz = ZoneInfo("Europe/Paris")
     maintenant_paris = datetime.datetime.now(paris_tz)
@@ -448,7 +449,7 @@ async def traiter_resume_spectateurs(guild: discord.Guild):
     debut_journee_utc = debut_journee_paris.astimezone(datetime.timezone.utc)
 
     messages = []
-    async for msg in chat_spec.history(limit=1000, after=debut_journee_utc, oldest_first=True):
+    async for msg in chat_spec.history(limit=2500, after=debut_journee_utc, oldest_first=True):
         if not msg.author.bot and msg.content.strip():
             date_m = msg.created_at.astimezone(paris_tz)
             messages.append(f"[{date_m.strftime('%H:%M')}] [{msg.author.display_name}] : {msg.content.strip()}")
@@ -552,7 +553,7 @@ async def generer_questions_confessionnal(target_recap_channel: discord.TextChan
 
 @tasks.loop(minutes=1)
 async def horloge_serveur():
-    """Horloge robuste à la minute calée sur l'heure de Paris pour déclencher les tâches sans faille."""
+    """Horloge robuste calée sur l'heure de Paris."""
     global DERNIER_JOUR_RECAP, DERNIER_JOUR_QUESTIONS
 
     paris_tz = ZoneInfo("Europe/Paris")
@@ -603,7 +604,7 @@ async def on_ready():
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-    """Anti-triche vocal : Alerte en console si un joueur quitte ou se mute en pleine épreuve."""
+    """Anti-triche vocal."""
     if member.bot:
         return
 
@@ -623,7 +624,6 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # Gestion de la draft interactive des équipes
     if ETAT_COMPOSITION["actif"] and message.channel.id == ETAT_COMPOSITION["channel_id"]:
         cap1 = ETAT_COMPOSITION["capitaine_1"]
         cap2 = ETAT_COMPOSITION["capitaine_2"]
@@ -1477,6 +1477,20 @@ async def forcer_recap_jour(interaction: discord.Interaction):
 
     await interaction.followup.send(f"⏳ Analyse des salons candidats en cours pour {target_channel.mention}...", ephemeral=True)
     await generer_et_envoyer_recap_quotidien(interaction.guild, target_channel)
+
+
+@bot.tree.command(
+    name="forcer_recap_spec",
+    description="Force immédiatement la génération et l'envoi du récapitulatif du chat spectateurs."
+)
+@app_commands.check(est_orga_ou_admin)
+async def forcer_recap_spec(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    succes, msg = await traiter_resume_spectateurs(interaction.guild)
+    if succes:
+        await interaction.followup.send(f"✅ {msg}", ephemeral=True)
+    else:
+        await interaction.followup.send(f"❌ {msg}", ephemeral=True)
 
 
 @bot.tree.command(
@@ -4330,7 +4344,6 @@ async def annoncer_equipes(
         ephemeral=True
     )
 
-import io
 
 # ========================================================
 # 28. EXPORT DES PRÉSENTATIONS POUR GOOGLE SHEETS / EXCEL
@@ -4356,26 +4369,21 @@ async def exporter_presentations_sheet(
         await interaction.followup.send("❌ Le salon source doit être un salon textuel ou un fil.", ephemeral=True)
         return
 
-    # Lignes au format TSV (séparateur tabulation '\t')
     lignes_tsv = ["Candidat\tDescription"]
     total_extraits = 0
 
     async for msg in salon_source.history(limit=limite_messages, oldest_first=True):
-        # 1. Cas des fiches officielles publiées en Embeds (générées par le bot)
         if msg.embeds:
             for emb in msg.embeds:
                 if emb.title and ("🌴" in emb.title or "Aventurier" in str(emb.footer.text)):
                     nom = emb.title.replace("🌴", "").strip()
-                    # Remplacement des retours à la ligne par un espace pour garder 1 seule ligne par candidat sur Sheet
                     desc = emb.description.replace("\r\n", " ").replace("\n", " ").replace("\t", " ").strip() if emb.description else ""
                     if nom and desc:
                         lignes_tsv.append(f"{nom}\t{desc}")
                         total_extraits += 1
 
-        # 2. Cas des messages bruts postés par les membres s'il n'y a pas d'embeds
         elif not msg.author.bot and msg.content.strip():
             texte_brut = msg.content.strip()
-            # Nettoyage et tentative d'extraction simple
             lignes = [l.strip() for l in texte_brut.split("\n") if l.strip()]
             if lignes:
                 nom = msg.author.display_name
@@ -4389,11 +4397,9 @@ async def exporter_presentations_sheet(
 
     contenu_tsv = "\n".join(lignes_tsv)
 
-    # Création du fichier téléchargeable prêt pour tableur
     fichier_bytes = io.BytesIO(contenu_tsv.encode("utf-8"))
     discord_file = discord.File(fichier_bytes, filename="presentations_candidats.tsv")
 
-    # Si le texte fait moins de 1800 caractères, on l'affiche aussi dans le chat
     if len(contenu_tsv) <= 1800:
         texte_reponse = (
             f"✅ **{total_extraits} présentations extraites !**\n\n"
@@ -4408,9 +4414,6 @@ async def exporter_presentations_sheet(
         )
         await interaction.followup.send(content=texte_reponse, file=discord_file, ephemeral=True)
 
-import io
-import zipfile
-import aiohttp
 
 # ========================================================
 # 29. EXPORT DES PHOTOS CANDIDATS (ARCHIVE ZIP RENOMMÉE)
@@ -4436,11 +4439,9 @@ async def exporter_photos_candidats(
         await interaction.followup.send("❌ Le salon source doit être un salon textuel ou un fil.", ephemeral=True)
         return
 
-    # 1. Collecte des paires (Nom du candidat, URL de l'image)
-    photos_a_telecharger = [] # [(nom_clean, image_url)]
+    photos_a_telecharger = []
 
     async for msg in salon_source.history(limit=limite_messages, oldest_first=True):
-        # Cas 1 : Fiche générée en Embed officiel
         if msg.embeds:
             for emb in msg.embeds:
                 if emb.image and emb.image.url:
@@ -4448,7 +4449,6 @@ async def exporter_photos_candidats(
                     nom_fichier = formater_nom_salon(nom)
                     photos_a_telecharger.append((nom_fichier, emb.image.url))
 
-        # Cas 2 : Messages bruts avec pièces jointes images
         elif msg.attachments:
             for att in msg.attachments:
                 if att.content_type and att.content_type.startswith("image/"):
@@ -4465,7 +4465,6 @@ async def exporter_photos_candidats(
         ephemeral=True
     )
 
-    # 2. Téléchargement asynchrone et création du ZIP en mémoire
     zip_buffer = io.BytesIO()
     compteur_noms = {}
 
@@ -4477,14 +4476,12 @@ async def exporter_photos_candidats(
                         if resp.status == 200:
                             img_data = await resp.read()
 
-                            # Détection de l'extension
                             ext = "png"
                             if ".jpg" in url.lower() or ".jpeg" in url.lower():
                                 ext = "jpg"
                             elif ".webp" in url.lower():
                                 ext = "webp"
 
-                            # Gestion des doublons de noms
                             compteur_noms[nom] = compteur_noms.get(nom, 0) + 1
                             suffixe = f"_{compteur_noms[nom]}" if compteur_noms[nom] > 1 else ""
 
@@ -4496,7 +4493,6 @@ async def exporter_photos_candidats(
     zip_buffer.seek(0)
     taille_mo = len(zip_buffer.getvalue()) / (1024 * 1024)
 
-    # Limite Discord standard (25 Mo)
     if taille_mo > 24:
         await interaction.followup.send(
             f"⚠️ L'archive est trop volumineuse pour être envoyée directement sur Discord ({taille_mo:.1f} Mo > 25 Mo).",
@@ -4515,6 +4511,8 @@ async def exporter_photos_candidats(
         file=fichier_zip_discord,
         ephemeral=True
     )
+
+
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
