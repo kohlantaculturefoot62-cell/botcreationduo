@@ -4406,6 +4406,114 @@ async def exporter_presentations_sheet(
             "📄 Le volume étant trop grand pour Discord, télécharge le fichier `.tsv` ci-joint et importe-le sur Google Sheets (*Fichier > Importer*)."
         )
         await interaction.followup.send(content=texte_reponse, file=discord_file, ephemeral=True)
+
+import io
+import zipfile
+import aiohttp
+
+# ========================================================
+# 29. EXPORT DES PHOTOS CANDIDATS (ARCHIVE ZIP RENOMMÉE)
+# ========================================================
+
+@bot.tree.command(
+    name="exporter_photos_candidats",
+    description="Télécharge et compile toutes les photos des candidats dans un fichier .ZIP prêt pour Drive."
+)
+@app_commands.describe(
+    salon_source="Le salon ou fil où se trouvent les présentations avec photos",
+    limite_messages="Nombre maximum de messages à analyser (par défaut : 100)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def exporter_photos_candidats(
+    interaction: discord.Interaction,
+    salon_source: discord.abc.GuildChannel,
+    limite_messages: int = 100
+):
+    await interaction.response.defer(ephemeral=True)
+
+    if not isinstance(salon_source, (discord.TextChannel, discord.Thread)):
+        await interaction.followup.send("❌ Le salon source doit être un salon textuel ou un fil.", ephemeral=True)
+        return
+
+    # 1. Collecte des paires (Nom du candidat, URL de l'image)
+    photos_a_telecharger = [] # [(nom_clean, image_url)]
+
+    async for msg in salon_source.history(limit=limite_messages, oldest_first=True):
+        # Cas 1 : Fiche générée en Embed officiel
+        if msg.embeds:
+            for emb in msg.embeds:
+                if emb.image and emb.image.url:
+                    nom = emb.title.replace("🌴", "").replace("🛠️", "").replace("ORGANISATION", "").strip() if emb.title else "candidat"
+                    nom_fichier = formater_nom_salon(nom)
+                    photos_a_telecharger.append((nom_fichier, emb.image.url))
+
+        # Cas 2 : Messages bruts avec pièces jointes images
+        elif msg.attachments:
+            for att in msg.attachments:
+                if att.content_type and att.content_type.startswith("image/"):
+                    nom = msg.author.display_name
+                    nom_fichier = formater_nom_salon(nom)
+                    photos_a_telecharger.append((nom_fichier, att.url))
+
+    if not photos_a_telecharger:
+        await interaction.followup.send(f"❌ Aucune image de candidat trouvée dans {salon_source.mention}.", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        f"⏳ Téléchargement et compression de **{len(photos_a_telecharger)} photo(s)** en cours...",
+        ephemeral=True
+    )
+
+    # 2. Téléchargement asynchrone et création du ZIP en mémoire
+    zip_buffer = io.BytesIO()
+    compteur_noms = {}
+
+    async with aiohttp.ClientSession() as session:
+        with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+            for nom, url in photos_a_telecharger:
+                try:
+                    async with session.get(url, timeout=10) as resp:
+                        if resp.status == 200:
+                            img_data = await resp.read()
+
+                            # Détection de l'extension
+                            ext = "png"
+                            if ".jpg" in url.lower() or ".jpeg" in url.lower():
+                                ext = "jpg"
+                            elif ".webp" in url.lower():
+                                ext = "webp"
+
+                            # Gestion des doublons de noms
+                            compteur_noms[nom] = compteur_noms.get(nom, 0) + 1
+                            suffixe = f"_{compteur_noms[nom]}" if compteur_noms[nom] > 1 else ""
+
+                            nom_final = f"{nom}{suffixe}.{ext}"
+                            zip_file.writestr(nom_final, img_data)
+                except Exception as e:
+                    print(f"Erreur téléchargement image {nom} : {e}")
+
+    zip_buffer.seek(0)
+    taille_mo = len(zip_buffer.getvalue()) / (1024 * 1024)
+
+    # Limite Discord standard (25 Mo)
+    if taille_mo > 24:
+        await interaction.followup.send(
+            f"⚠️ L'archive est trop volumineuse pour être envoyée directement sur Discord ({taille_mo:.1f} Mo > 25 Mo).",
+            ephemeral=True
+        )
+        return
+
+    fichier_zip_discord = discord.File(zip_buffer, filename="photos_candidats.zip")
+
+    await interaction.followup.send(
+        content=(
+            f"✅ **Archive prête !**\n"
+            f"📁 **{len(photos_a_telecharger)} photo(s)** téléchargées et renommées.\n"
+            f"👉 Télécharge le fichier `.zip` ci-joint, décompresse-le ou glisse-le directement sur ton dossier **Google Drive**."
+        ),
+        file=fichier_zip_discord,
+        ephemeral=True
+    )
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
