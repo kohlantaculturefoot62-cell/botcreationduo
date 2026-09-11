@@ -4079,7 +4079,135 @@ async def deposer_secret_confessionnal(
         f"✅ Message secret déposé dans {target_channel.mention} pour {candidat.mention} (invisible aux spectateurs) !",
         ephemeral=True
     )
+@bot.tree.command(
+    name="creer_salons_depuis_message",
+    description="Crée les salons de binômes directement à partir du message de tirage validé."
+)
+@app_commands.describe(
+    message_id_ou_lien="L'ID ou le lien du message Discord avec le tirage des Destins Liés",
+    nom_categorie="Nom de la catégorie où créer les salons (ex: 🔥 DESTINS LIÉS)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def creer_salons_depuis_message(
+    interaction: discord.Interaction,
+    message_id_ou_lien: str,
+    nom_categorie: str = "🔥 DESTINS LIÉS"
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
 
+    # Extraction de l'ID du message
+    msg_id = message_id_ou_lien.strip().split("/")[-1]
+    try:
+        msg_id_int = int(msg_id)
+    except ValueError:
+        await interaction.followup.send("❌ Lien ou ID de message invalide.", ephemeral=True)
+        return
+
+    # Recherche du message
+    target_msg = None
+    try:
+        target_msg = await interaction.channel.fetch_message(msg_id_int)
+    except Exception:
+        for ch in guild.text_channels:
+            try:
+                target_msg = await ch.fetch_message(msg_id_int)
+                if target_msg:
+                    break
+            except Exception:
+                continue
+
+    if not target_msg or not target_msg.embeds:
+        await interaction.followup.send("❌ Message de tirage introuvable ou sans embed.", ephemeral=True)
+        return
+
+    description = target_msg.embeds[0].description
+    # Regex pour capturer les paires de mentions dans le texte
+    # Ex: Binôme #1: Raphaël (<@123...>) & Lilian (<@456...>)
+    lignes = [l for l in description.split("\n") if "Binôme" in l and "&" in l]
+    
+    if not lignes:
+        await interaction.followup.send("❌ Impossible d'extraire les binômes depuis cet embed.", ephemeral=True)
+        return
+
+    binomes_recuperes = []
+    for ligne in lignes:
+        ids_trouves = re.findall(r"<@!?(\d+)>", ligne)
+        if len(ids_trouves) >= 2:
+            m1 = guild.get_member(int(ids_trouves[0]))
+            m2 = guild.get_member(int(ids_trouves[1]))
+            if m1 and m2:
+                binomes_recuperes.append((
+                    {
+                        "member": m1,
+                        "role": trouver_role_personnel(m1),
+                        "clean_name": formater_nom_salon(m1.display_name)
+                    },
+                    {
+                        "member": m2,
+                        "role": trouver_role_personnel(m2),
+                        "clean_name": formater_nom_salon(m2.display_name)
+                    }
+                ))
+
+    if not binomes_recuperes:
+        await interaction.followup.send("❌ Aucun membre valide trouvé dans les mentions du message.", ephemeral=True)
+        return
+
+    clean_target_name = nettoyer_texte(nom_categorie)
+    existing_category = discord.utils.find(lambda c: nettoyer_texte(c.name) == clean_target_name, guild.categories)
+
+    category_index = 1
+    if existing_category:
+        current_category = existing_category
+        channel_count_in_current_cat = len(existing_category.channels)
+    else:
+        current_category = await guild.create_category(nom_categorie)
+        channel_count_in_current_cat = 0
+
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+
+    salons_crees = []
+    for ca, cb in binomes_recuperes:
+        if channel_count_in_current_cat >= MAX_CHANNELS_PER_CATEGORY:
+            category_index += 1
+            current_category = await guild.create_category(f"{nom_categorie} - {category_index}")
+            channel_count_in_current_cat = 0
+            await asyncio.sleep(1)
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False, view_channel=False),
+            guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+        }
+
+        # Candidat 1
+        cible_1 = ca["role"] if ca["role"] else ca["member"]
+        overwrites[cible_1] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+
+        # Candidat 2
+        cible_2 = cb["role"] if cb["role"] else cb["member"]
+        overwrites[cible_2] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
+
+        if role_spectateurs:
+            overwrites[role_spectateurs] = get_spectateur_overwrites()
+
+        if role_orgas:
+            overwrites[role_orgas] = discord.PermissionOverwrite(
+                read_messages=True, view_channel=True, read_message_history=True, send_messages=True
+            )
+
+        nom_salon = f"🔗・{ca['clean_name']}-{cb['clean_name']}"
+        salon = await guild.create_text_channel(name=nom_salon, category=current_category, overwrites=overwrites)
+        channel_count_in_current_cat += 1
+        salons_crees.append(salon.mention)
+
+        await asyncio.sleep(0.5)
+
+    await interaction.followup.send(
+        f"✅ **{len(salons_crees)} salons de binômes créés avec succès** dans **{current_category.name}** !\n\n" + "\n".join(salons_crees),
+        ephemeral=True
+    )
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
