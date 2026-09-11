@@ -4329,7 +4329,83 @@ async def annoncer_equipes(
         ephemeral=True
     )
 
+import io
 
+# ========================================================
+# 28. EXPORT DES PRÉSENTATIONS POUR GOOGLE SHEETS / EXCEL
+# ========================================================
+
+@bot.tree.command(
+    name="exporter_presentations_sheet",
+    description="Exporte les fiches de présentations (Candidat | Description) dans un format prêt pour Google Sheets."
+)
+@app_commands.describe(
+    salon_source="Le salon ou fil où se trouvent les fiches de présentation",
+    limite_messages="Nombre maximum de messages à analyser (par défaut : 100)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def exporter_presentations_sheet(
+    interaction: discord.Interaction,
+    salon_source: discord.abc.GuildChannel,
+    limite_messages: int = 100
+):
+    await interaction.response.defer(ephemeral=True)
+
+    if not isinstance(salon_source, (discord.TextChannel, discord.Thread)):
+        await interaction.followup.send("❌ Le salon source doit être un salon textuel ou un fil.", ephemeral=True)
+        return
+
+    # Lignes au format TSV (séparateur tabulation '\t')
+    lignes_tsv = ["Candidat\tDescription"]
+    total_extraits = 0
+
+    async for msg in salon_source.history(limit=limite_messages, oldest_first=True):
+        # 1. Cas des fiches officielles publiées en Embeds (générées par le bot)
+        if msg.embeds:
+            for emb in msg.embeds:
+                if emb.title and ("🌴" in emb.title or "Aventurier" in str(emb.footer.text)):
+                    nom = emb.title.replace("🌴", "").strip()
+                    # Remplacement des retours à la ligne par un espace pour garder 1 seule ligne par candidat sur Sheet
+                    desc = emb.description.replace("\r\n", " ").replace("\n", " ").replace("\t", " ").strip() if emb.description else ""
+                    if nom and desc:
+                        lignes_tsv.append(f"{nom}\t{desc}")
+                        total_extraits += 1
+
+        # 2. Cas des messages bruts postés par les membres s'il n'y a pas d'embeds
+        elif not msg.author.bot and msg.content.strip():
+            texte_brut = msg.content.strip()
+            # Nettoyage et tentative d'extraction simple
+            lignes = [l.strip() for l in texte_brut.split("\n") if l.strip()]
+            if lignes:
+                nom = msg.author.display_name
+                desc = " ".join(lignes).replace("\t", " ").strip()
+                lignes_tsv.append(f"{nom}\t{desc}")
+                total_extraits += 1
+
+    if total_extraits == 0:
+        await interaction.followup.send(f"❌ Aucune présentation trouvée dans {salon_source.mention}.", ephemeral=True)
+        return
+
+    contenu_tsv = "\n".join(lignes_tsv)
+
+    # Création du fichier téléchargeable prêt pour tableur
+    fichier_bytes = io.BytesIO(contenu_tsv.encode("utf-8"))
+    discord_file = discord.File(fichier_bytes, filename="presentations_candidats.tsv")
+
+    # Si le texte fait moins de 1800 caractères, on l'affiche aussi dans le chat
+    if len(contenu_tsv) <= 1800:
+        texte_reponse = (
+            f"✅ **{total_extraits} présentations extraites !**\n\n"
+            f"📋 **Copie le bloc ci-dessous et colle directement sur Google Sheets (Ctrl+V) :**\n"
+            f"```{contenu_tsv}```"
+        )
+        await interaction.followup.send(content=texte_reponse, file=discord_file, ephemeral=True)
+    else:
+        texte_reponse = (
+            f"✅ **{total_extraits} présentations extraites !**\n"
+            "📄 Le volume étant trop grand pour Discord, télécharge le fichier `.tsv` ci-joint et importe-le sur Google Sheets (*Fichier > Importer*)."
+        )
+        await interaction.followup.send(content=texte_reponse, file=discord_file, ephemeral=True)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
