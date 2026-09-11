@@ -20,17 +20,18 @@ from google import genai
 TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-MODEL_NAME = "gemini-3.5-flash-lite"
+MODEL_NAME = "gemini-2.5-flash"
 
 # Salons & Catégories fixes
-RECAP_CHANNEL_ID = 1545076756384579726
+RECAP_CHANNEL_ID = 1545076756384579726            # 📰 Journal Stratégique Global
+SALON_QUESTIONS_RECAP_ID = 1546598533333909728    # 🎙️ Fiches Questions & Conseil
+
 CATEGORY_TRIO_ID = 1541397070898921482
 CATEGORY_QUATUOR_ID = 1541397227744927835
 RESULTATS_CHANNEL_ID = 1545186500960985148
 SALON_REMARQUES_QUESTIONS_ID = 1545503543405060178
 
-# Salons Résumés, Questions & Spectateurs
-SALON_QUESTIONS_RECAP_ID = 1546598533333909728
+# Salons Spectateurs
 SALON_CHAT_SPECTATEURS_ID = 1544355721024635061
 SALON_RECAP_SPECTATEURS_ID = 1546598600555888670
 
@@ -39,10 +40,6 @@ SALON_ANNONCES_TRAVAIL_ID = 1545823720676003890
 SALON_ANNONCES_CANDIDATS_ID = 1537439670340681828
 SALON_ARCHIVES_ANNONCES_ID = 1545823386700087456
 SALON_PRESENTATION_ORGAS_ID = 1546603467580383332
-
-# Planification des tâches automatiques (Fuseau Paris)
-HEURE_RECAP = datetime.time(hour=23, minute=30, tzinfo=ZoneInfo("Europe/Paris"))
-HEURE_QUESTIONS = datetime.time(hour=9, minute=0, tzinfo=ZoneInfo("Europe/Paris"))
 
 MAX_CHANNELS_PER_CATEGORY = 45
 ROLE_SPECTATEURS_NAME = "Spectateurs"
@@ -112,12 +109,16 @@ ETATS_EPREUVES_SALONS = {}
 ETAT_COMPOSITION = {
     "actif": False,
     "channel_id": None,
-    "capitaine_1": None,  # discord.Member
-    "role_1": None,       # discord.Role
-    "capitaine_2": None,  # discord.Member
-    "role_2": None,       # discord.Role
-    "tour": 1             # 1 ou 2
+    "capitaine_1": None,
+    "role_1": None,
+    "capitaine_2": None,
+    "role_2": None,
+    "tour": 1
 }
+
+# Suivi de la planification quotidienne
+DERNIER_JOUR_RECAP = None
+DERNIER_JOUR_QUESTIONS = None
 
 
 # ==========================================
@@ -250,10 +251,10 @@ def decouper_texte_intelligent(texte: str, limite: int = 1900) -> list[str]:
 # =======================================================
 
 async def poster_questions_automatiques(texte_recap: str):
-    """Génère des questions d'interview neutres, objectives et sans indice pour les confessionnaux et le conseil."""
+    """Génère des questions d'interview neutres et les poste UNIQUEMENT dans SALON_QUESTIONS_RECAP_ID."""
     salon_q = bot.get_channel(SALON_QUESTIONS_RECAP_ID)
     if not salon_q:
-        print(f"❌ Salon questions introuvable ({SALON_QUESTIONS_RECAP_ID})")
+        print(f"❌ [ERREUR] Salon questions introuvable ({SALON_QUESTIONS_RECAP_ID})")
         return
 
     prompt_q = (
@@ -293,16 +294,18 @@ async def poster_questions_automatiques(texte_recap: str):
         for chunk in decouper_texte_intelligent(full_msg, 1900):
             await salon_q.send(chunk)
             await asyncio.sleep(0.4)
+        print(f"✅ Questions postées dans #{salon_q.name} ({salon_q.id})")
 
     except Exception as e:
-        print(f"Erreur génération questions neutres : {e}")
+        print(f"❌ Erreur génération questions neutres : {e}")
 
 
 async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channel: discord.TextChannel):
-    """Scanne les discussions de la journée (de 00h00 à 23h59 heure de Paris), intègre connexions, ranking et bêtisier."""
+    """Scanne les discussions de la journée (de 00h00 à 23h30 heure de Paris) et génère la synthèse."""
     tz_paris = ZoneInfo("Europe/Paris")
     maintenant_paris = datetime.datetime.now(tz_paris)
     
+    # Borne de début : aujourd'hui à 00h00 (Heure de Paris)
     debut_journee_paris = maintenant_paris.replace(hour=0, minute=0, second=0, microsecond=0)
     debut_journee_utc = debut_journee_paris.astimezone(datetime.timezone.utc)
 
@@ -411,7 +414,10 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
                 await target_channel.send(chunk)
                 await asyncio.sleep(0.4)
             
-            await asyncio.sleep(3)
+            print(f"✅ Journal posté dans #{target_channel.name} ({target_channel.id})")
+            
+            # Pause de respiration avant l'envoi séparé des questions
+            await asyncio.sleep(4)
             await poster_questions_automatiques(recap_text)
             return
 
@@ -540,48 +546,58 @@ async def generer_questions_confessionnal(target_recap_channel: discord.TextChan
 
 
 # ==========================================
-# 4. TÂCHES AUTOMATIQUES PLANIFIÉES
+# 4. HORLOGE AUTOMATIQUE (PARIS 23H30 & 09H00)
 # ==========================================
 
-@tasks.loop(time=[HEURE_RECAP])
-async def tache_recap_quotidien():
-    """Tâche automatique exécutée chaque soir à 23h30 précises (Heure de Paris)."""
-    for guild in bot.guilds:
-        try:
-            target_channel = bot.get_channel(RECAP_CHANNEL_ID)
-            if target_channel:
-                await generer_et_envoyer_recap_quotidien(guild, target_channel)
-            
-            await asyncio.sleep(5)
-            await traiter_resume_spectateurs(guild)
-        except Exception as e:
-            print(f"❌ Erreur lors de la tâche automatique de 23h30 : {e}")
+@tasks.loop(minutes=1)
+async def horloge_serveur():
+    """Horloge robuste à la minute calée sur l'heure de Paris pour déclencher les tâches sans faille."""
+    global DERNIER_JOUR_RECAP, DERNIER_JOUR_QUESTIONS
 
+    paris_tz = ZoneInfo("Europe/Paris")
+    maintenant = datetime.datetime.now(paris_tz)
+    jour_actuel = maintenant.strftime("%Y-%m-%d")
 
-@tasks.loop(time=[HEURE_QUESTIONS])
-async def tache_questions_matin():
-    """Tâche automatique planifiée chaque matin à 09h00 (Heure de Paris)."""
-    if RECAP_CHANNEL_ID == 0:
-        return
-    channel = bot.get_channel(RECAP_CHANNEL_ID)
-    if channel:
-        questions_text = await generer_questions_confessionnal(channel)
-        date_str = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y")
-        header = f"🎙️ **FICHES CONFESSIONNAL DU {date_str} — SUGGESTIONS D'INTERVIEWS**\n*(Pour les Orgas)*\n\n"
-        full_msg = header + questions_text
-        for chunk in decouper_texte_intelligent(full_msg, 1900):
-            await channel.send(chunk)
-            await asyncio.sleep(0.3)
+    # 1. Déclenchement automatique du Récapitulatif à 23h30 Paris
+    if maintenant.hour == 23 and maintenant.minute == 30 and DERNIER_JOUR_RECAP != jour_actuel:
+        DERNIER_JOUR_RECAP = jour_actuel
+        print(f"⏰ [23:30 Paris] Lancement automatique des résumés du {jour_actuel}...")
+        for guild in bot.guilds:
+            try:
+                target_channel = bot.get_channel(RECAP_CHANNEL_ID)
+                if target_channel:
+                    await generer_et_envoyer_recap_quotidien(guild, target_channel)
+                else:
+                    print(f"❌ [ERREUR] Salon RECAP_CHANNEL_ID ({RECAP_CHANNEL_ID}) introuvable !")
+                
+                await asyncio.sleep(5)
+                await traiter_resume_spectateurs(guild)
+            except Exception as e:
+                print(f"❌ Erreur lors de la tâche automatique de 23h30 : {e}")
+
+    # 2. Déclenchement automatique des Questions du matin à 09h00 Paris
+    if maintenant.hour == 9 and maintenant.minute == 0 and DERNIER_JOUR_QUESTIONS != jour_actuel:
+        DERNIER_JOUR_QUESTIONS = jour_actuel
+        print(f"⏰ [09:00 Paris] Lancement automatique des fiches confessionnal du matin...")
+        salon_dest = bot.get_channel(SALON_QUESTIONS_RECAP_ID)
+        source_recap = bot.get_channel(RECAP_CHANNEL_ID)
+        if salon_dest and source_recap:
+            questions_text = await generer_questions_confessionnal(source_recap)
+            date_str = maintenant.strftime("%d/%m/%Y")
+            header = f"🎙️ **FICHES CONFESSIONNAL DU {date_str} — SUGGESTIONS D'INTERVIEWS**\n*(Pour les Orgas)*\n\n"
+            full_msg = header + questions_text
+            for chunk in decouper_texte_intelligent(full_msg, 1900):
+                await salon_dest.send(chunk)
+                await asyncio.sleep(0.3)
 
 
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    if not tache_recap_quotidien.is_running() and RECAP_CHANNEL_ID != 0:
-        tache_recap_quotidien.start()
-    if not tache_questions_matin.is_running() and RECAP_CHANNEL_ID != 0:
-        tache_questions_matin.start()
+    if not horloge_serveur.is_running():
+        horloge_serveur.start()
     print(f"🤖 Bot connecté en tant que : {bot.user}")
+    print(f"⏰ Horloge active : Récapitulatif à 23h30 Paris | Questions à 09h00 Paris.")
 
 
 @bot.event
@@ -780,7 +796,7 @@ async def eliminer_candidat(interaction: discord.Interaction, role_candidat: dis
 
     targeted_channels = []
     for channel in guild.text_channels:
-        if (channel.name.startswith("duo-") or channel.name.startswith("🔗・") or channel.name.startswith("🔺・") or channel.name.startswith("🔶・")) and role_candidat in channel.overwrites:
+        if (channel.name.startswith("duo-") or channel.name.startswith("🔗・") or channel.name.startswith("🔺・")) and role_candidat in channel.overwrites:
             targeted_channels.append(channel)
 
     if not targeted_channels:
@@ -1429,10 +1445,10 @@ async def resumer_conv_orga(interaction: discord.Interaction, format: app_comman
 async def questions_confessionnal(interaction: discord.Interaction, candidat: discord.Role = None):
     await interaction.response.defer(ephemeral=True)
 
-    target_channel = bot.get_channel(RECAP_CHANNEL_ID) or interaction.channel
+    source_recap_channel = bot.get_channel(RECAP_CHANNEL_ID) or interaction.channel
     candidat_nom = candidat.name if candidat else None
 
-    resultat_text = await generer_questions_confessionnal(target_channel, candidat_nom)
+    resultat_text = await generer_questions_confessionnal(source_recap_channel, candidat_nom)
 
     titre = f"🎙️ Interview Confessionnal — {candidat.name}" if candidat else "🎙️ Suggestions Confessionnal du Jour"
     embed = discord.Embed(
@@ -1447,15 +1463,18 @@ async def questions_confessionnal(interaction: discord.Interaction, candidat: di
 
 @bot.tree.command(
     name="forcer_recap_jour",
-    description="Génère immédiatement le journal stratégique global de tous les salons candidats des dernières 24h."
+    description="Génère immédiatement le journal stratégique global dans le salon dédié."
 )
 @app_commands.check(est_orga_ou_admin)
 async def forcer_recap_jour(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    target_channel = bot.get_channel(RECAP_CHANNEL_ID) or interaction.channel
-    await interaction.followup.send(f"⏳ Analyse des salons candidats en cours pour {target_channel.mention}...", ephemeral=True)
+    target_channel = bot.get_channel(RECAP_CHANNEL_ID)
+    if not target_channel:
+        await interaction.followup.send(f"❌ Salon journal introuvable (ID: `{RECAP_CHANNEL_ID}`).", ephemeral=True)
+        return
 
+    await interaction.followup.send(f"⏳ Analyse des salons candidats en cours pour {target_channel.mention}...", ephemeral=True)
     await generer_et_envoyer_recap_quotidien(interaction.guild, target_channel)
 
 
@@ -1479,13 +1498,11 @@ async def resume_spectateurs_cmd(interaction: discord.Interaction):
 )
 @app_commands.check(est_orga_ou_admin)
 async def pause_taches(interaction: discord.Interaction):
-    if tache_recap_quotidien.is_running():
-        tache_recap_quotidien.stop()
-    if tache_questions_matin.is_running():
-        tache_questions_matin.stop()
+    if horloge_serveur.is_running():
+        horloge_serveur.stop()
 
     await interaction.response.send_message(
-        "⏸️ **Tâches automatiques mises en pause :**\n- 🌙 Récap du soir (23h30) : **Arrêté**\n- 🎙️ Questions du matin (09h00) : **Arrêté**",
+        "⏸️ **Tâches automatiques mises en pause :**\n- 🌙 Récap du soir (23h30 Paris) : **Arrêté**\n- 🎙️ Questions du matin (09h00 Paris) : **Arrêté**",
         ephemeral=True
     )
 
@@ -1496,13 +1513,11 @@ async def pause_taches(interaction: discord.Interaction):
 )
 @app_commands.check(est_orga_ou_admin)
 async def reprendre_taches(interaction: discord.Interaction):
-    if not tache_recap_quotidien.is_running():
-        tache_recap_quotidien.start()
-    if not tache_questions_matin.is_running():
-        tache_questions_matin.start()
+    if not horloge_serveur.is_running():
+        horloge_serveur.start()
 
     await interaction.response.send_message(
-        "▶️ **Tâches automatiques réactivées :**\n- 🌙 Récap du soir (23h30) : **Actif**\n- 🎙️ Questions du matin (09h00) : **Actif**",
+        "▶️ **Tâches automatiques réactivées :**\n- 🌙 Récap du soir (23h30 Paris) : **Actif**\n- 🎙️ Questions du matin (09h00 Paris) : **Actif**",
         ephemeral=True
     )
 
@@ -4006,22 +4021,21 @@ async def supprimer_epreuve_groupe(interaction: discord.Interaction, salon: disc
     except Exception as e:
         await interaction.followup.send(f"❌ Impossible de supprimer le salon : {e}", ephemeral=True)
 
+
 # ========================================================
-# 26. MESSAGE SECRET ÉPHÉMÈRE EN CONFESSIONNAL (CORRIGÉ)
+# 26. MESSAGE SECRET ÉPHÉMÈRE EN CONFESSIONNAL
 # ========================================================
 
 class SecretConfessionnalView(discord.ui.View):
     def __init__(self, candidat_id: int, texte_secret: str):
-        super().__init__(timeout=None) # Bouton persistant
+        super().__init__(timeout=None)
         self.candidat_id = candidat_id
         self.texte_secret = texte_secret
 
     @discord.ui.button(label="👁️ RÉVÉLER MON CODE SECRET", style=discord.ButtonStyle.danger, custom_id="btn_reveal_secret")
     async def reveler_secret(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 1. Empêche l'expiration des 3 secondes (évite l'erreur 10062)
         await interaction.response.defer(ephemeral=True)
 
-        # 2. Sécurité : Seul le candidat propriétaire du salon (ou un admin) peut voir le contenu
         if interaction.user.id != self.candidat_id and not interaction.user.guild_permissions.administrator:
             await interaction.followup.send(
                 "⛔ **Accès refusé :** Ce secret est personnel et réservé au candidat de ce confessionnal.", 
@@ -4029,7 +4043,6 @@ class SecretConfessionnalView(discord.ui.View):
             )
             return
 
-        # 3. Affichage du secret STRICTEMENT invisible pour les spectateurs
         embed_perso = discord.Embed(
             title="🗝️ TON CODE SECRET PERSONNEL",
             description=(
@@ -4079,6 +4092,8 @@ async def deposer_secret_confessionnal(
         f"✅ Message secret déposé dans {target_channel.mention} pour {candidat.mention} (invisible aux spectateurs) !",
         ephemeral=True
     )
+
+
 @bot.tree.command(
     name="creer_salons_depuis_message",
     description="Crée les salons de binômes directement à partir du message de tirage validé."
@@ -4096,7 +4111,6 @@ async def creer_salons_depuis_message(
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    # Extraction de l'ID du message
     msg_id = message_id_ou_lien.strip().split("/")[-1]
     try:
         msg_id_int = int(msg_id)
@@ -4104,7 +4118,6 @@ async def creer_salons_depuis_message(
         await interaction.followup.send("❌ Lien ou ID de message invalide.", ephemeral=True)
         return
 
-    # Recherche du message
     target_msg = None
     try:
         target_msg = await interaction.channel.fetch_message(msg_id_int)
@@ -4122,8 +4135,6 @@ async def creer_salons_depuis_message(
         return
 
     description = target_msg.embeds[0].description
-    # Regex pour capturer les paires de mentions dans le texte
-    # Ex: Binôme #1: Raphaël (<@123...>) & Lilian (<@456...>)
     lignes = [l for l in description.split("\n") if "Binôme" in l and "&" in l]
     
     if not lignes:
@@ -4181,11 +4192,9 @@ async def creer_salons_depuis_message(
             guild.me: discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
         }
 
-        # Candidat 1
         cible_1 = ca["role"] if ca["role"] else ca["member"]
         overwrites[cible_1] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
 
-        # Candidat 2
         cible_2 = cb["role"] if cb["role"] else cb["member"]
         overwrites[cible_2] = discord.PermissionOverwrite(read_messages=True, view_channel=True, send_messages=True)
 
@@ -4208,6 +4217,7 @@ async def creer_salons_depuis_message(
         f"✅ **{len(salons_crees)} salons de binômes créés avec succès** dans **{current_category.name}** !\n\n" + "\n".join(salons_crees),
         ephemeral=True
     )
+
 
 # ========================================================
 # 27. ANNONCE OFFICIELLE DE LA COMPOSITION DES ÉQUIPES
@@ -4245,7 +4255,6 @@ async def annoncer_equipes(
         await interaction.followup.send("❌ Le salon de destination doit être un salon textuel.", ephemeral=True)
         return
 
-    # 1. Récupération et tri des membres des deux équipes (hors bots)
     membres_1 = [m for m in role_equipe_1.members if not m.bot]
     membres_2 = [m for m in role_equipe_2.members if not m.bot]
 
@@ -4253,7 +4262,6 @@ async def annoncer_equipes(
         await interaction.followup.send("❌ Aucun membre trouvé dans ces deux rôles d'équipe.", ephemeral=True)
         return
 
-    # Formatage de la liste de la Tribu 1
     lignes_tribu_1 = []
     if capitaine_1 and capitaine_1 in membres_1:
         lignes_tribu_1.append(f"👑 **{capitaine_1.display_name}** ({capitaine_1.mention}) `[Capitaine]`")
@@ -4263,7 +4271,6 @@ async def annoncer_equipes(
             continue
         lignes_tribu_1.append(f"▫️ **{m.display_name}** ({m.mention})")
 
-    # Formatage de la liste de la Tribu 2
     lignes_tribu_2 = []
     if capitaine_2 and capitaine_2 in membres_2:
         lignes_tribu_2.append(f"👑 **{capitaine_2.display_name}** ({capitaine_2.mention}) `[Capitaine]`")
@@ -4279,7 +4286,6 @@ async def annoncer_equipes(
     texte_tribu_1 = "\n".join(lignes_tribu_1) if lignes_tribu_1 else "*Aucun membre assigné*"
     texte_tribu_2 = "\n".join(lignes_tribu_2) if lignes_tribu_2 else "*Aucun membre assigné*"
 
-    # 2. Construction de l'Embed d'annonce
     embed = discord.Embed(
         title="🌴 ━━━ COMPOSITION OFFICIELLE DES TRIBUS ━━━ 🌴",
         description=(
@@ -4290,7 +4296,6 @@ async def annoncer_equipes(
         color=discord.Color.gold()
     )
 
-    # Détection de couleur ou icône thématique
     nom_r1_clean = nettoyer_texte(role_equipe_1.name)
     nom_r2_clean = nettoyer_texte(role_equipe_2.name)
 
@@ -4314,7 +4319,6 @@ async def annoncer_equipes(
         icon_url=guild.icon.url if guild.icon else None
     )
 
-    # 3. Publication dans le salon cible
     await dest_channel.send(
         content=f"📢 **ANNONCE OFFICIELLE DES TRIBUS** — {role_equipe_1.mention} {role_equipe_2.mention}",
         embed=embed
@@ -4324,6 +4328,8 @@ async def annoncer_equipes(
         f"✅ Composition des équipes publiée avec succès dans {dest_channel.mention} !",
         ephemeral=True
     )
+
+
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
