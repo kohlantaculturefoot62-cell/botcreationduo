@@ -99,6 +99,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 DERNIERS_BINOMES_TIRES = []
 ROLES_PERSO_EN_PAUSE = {}  # {member_id: role_id}
 CHRONOS_EN_COURS = {}      # {key: start_datetime}
+SESSIONS_RECHERCHE_ACTIVES = {}  # {channel_id: {"joueur": "...", "candidat_id": 123}}
 
 CONFIG_EPREUVE_GLOBALE = {
     "questions": [],
@@ -547,6 +548,120 @@ async def generer_questions_confessionnal(target_recap_channel: discord.TextChan
                 return f"❌ Erreur IA lors de la génération des questions : {e}"
 
 
+# ========================================================
+# 3.BIS. ÉPREUVE DE RECHERCHE : MOTEURS D'ANALYSE ET IA
+# ========================================================
+
+async def suggerer_reponse_recherche_ia(joueur_mystere: str, question: str) -> dict:
+    """Analyse minutieusement la question posée et renvoie la réponse exacte (OUI/NON) avec sources."""
+    prompt = (
+        "Tu es l'arbitre factuel absolu d'un jeu de déduction sur le football et le sport.\n"
+        f"🎯 JOUEUR CIBLE MYSTÈRE : **{joueur_mystere}**\n"
+        f"❓ QUESTION DU CANDIDAT : \"{question}\"\n\n"
+        "DIRECTIVES DE VÉRIFICATION FACTUELLE STRICTE :\n"
+        f"1. Vérifie méticuleusement la réalité factuelle concernant UNIQUEMENT {joueur_mystere} (nationalité, clubs, années, postes, trophées, stats, sélections, vie publique).\n"
+        "2. Détermine si la réponse factuelle à cette question fermée est STRICTEMENT OUI ou STRICTEMENT NON.\n"
+        "3. Si la question n'est pas fermée ou est inapplicable/ambiguë, indique-le clairement.\n"
+        "4. Fournis une justification courte et irréfutable (dates précises, noms de clubs, trophées, palmarès).\n\n"
+        "FORMAT DE RÉPONSE STRICT (Respecte exactement ces balises) :\n"
+        "VERDICT: <OUI / NON / AMBIGU / NON-CONCERNE>\n"
+        "EXPLICATION: <1 à 2 phrases courtes résumant le fait vérifié>\n"
+        "SOURCES: <Détails précis : clubs, années, matchs ou palmarès officiel>"
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        texte = response.text.strip()
+
+        verdict_match = re.search(r"VERDICT\s*:\s*\**([A-Za-z\-]+)\**", texte, re.IGNORECASE)
+        verdict = verdict_match.group(1).upper() if verdict_match else "INDÉTERMINÉ"
+
+        explication = ""
+        if "EXPLICATION:" in texte:
+            partie = texte.split("EXPLICATION:", 1)[1]
+            explication = partie.split("SOURCES:", 1)[0].strip()
+
+        sources = ""
+        if "SOURCES:" in texte:
+            sources = texte.split("SOURCES:", 1)[1].strip()
+
+        return {
+            "verdict": verdict,
+            "explication": explication or texte,
+            "sources": sources or "Base de données sportive"
+        }
+    except Exception as e:
+        return {
+            "verdict": "ERREUR",
+            "explication": f"Erreur IA : {e}",
+            "sources": "N/A"
+        }
+
+
+async def verifier_echanges_recherche_ia(joueur_mystere: str, transcript: str) -> str:
+    """Analyse minutieusement les réponses données par les orgas sur le joueur mystère."""
+    prompt = (
+        "Tu es un juge et arbitre expert, STRICT, MINUTIEUX et IMPLACABLE pour un jeu d'enquête sportive/culturelle.\n"
+        f"🎯 JOUEUR / PERSONNE MYSTÈRE CIBLE : **{joueur_mystere}**\n\n"
+        "Voici la transcription complète des échanges dans le salon de jeu (Questions des candidats et Réponses OUI/NON des organisateurs) :\n"
+        f"\"\"\"\n{transcript}\n\"\"\"\n\n"
+        "MISSIONS CRITIQUES DE VÉRIFICATION :\n"
+        "1. Isole chaque question fermée posée et la réponse apportée par l'organisation (Oui, Non, ou variantes).\n"
+        f"2. Pour CHAQUE question, vérifie la réalité FACTUELLE STRICTE concernant exclusivement **{joueur_mystere}** "
+        "(palmarès, clubs, nationalité, statistiques, biographie, dates, postes, etc.).\n"
+        "3. Vérifie si la réponse donnée par l'orga est STRICTEMENT VRAIE ou FAUSSE / TROMPEUSE.\n"
+        "4. En cas d'erreur ou d'ambiguïté, fournis la correction exacte avec les FAITS et SOURCES précises (historique des clubs, palmarès officiel, etc.).\n\n"
+        "FORMAT DE RÉPONSE OBLIGATOIRE (STRICT) :\n\n"
+        "Si AUCUNE erreur n'a été commise par les orgas :\n"
+        "✅ **AUDIT VALIDE : AUCUNE ERREUR DÉTECTÉE**\n"
+        "- Toutes les réponses données correspondent parfaitement aux faits concernant ce joueur.\n"
+        "[Ajoute un récapitulatif ultra-rapide des questions/réponses validées sous forme de puces]\n\n"
+        "Si AU MOINS UNE erreur ou réponse inexacte a été donnée :\n"
+        "⚠️ **ALERTE ERREUR(S) DÉTECTÉE(S) DANS LES RÉPONSES !**\n\n"
+        "Pour chaque erreur relevée :\n"
+        "❌ **Question litigieuse :** [Texte de la question]\n"
+        "🔴 **Réponse donnée par l'orga :** [Oui / Non]\n"
+        "🟢 **Ce qu'il fallait répondre :** [Oui / Non]\n"
+        "📚 **Explication & Faits vérifiés (Sources) :** [Détails précis, clubs, années, matchs ou trophées attestant l'erreur]\n\n"
+        "Puis termine par un court récapitulatif des questions qui étaient bien correctes."
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"❌ Erreur lors de l'audit IA avec Gemini : {e}"
+
+
+async def traiter_suggestion_orga(channel_src, salon_dest, candidat, joueur_mystere: str, question: str):
+    """Génère la réponse suggérée et l'envoie dans le salon retour orgas."""
+    resultat = await suggerer_reponse_recherche_ia(joueur_mystere, question)
+
+    verdict = resultat["verdict"]
+    couleur = discord.Color.green() if verdict == "OUI" else (discord.Color.red() if verdict == "NON" else discord.Color.orange())
+    emoji_v = "🟢 **OUI**" if verdict == "OUI" else ("🔴 **NON**" if verdict == "NON" else f"🟡 **{verdict}**")
+
+    embed = discord.Embed(
+        title=f"💡 SUGGESTION RÉPONSE — {joueur_mystere.upper()}",
+        color=couleur
+    )
+    embed.add_field(name="👤 Candidat", value=f"{candidat.mention} dans {channel_src.mention}", inline=False)
+    embed.add_field(name="❓ Question posée", value=f"*{question}*", inline=False)
+    embed.add_field(name="👉 Réponse recommandée", value=emoji_v, inline=False)
+    embed.add_field(name="📚 Justification & Sources", value=f"{resultat['explication']}\n\n**Détails :** `{resultat['sources']}`", inline=False)
+    embed.set_footer(text="Aide aux Orgas • Vérification factuelle instantanée")
+
+    await salon_dest.send(embed=embed)
+
+
 # ==========================================
 # 4. HORLOGE AUTOMATIQUE (PARIS 23H30 & 09H00)
 # ==========================================
@@ -620,10 +735,29 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
 @bot.event
 async def on_message(message: discord.Message):
-    """Écouteur de messages pour la gestion de la draft d'équipes et commandes préfixes."""
+    """Écouteur de messages pour la recherche en direct, la draft et les commandes préfixes."""
     if message.author.bot:
         return
 
+    # 1. Détection des questions posées pendant l'épreuve de recherche
+    if message.channel.id in SESSIONS_RECHERCHE_ACTIVES:
+        session = SESSIONS_RECHERCHE_ACTIVES[message.channel.id]
+        if message.author.id == session["candidat_id"]:
+            texte_q = message.content.strip()
+            if len(texte_q) >= 4:
+                salon_orgas = bot.get_channel(SALON_REMARQUES_QUESTIONS_ID)
+                if salon_orgas:
+                    asyncio.create_task(
+                        traiter_suggestion_orga(
+                            channel_src=message.channel,
+                            salon_dest=salon_orgas,
+                            candidat=message.author,
+                            joueur_mystere=session["joueur"],
+                            question=texte_q
+                        )
+                    )
+
+    # 2. Gestion de la draft interactive des équipes
     if ETAT_COMPOSITION["actif"] and message.channel.id == ETAT_COMPOSITION["channel_id"]:
         cap1 = ETAT_COMPOSITION["capitaine_1"]
         cap2 = ETAT_COMPOSITION["capitaine_2"]
@@ -1533,6 +1667,139 @@ async def reprendre_taches(interaction: discord.Interaction):
 
     await interaction.response.send_message(
         "▶️ **Tâches automatiques réactivées :**\n- 🌙 Récap du soir (23h30 Paris) : **Actif**\n- 🎙️ Questions du matin (09h00 Paris) : **Actif**",
+        ephemeral=True
+    )
+
+
+# ========================================================
+# 9.BIS. COMMANDES ÉPREUVE DE RECHERCHE & AUDIT
+# ========================================================
+
+@bot.tree.command(
+    name="lancer_aide_recherche",
+    description="Active l'assistance IA en direct pour suggérer les réponses (OUI/NON) aux orgas."
+)
+@app_commands.describe(
+    joueur_mystere="Nom exact du joueur à deviner (ex: Karim Benzema, Zinedine Zidane...)",
+    candidat="Le candidat qui passe l'épreuve dans ce salon",
+    salon="Optionnel : salon où se déroule l'épreuve (par défaut : salon actuel)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def lancer_aide_recherche(
+    interaction: discord.Interaction,
+    joueur_mystere: str,
+    candidat: discord.Member,
+    salon: discord.TextChannel = None
+):
+    await interaction.response.defer(ephemeral=True)
+    ch = salon or interaction.channel
+
+    SESSIONS_RECHERCHE_ACTIVES[ch.id] = {
+        "joueur": joueur_mystere.strip(),
+        "candidat_id": candidat.id
+    }
+
+    salon_orgas = bot.get_channel(SALON_REMARQUES_QUESTIONS_ID)
+    mention_orga = salon_orgas.mention if salon_orgas else f"ID `{SALON_REMARQUES_QUESTIONS_ID}`"
+
+    await interaction.followup.send(
+        f"🟢 **Aide de recherche activée en direct !**\n"
+        f"- 🎯 **Joueur cible :** `{joueur_mystere}`\n"
+        f"- 👤 **Candidat suivi :** {candidat.mention}\n"
+        f"- 💬 **Salon surveillé :** {ch.mention}\n"
+        f"- 📬 **Suggestions envoyées dans :** {mention_orga}\n\n"
+        f"*(Tape `/arreter_aide_recherche` une fois l'épreuve terminée)*",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="arreter_aide_recherche",
+    description="Désactive l'assistance IA en direct pour ce salon."
+)
+@app_commands.describe(salon="Optionnel : salon de l'épreuve (par défaut : salon actuel)")
+@app_commands.check(est_orga_ou_admin)
+async def arreter_aide_recherche(interaction: discord.Interaction, salon: discord.TextChannel = None):
+    ch = salon or interaction.channel
+
+    if ch.id in SESSIONS_RECHERCHE_ACTIVES:
+        joueur = SESSIONS_RECHERCHE_ACTIVES.pop(ch.id)["joueur"]
+        await interaction.response.send_message(
+            f"🛑 **Aide de recherche désactivée** pour le salon {ch.mention} (Joueur cible : `{joueur}`).",
+            ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            f"ℹ️ Aucune session d'aide de recherche n'était active dans {ch.mention}.",
+            ephemeral=True
+        )
+
+
+@bot.tree.command(
+    name="audit_reponses_recherche",
+    description="Vérifie minutieusement si les réponses OUI/NON des orgas sur le joueur mystère sont correctes."
+)
+@app_commands.describe(
+    joueur_mystere="Nom exact du joueur à trouver (ex: Antoine Griezmann)",
+    limite_messages="Nombre de messages récents à analyser (par défaut : 50)",
+    salon_audit="Optionnel : salon de jeu à vérifier (par défaut : salon actuel)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def audit_reponses_recherche(
+    interaction: discord.Interaction,
+    joueur_mystere: str,
+    limite_messages: int = 50,
+    salon_audit: discord.TextChannel = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    target_channel = salon_audit or interaction.channel
+
+    if not isinstance(target_channel, discord.TextChannel):
+        await interaction.followup.send("❌ Le salon analysé doit être un salon textuel.", ephemeral=True)
+        return
+
+    messages = [msg async for msg in target_channel.history(limit=limite_messages, oldest_first=True)]
+    messages_valides = [m for m in messages if not m.author.bot and m.content.strip()]
+
+    if not messages_valides:
+        await interaction.followup.send(f"❌ Aucun message trouvé dans {target_channel.mention}.", ephemeral=True)
+        return
+
+    transcript_lignes = []
+    for m in messages_valides:
+        transcript_lignes.append(f"[{m.author.display_name}]: {m.content.strip()}")
+
+    transcript_texte = "\n".join(transcript_lignes)
+
+    await interaction.followup.send(
+        f"⏳ **Audit factuel minutieux en cours...**\n"
+        f"🎯 Cible : **{joueur_mystere}**\n"
+        f"💬 Salon analysé : {target_channel.mention} ({len(messages_valides)} messages)",
+        ephemeral=True
+    )
+
+    resultat_audit = await verifier_echanges_recherche_ia(joueur_mystere, transcript_texte)
+    salon_orgas = bot.get_channel(SALON_REMARQUES_QUESTIONS_ID) or interaction.channel
+    date_str = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y à %H:%M")
+
+    embed = discord.Embed(
+        title=f"🔎 AUDIT FACTUEL — JOUEUR : {joueur_mystere.upper()}",
+        description=resultat_audit if len(resultat_audit) <= 3900 else None,
+        color=discord.Color.green() if "✅ **AUDIT VALIDE" in resultat_audit else discord.Color.red()
+    )
+    embed.set_footer(text=f"Salon audité : #{target_channel.name} • Demandé par {interaction.user.display_name} • {date_str}")
+
+    if len(resultat_audit) > 3900:
+        await salon_orgas.send(f"🔎 **RAPPORT D'AUDIT COMPLET — {joueur_mystere} (#{target_channel.name})**")
+        for chunk in decouper_texte_intelligent(resultat_audit, limite=1900):
+            await salon_orgas.send(chunk)
+            await asyncio.sleep(0.3)
+    else:
+        await salon_orgas.send(embed=embed)
+
+    await interaction.followup.send(
+        f"✅ **Audit terminé !** Le rapport a été envoyé dans {salon_orgas.mention}.",
         ephemeral=True
     )
 
@@ -4512,120 +4779,7 @@ async def exporter_photos_candidats(
         ephemeral=True
     )
 
-# ========================================================
-# AUDIT IA : VÉRIFICATION DES QUESTIONS / RÉPONSES
-# ========================================================
 
-async def verifier_echanges_recherche_ia(joueur_mystere: str, transcript: str) -> str:
-    """Analyse minutieusement les réponses des orgas sur le joueur mystère via Gemini."""
-    prompt = (
-        "Tu es un juge et arbitre expert, STRICT, MINUTIEUX et IMPLACABLE pour un jeu d'enquête sportive/culturelle.\n"
-        f"🎯 JOUEUR / PERSONNE MYSTÈRE CIBLE : **{joueur_mystere}**\n\n"
-        "Voici la transcription complète des échanges dans le salon de jeu (Questions des candidats et Réponses OUI/NON des organisateurs) :\n"
-        f"\"\"\"\n{transcript}\n\"\"\"\n\n"
-        "MISSIONS CRITIQUES DE VÉRIFICATION :\n"
-        "1. Isole chaque question fermée posée et la réponse apportée par l'organisation (Oui, Non, ou variantes).\n"
-        f"2. Pour CHAQUE question, vérifie la réalité FACTUELLE STRICTE concernant exclusivement **{joueur_mystere}** "
-        "(palmarès, clubs, nationalité, statistiques, biographie, dates, postes, etc.).\n"
-        "3. Vérifie si la réponse donnée par l'orga est STRICTEMENT VRAIE ou FAUSSE / TROMPEUSE.\n"
-        "4. En cas d'erreur ou d'ambiguïté, fournis la correction exacte avec les FAITS et SOURCES précises (historique des clubs, palmarès officiel, etc.).\n\n"
-        "FORMAT DE RÉPONSE OBLIGATOIRE (STRICT) :\n\n"
-        "Si AUCUNE erreur n'a été commise par les orgas :\n"
-        "✅ **AUDIT VALIDE : AUCUNE ERREUR DÉTECTÉE**\n"
-        "- Toutes les réponses données correspondent parfaitement aux faits concernant ce joueur.\n"
-        "[Ajoute un récapitulatif ultra-rapide des questions/réponses validées sous forme de puces]\n\n"
-        "Si AU MOINS UNE erreur ou réponse inexacte a été donnée :\n"
-        "⚠️ **ALERTE ERREUR(S) DÉTECTÉE(S) DANS LES RÉPONSES !**\n\n"
-        "Pour chaque erreur relevée :\n"
-        "❌ **Question litigieuse :** [Texte de la question]\n"
-        "🔴 **Réponse donnée par l'orga :** [Oui / Non]\n"
-        "🟢 **Ce qu'il fallait répondre :** [Oui / Non]\n"
-        "📚 **Explication & Faits vérifiés (Sources) :** [Détails précis, clubs, années, matchs ou trophées attestant l'erreur]\n\n"
-        "Puis termine par un court récapitulatif des questions qui étaient bien correctes."
-    )
-
-    try:
-        response = await asyncio.to_thread(
-            gemini_client.models.generate_content,
-            model=MODEL_NAME,
-            contents=prompt
-        )
-        return response.text.strip()
-    except Exception as e:
-        return f"❌ Erreur lors de l'audit IA avec Gemini : {e}"
-
-
-@bot.tree.command(
-    name="audit_reponses_recherche",
-    description="Vérifie minutieusement si les réponses OUI/NON des orgas sur le joueur mystère sont correctes."
-)
-@app_commands.describe(
-    joueur_mystere="Nom exact du joueur / de la cible à trouver (ex: Karim Benzema, Zinedine Zidane...)",
-    limite_messages="Nombre de messages récents à analyser dans le salon (par défaut : 50)",
-    salon_audit="Optionnel : salon de jeu à vérifier (par défaut : salon actuel)"
-)
-@app_commands.check(est_orga_ou_admin)
-async def audit_reponses_recherche(
-    interaction: discord.Interaction,
-    joueur_mystere: str,
-    limite_messages: int = 50,
-    salon_audit: discord.TextChannel = None
-):
-    await interaction.response.defer(ephemeral=True)
-    guild = interaction.guild
-    target_channel = salon_audit or interaction.channel
-
-    if not isinstance(target_channel, discord.TextChannel):
-        await interaction.followup.send("❌ Le salon analysé doit être un salon textuel.", ephemeral=True)
-        return
-
-    # Récupération des messages
-    messages = [msg async for msg in target_channel.history(limit=limite_messages, oldest_first=True)]
-    messages_valides = [m for m in messages if not m.author.bot and m.content.strip()]
-
-    if not messages_valides:
-        await interaction.followup.send(f"❌ Aucun message trouvé dans {target_channel.mention}.", ephemeral=True)
-        return
-
-    transcript_lignes = []
-    for m in messages_valides:
-        transcript_lignes.append(f"[{m.author.display_name}]: {m.content.strip()}")
-
-    transcript_texte = "\n".join(transcript_lignes)
-
-    await interaction.followup.send(
-        f"⏳ **Audit minutieux en cours...**\n"
-        f"🎯 Cible : **{joueur_mystere}**\n"
-        f"💬 Salon scanné : {target_channel.mention} ({len(messages_valides)} messages)",
-        ephemeral=True
-    )
-
-    # Appel Gemini
-    resultat_audit = await verifier_echanges_recherche_ia(joueur_mystere, transcript_texte)
-
-    # Envoi dans le salon des remarques / orgas
-    salon_orgas = bot.get_channel(SALON_REMARQUES_QUESTIONS_ID) or interaction.channel
-    date_str = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y à %H:%M")
-
-    embed = discord.Embed(
-        title=f"🔎 AUDIT FACTUEL — JOUEUR : {joueur_mystere.upper()}",
-        description=resultat_audit if len(resultat_audit) <= 3900 else None,
-        color=discord.Color.green() if "✅ **AUDIT VALIDE" in resultat_audit else discord.Color.red()
-    )
-    embed.set_footer(text=f"Salon audité : #{target_channel.name} • Demandé par {interaction.user.display_name} • {date_str}")
-
-    if len(resultat_audit) > 3900:
-        await salon_orgas.send(f"🔎 **RAPPORT D'AUDIT COMPLET — {joueur_mystere} (#{target_channel.name})**")
-        for chunk in decouper_texte_intelligent(resultat_audit, limite=1900):
-            await salon_orgas.send(chunk)
-            await asyncio.sleep(0.3)
-    else:
-        await salon_orgas.send(embed=embed)
-
-    await interaction.followup.send(
-        f"✅ **Audit terminé !** Le rapport a été envoyé dans {salon_orgas.mention}.",
-        ephemeral=True
-    )
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
