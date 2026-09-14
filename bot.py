@@ -691,23 +691,7 @@ async def horloge_serveur():
                 await traiter_resume_spectateurs(guild)
             except Exception as e:
                 print(f"❌ Erreur lors de la tâche automatique de 23h30 : {e}")
-
-    # 2. Déclenchement automatique des Questions du matin à 09h00 Paris
-    if maintenant.hour == 9 and maintenant.minute == 0 and DERNIER_JOUR_QUESTIONS != jour_actuel:
-        DERNIER_JOUR_QUESTIONS = jour_actuel
-        print(f"⏰ [09:00 Paris] Lancement automatique des fiches confessionnal du matin...")
-        salon_dest = bot.get_channel(SALON_QUESTIONS_RECAP_ID)
-        source_recap = bot.get_channel(RECAP_CHANNEL_ID)
-        if salon_dest and source_recap:
-            questions_text = await generer_questions_confessionnal(source_recap)
-            date_str = maintenant.strftime("%d/%m/%Y")
-            header = f"🎙️ **FICHES CONFESSIONNAL DU {date_str} — SUGGESTIONS D'INTERVIEWS**\n*(Pour les Orgas)*\n\n"
-            full_msg = header + questions_text
-            for chunk in decouper_texte_intelligent(full_msg, 1900):
-                await salon_dest.send(chunk)
-                await asyncio.sleep(0.3)
-
-
+                
 @bot.event
 async def on_ready():
     await bot.tree.sync()
