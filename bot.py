@@ -28,7 +28,7 @@ MODEL_NAME = "gemini-3.5-flash-lite"
 # Salons & Catégories fixes
 RECAP_CHANNEL_ID = 1545076756384579726            # 📰 Journal Stratégique Global
 SALON_QUESTIONS_RECAP_ID = 1546598533333909728    # 🎙️ Fiches Questions & Conseil
-
+SALON_BILAN_CANDIDATS_ID = 1549193526007435345    # 📊 Fiches Bilans Candidats
 CATEGORY_TRIO_ID = 1541397070898921482
 CATEGORY_QUATUOR_ID = 1541397227744927835
 RESULTATS_CHANNEL_ID = 1545186500960985148
@@ -4890,14 +4890,13 @@ async def bilan_candidat(
 
     await interaction.followup.send(
         f"⏳ **Collecte et analyse de l'aventure de {candidat.mention} en cours...**\n"
-        f"*(Scan de tous les salons de jeu textuels, confessionnaux, duos et logs)*",
+        f"*(Scan de tous les salons textuels de jeu, confessionnaux, duos et logs)*",
         ephemeral=True
     )
 
     for channel in guild.text_channels:
         est_salon_log = (channel.name.lower() == "log-deplacements")
         
-        # Filtrer uniquement les catégories de jeu pertinentes
         if not est_categorie_candidate(channel.category) and not est_salon_log:
             continue
         if channel.name.startswith("🔒arch-"):
@@ -4949,18 +4948,19 @@ async def bilan_candidat(
     embed.set_thumbnail(url=candidat.display_avatar.url)
     embed.set_footer(text=f"Bilan Staff Officiel • Demandé par {interaction.user.display_name} • {date_str}")
 
-    salon_orgas = bot.get_channel(SALON_REMARQUES_QUESTIONS_ID) or interaction.channel
+    # Destination : le salon Bilan Candidats spécifié
+    salon_dest = bot.get_channel(SALON_BILAN_CANDIDATS_ID) or interaction.channel
 
     if len(rapport_bilan) > 3900:
-        await salon_orgas.send(f"📊 **RAPPORT COMPLET — {candidat.mention}**")
+        await salon_dest.send(f"📊 **RAPPORT COMPLET — {candidat.mention}**")
         for chunk in decouper_texte_intelligent(rapport_bilan, limite=1900):
-            await salon_orgas.send(chunk)
+            await salon_dest.send(chunk)
             await asyncio.sleep(0.3)
     else:
-        await salon_orgas.send(embed=embed)
+        await salon_dest.send(embed=embed)
 
     await interaction.followup.send(
-        f"✅ **Bilan généré avec succès !** Le rapport a été transmis dans {salon_orgas.mention}.",
+        f"✅ **Bilan généré avec succès !** Le rapport a été envoyé dans {salon_dest.mention}.",
         ephemeral=True
     )
 # ==========================================
