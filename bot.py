@@ -250,36 +250,36 @@ def decouper_texte_intelligent(texte: str, limite: int = 1900) -> list[str]:
 
     return morceaux
 
-
 # =======================================================
-# 1. RÉSUMÉ DU SOIR CANDIDATS (AVEC BÊTISIER & QUESTIONS)
+# 1. RÉSUMÉ DU SOIR & QUESTIONS CONFESSIONNAL ADAPTÉES
 # =======================================================
 
 async def poster_questions_automatiques(texte_recap: str):
-    """Génère des questions d'interview neutres et les poste UNIQUEMENT dans SALON_QUESTIONS_RECAP_ID."""
+    """Génère des questions d'interview courtes, précises et sans spoil pour les confessionnaux Discord."""
     salon_q = bot.get_channel(SALON_QUESTIONS_RECAP_ID)
     if not salon_q:
         print(f"❌ [ERREUR] Salon questions introuvable ({SALON_QUESTIONS_RECAP_ID})")
         return
 
     prompt_q = (
-        "Tu es le journaliste/interviewer professionnel et STRICTEMENT IMPARTIAL d'un jeu d'aventure et de stratégie (type Koh-Lanta / Survivor).\n"
+        "Tu es l'interviewer et showrunner d'un jeu de stratégie et de déduction communautaire joué SUR DISCORD.\n"
         "Voici le Journal Stratégique de la journée :\n\n"
         f"{texte_recap}\n\n"
-        "Rédige une FICHE DE QUESTIONS OBJECTIVES pour l'équipe d'organisation (Staff/Orgas).\n\n"
+        "Rédige une FICHE DE QUESTIONS DIRECTES ET COURTES pour l'équipe d'organisation (Staff/Orgas).\n\n"
         "RÈGLES D'OR ABSOLUES :\n"
-        "1. NEUTRALITÉ ET OBJECTIVITÉ TOTALE : Ne porte aucun jugement, aucune morale, aucune accusation.\n"
-        "2. ZÉRO INDICATION / NON-DIVULGATION : La question ne doit JAMAIS donner d'indice sur les alliances cachées, les complots en cours, les votes secrets ou ce que les autres disent dans leur dos.\n"
-        "3. QUESTIONS OUVERTES : Conçues comme un miroir neutre pour pousser le joueur à formuler sa propre perception, ses réflexions et ses dilemmes sans l'influencer.\n\n"
+        "1. CONTEXTE DISCORD : Le jeu se passe sur des salons, en vocal, en duos/trios et par messages. Oublie totalement les allusions à une île, au feu, aux cabanes ou à la survie physique.\n"
+        "2. QUESTIONS COURTES ET IMPACTANTES : Maximum 1 à 2 phrases par question. Pose des questions directes, percutantes et fluides.\n"
+        "3. NEUTRALITÉ ET ZÉRO SPOIL : Ne trahis aucun complot secret, aucune alliance cachée et ne donne aucun indice sur ce que les autres manigancent dans leur dos.\n"
+        "4. MIROIR STRATÉGIQUE : Pousse le joueur à verbaliser sa lecture du jeu, sa confiance envers ses contacts et son positionnement pour les prochains votes.\n\n"
         "STRUCTURE ATTENDUE :\n\n"
-        "## 🎙️ 1. QUESTIONS CONFESSIONNAL (INDIVIDUELLES & NEUTRES)\n"
+        "## 🎙️ 1. QUESTIONS CONFESSIONNAL (INDIVIDUELLES)\n"
         "Sélectionne 3 à 4 candidats clés de la journée. Pour chacun :\n"
         "- **👤 [Nom du Candidat]**\n"
-        "  - *Question 1 :* [Question ouverte sur son ressenti, sa confiance ou sa position actuelle dans l'aventure]\n"
-        "  - *Question 2 :* [Question neutre sur un choix, un dilemme ou l'approche qu'il compte adopter pour la suite]\n\n"
-        "## ⚖️ 2. QUESTIONS DÉBAT & CONSEIL (GÉNÉRALES & SANS SPOIL)\n"
-        "- 3 questions d'ambiance générale pour la tribu (la vie sur le camp, la fatigue, la difficulté d'anticiper les votes, l'évolution des affinités sans citer de noms).\n\n"
-        "Renvoie UNIQUEMENT le texte formaté, prêt à être utilisé par le staff."
+        "  - *Q1 :* [Question courte sur sa confiance ou son ressenti du moment sur le serveur]\n"
+        "  - *Q2 :* [Question directe sur un dilemme, un choix de vote ou sa posture tactique]\n\n"
+        "## ⚖️ 2. QUESTIONS CONSEIL / DÉBAT (GÉNÉRALES)\n"
+        "- 3 questions ouvertes et courtes sur l'ambiance générale du serveur, la lisibilité des alliances ou la tension avant les votes (sans citer de noms).\n\n"
+        "Renvoie UNIQUEMENT le texte formaté, prêt à l'emploi."
     )
 
     try:
@@ -293,7 +293,7 @@ async def poster_questions_automatiques(texte_recap: str):
         paris_tz = ZoneInfo("Europe/Paris")
         date_str = datetime.datetime.now(paris_tz).strftime("%d/%m/%Y")
 
-        header = f"🎙️ **SUGGESTIONS D'INTERVIEWS NEUTRES & CONSEIL — {date_str}**\n*(Réservé aux Orgas • Zéro indication aux joueurs)*\n\n"
+        header = f"🎙️ **SUGGESTIONS D'INTERVIEWS DISCORD & CONSEIL — {date_str}**\n*(Réservé aux Orgas • Zéro spoil)*\n\n"
         full_msg = header + questions_texte
 
         for chunk in decouper_texte_intelligent(full_msg, 1900):
@@ -306,20 +306,20 @@ async def poster_questions_automatiques(texte_recap: str):
 
 
 async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channel: discord.TextChannel):
-    """Scanne les discussions de la journée (de 00h00 à 23h30 heure de Paris) et génère la synthèse."""
+    """Scanne les discussions du serveur et génère le Journal Stratégique adapté à Discord."""
     tz_paris = ZoneInfo("Europe/Paris")
     maintenant_paris = datetime.datetime.now(tz_paris)
     
     debut_journee_paris = maintenant_paris.replace(hour=0, minute=0, second=0, microsecond=0)
     debut_journee_utc = debut_journee_paris.astimezone(datetime.timezone.utc)
 
-    # 1. Extraction des 5 derniers récaps pour la continuité narrative
+    # Contexte des récaps précédents (limité aux 2 derniers pour économiser les tokens)
     historique_recaps = []
-    async for msg in target_channel.history(limit=15, oldest_first=False):
+    async for msg in target_channel.history(limit=8, oldest_first=False):
         if msg.author.id == bot.user.id and msg.content.strip():
             if not msg.content.startswith("📋") and not msg.content.startswith("🎙️"):
-                historique_recaps.append(msg.content[:1500])
-        if len(historique_recaps) >= 5:
+                historique_recaps.append(msg.content[:1200])
+        if len(historique_recaps) >= 2:
             break
 
     historique_recaps.reverse()
@@ -329,7 +329,6 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
         else "Aucun récapitulatif antérieur (Début de l'aventure)."
     )
 
-    # 2. Collecte des discussions de la journée
     salons_transcripts = []
 
     for channel in guild.text_channels:
@@ -352,7 +351,7 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
                             try:
                                 file_bytes = await att.read()
                                 texte_fichier = file_bytes.decode('utf-8')
-                                texte_msg += f"\n\n--- 📄 CONTENU DU FICHIER {att.filename} ---\n{texte_fichier}\n---------------------------------------\n"
+                                texte_msg += f"\n[Fichier {att.filename}]: {texte_fichier[:1200]}"
                             except Exception as e:
                                 print(f"Impossible de lire le fichier {att.filename} : {e}")
 
@@ -363,42 +362,42 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
             if lines:
                 cat_nom = channel.category.name if channel.category else "Sans Catégorie"
                 salons_transcripts.append(
-                    f"=== [{cat_nom.upper()}] #{channel.name} ({len(lines)} éléments) ===\n" + "\n".join(lines)
+                    f"=== [{cat_nom.upper()}] #{channel.name} ({len(lines)} messages) ===\n" + "\n".join(lines)
                 )
 
     if not salons_transcripts:
-        await target_channel.send("😴 **Journal du jour :** Aucun échange dans les salons candidats ni de logs aujourd'hui.")
+        await target_channel.send("😴 **Journal du jour :** Aucun échange sur le serveur aujourd'hui.")
         return
 
     full_context = "\n\n".join(salons_transcripts)
-
     date_str = maintenant_paris.strftime("%d/%m/%Y")
+
     prompt = (
-        "Tu es l'arbitre en chef et showrunner d'un jeu de stratégie et de survie (type Koh-Lanta / Survivor / Secret Story).\n"
+        "Tu es l'analyste stratégique et showrunner d'un jeu de stratégie, d'alliances et d'éliminations joué SUR DISCORD.\n"
         f"JOURNÉE DU {date_str} (Heure de Paris).\n\n"
-        "=== HISTORIQUE DES 5 DERNIERS JOURS (POUR LE CONTEXTE NARRATIF) ===\n"
+        "=== CONTEXTE RÉCENT (DERNIERS JOURS) ===\n"
         f"{texte_contexte_passe}\n\n"
-        "=== DISCUSSIONS DE LA JOURNÉE EN COURS À RÉSUMER ===\n"
+        "=== DISCUSSIONS DE LA JOURNÉE SUR LES SALONS DISCORD ===\n"
         f"{full_context}\n\n"
-        "Rédige le **Journal de Bord Stratégique Global de la Journée** pour l'équipe d'organisation avec une analyse experte.\n"
-        "Consignes de fond :\n"
-        "1. Prends en compte l'historique pour comprendre l'évolution des alliances et des trahisons.\n"
-        "2. Les horaires indiqués [HH:MM] sont en heure française (Paris).\n"
-        "3. Structure ta réponse avec les sections obligatoires suivantes et des emojis :\n\n"
-        "   - 🌍 **Synthèse Générale & Ambiance Globale**\n"
-        "   - 🤝 **Alliances, Pactes & Négociations**\n"
-        "   - 🎯 **Cibles, Votes & Stratégies d'Élimination**\n"
-        "   - ⚠️ **Trahisons, Secrets & Double-Jeu**\n"
-        "   - 🎙️ **Points Clés des Confessionnaux & Duos**\n"
-        "   - 🗺️ **Mouvements & Événements Importants (Logs)**\n"
-        "   - 📌 **Résumé rapide par zone/salon actif**\n"
-        "   - 🕸️ **Cartographie des Connexions & Alliances Clés** : Résume précisément les liens de confiance avérés, les duos solides, les ponts entre factions et les joueurs isolés.\n"
-        "   - 🏆 **Baromètre & Power Ranking Stratégique** : Établis un ranking précis de la position de TOUS les candidats actifs observés aujourd'hui (qui est au sommet, qui est en pivot, qui est en grand danger) répartis en 3 tiers :\n"
-        "       🟢 *En position de force* (bien entourés, décideurs, sous le radar)\n"
-        "       🟡 *En équilibre / Statu quo* (charnières, suiveurs, marge de manœuvre moyenne)\n"
-        "       🔴 *En danger / Cibles directes* (isolés, ciblés au conseil, alliances percées)\n"
-        "   - 🤡 **Le Bêtisier de l'Île (Moments Drôles & Perles)** : Relève 3 à 5 citations drôles, quiproquos, vannes, moments de panique comiques ou répliques lunaires sorties par les candidats aujourd'hui.\n\n"
-        "4. Reste analytique, percutant et sans métadonnées superflues."
+        "Rédige le **Journal de Bord Stratégique Global de la Journée** pour l'équipe d'organisation.\n"
+        "Consignes de cadrage :\n"
+        "1. CONTEXTE RÉEL : C'est un jeu sur serveur Discord. Parle de salons textuels, vocaux, discussions de camp, confessionnaux, logs et pactes. Zéro cliché d'île déserte, de sable ou de jungle.\n"
+        "2. Sois précis sur les dynamiques entre joueurs, les trahisons, les hésitations et les cibles de vote.\n"
+        "3. Structure avec ces sections obligatoires et des émojis :\n\n"
+        "   - 🌍 **Ambiance Générale & Dynamique du Serveur**\n"
+        "   - 🤝 **Pactes, Alliances & Négociations**\n"
+        "   - 🎯 **Cibles Évoquées, Plans & Votes**\n"
+        "   - ⚠️ **Double-Jeu, Secrets & Fuites d'Infos**\n"
+        "   - 🎙️ **Points Clés des Confessionnaux & Salons Privés**\n"
+        "   - 🗺️ **Mouvements & Logs Notables**\n"
+        "   - 📌 **Synthèse par Salon Actif**\n"
+        "   - 🕸️ **Cartographie des Liens** (Qui joue avec qui, les pivots, les joueurs isolés)\n"
+        "   - 🏆 **Power Ranking Stratégique du Jour** :\n"
+        "       🟢 *En position de force* (Bien entourés, maîtres du jeu, sous les radars)\n"
+        "       🟡 *En équilibre* (Charnières, indécis, observateurs)\n"
+        "       🔴 *En danger immédiat* (Cibles désignées, isolés, alliances percées)\n"
+        "   - 🤡 **Le Bêtisier du Serveur (Moments Drôles & Perles)** : 3 à 5 punchlines, quiproquos, fails ou messages comiques sortis aujourd'hui.\n\n"
+        "4. Reste analytique, percutant et direct."
     )
 
     max_tentatives = 3
@@ -430,6 +429,62 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
             else:
                 await target_channel.send(f"❌ Erreur lors de la génération du journal : {e}")
                 return
+
+
+# =======================================================
+# 2. COMMANDE MANUELLE /questions_confessionnal
+# =======================================================
+
+async def generer_questions_confessionnal(target_recap_channel: discord.TextChannel, candidat_nom: str = None) -> str:
+    """Génère des questions d'interview courtes et adaptées à Discord."""
+    recap_messages = [
+        msg.content async for msg in target_recap_channel.history(limit=4, oldest_first=False)
+        if not msg.content.startswith("😴") and "JOURNAL STRATÉGIQUE" in msg.content
+    ]
+
+    if not recap_messages:
+        return "⚠️ Aucun journal stratégique récent trouvé dans le salon dédié."
+
+    dernier_recap = "\n---\n".join(reversed(recap_messages))
+
+    consigne_cible = (
+        f"Concentre-toi UNIQUEMENT sur le joueur **{candidat_nom}**." 
+        if candidat_nom else 
+        "Choisis 3 ou 4 joueurs clés ayant des décisions stratégiques ou des votes cruciaux à gérer."
+    )
+
+    prompt = (
+        "Tu es l'interviewer officiel d'un jeu de stratégie sur Discord.\n"
+        "Ton rôle est d'aider les orgas à préparer des interviews courtes et percutantes au confessionnal.\n\n"
+        "RÈGLES D'INTERVIEW DISCORD :\n"
+        "- Contexte 100% Discord : discussions de salons, duos, alliances, votes (zéro mention de survie/île/flambeaux).\n"
+        "- Questions courtes, directes et incisives (1 à 2 phrases max).\n"
+        "- Neutralité absolue : pas de jugement ni de spoil des actions des autres.\n\n"
+        f"Derniers événements :\n{dernier_recap}\n\n"
+        f"Consigne : {consigne_cible}\n\n"
+        "Structure pour chaque candidat :\n"
+        "👤 **Joueur : [Nom]**\n"
+        "🎯 **Position actuelle :** [1 phrase courte résumant sa situation]\n"
+        "❓ **Questions (2 à 3 max) :**\n"
+        "  - [Question courte sur sa confiance et ses alliances]\n"
+        "  - [Question courte sur son dilemme ou son vote à venir]\n"
+        "💡 **Objectif orga :** [Ce qu'on cherche à lui faire exprimer]"
+    )
+
+    max_tentatives = 3
+    for tentative in range(max_tentatives):
+        try:
+            response = await asyncio.to_thread(
+                gemini_client.models.generate_content,
+                model=MODEL_NAME,
+                contents=prompt
+            )
+            return response.text
+        except Exception as e:
+            if "503" in str(e) and tentative < max_tentatives - 1:
+                await asyncio.sleep(2)
+            else:
+                return f"❌ Erreur IA lors de la génération des questions : {e}"
 
 
 # =======================================================
