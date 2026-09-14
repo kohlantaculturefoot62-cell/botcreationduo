@@ -4818,7 +4818,151 @@ async def exporter_photos_candidats(
         ephemeral=True
     )
 
+# ========================================================
+# 30. BILAN & AUDIT INDIVIDUEL CANDIDAT (NOTE, POSITION & BÊTISIER)
+# ========================================================
 
+async def generer_bilan_candidat_ia(candidat_nom: str, messages_candidat: list[str], messages_sur_candidat: list[str]) -> str:
+    """Génère une analyse complète (Note/10, positionnement stratégique, bêtisier) d'un joueur Discord."""
+    texte_dits = "\n".join(messages_candidat) if messages_candidat else "Aucun message direct trouvé."
+    texte_sur_lui = "\n".join(messages_sur_candidat) if messages_sur_candidat else "Aucun message parlant de lui trouvé."
+
+    prompt = (
+        "Tu es l'analyste en chef, juré impartial et showrunner d'un jeu de stratégie et d'éliminations SUR DISCORD (type Koh-Lanta / Survivor / Big Brother adapté sur serveur).\n"
+        f"🎯 CANDIDAT CIBLÉ : **{candidat_nom}**\n\n"
+        "=== CE QUE LE CANDIDAT A DIT (EXTRAITS DE SES SALONS, CONFESSIONNAUX & DUOS) ===\n"
+        f"{texte_dits[:20000]}\n\n"
+        "=== CE QUE LES AUTRES CANDIDATS ONT DIT SUR LUI (COMPLOTS, DUOS, ALLIANCES, VOTES) ===\n"
+        f"{texte_sur_lui[:20000]}\n\n"
+        "CONSIGNES DE FOND & CADRAGE DISCORD :\n"
+        "1. Contexte 100% Discord : Le jeu se passe par salons textuels, MPs/duos, vocaux et logs. Oublie totalement les allusions à une île déserte, la jungle, le sable ou la survie physique.\n"
+        "2. Sois lucide, percutant, objectif et sans complaisance.\n\n"
+        "STRUCTURE STRICTE DU RAPPORT ATTENDUE :\n\n"
+        f"## 🏆 1. LA NOTE DU JURY : [NOTE/10] — [TITRE ÉVOCATEUR]\n"
+        "- Attribue une note globale sur 10 à son aventure jusqu'ici (Stratégie, Social, Survie sur le serveur, Activité).\n"
+        "- Justifie la note en 2 phrases denses.\n\n"
+        "## 🧭 2. POSITIONNEMENT & DYNAMIQUE STRATÉGIQUE\n"
+        "- **Son rôle sur le serveur :** (Maître du jeu, suiveur, sniper, agent double, électron libre...)\n"
+        "- **Alliances réelles vs Illusions :** Avec qui joue-t-il vraiment et à qui fait-il faussement confiance ?\n"
+        "- **Ce qui se trame dans son dos :** Est-il ciblé ? Les autres le sous-estiment-ils ou préparent-ils un blindside ?\n\n"
+        "## ⚠️ 3. FORCES & POINTS FAIBLES\n"
+        "- 🟢 **Points forts :** (2 bullet points)\n"
+        "- 🔴 **Erreurs & Failles :** (2 bullet points)\n\n"
+        "## 🤡 4. LE BÊTISIER & LES PLUS GROSSES DINGUERIES\n"
+        "- Relève 3 à 5 de ses meilleures perles, punchlines absurdes, moments de panique comiques, contradictions flagrantes ou messages lunaires postés sur le serveur.\n\n"
+        "Reste concis, structuré et dynamique."
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"❌ Erreur lors de l'analyse IA : {e}"
+
+
+@bot.tree.command(
+    name="bilan_candidat",
+    description="Génère le bilan complet d'un candidat : Note sur 10, analyse stratégique et bêtisier."
+)
+@app_commands.describe(
+    candidat="Le candidat à évaluer",
+    limite_par_salon="Nombre de messages récents à scanner par salon (par défaut : 80)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def bilan_candidat(
+    interaction: discord.Interaction,
+    candidat: discord.Member,
+    limite_par_salon: int = 80
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    nom_candidat_clean = nettoyer_texte(candidat.display_name)
+    pseudo_global_clean = nettoyer_texte(candidat.name)
+    mention_id = str(candidat.id)
+
+    messages_candidat = []
+    messages_sur_candidat = []
+
+    await interaction.followup.send(
+        f"⏳ **Collecte et analyse de l'aventure de {candidat.mention} en cours...**\n"
+        f"*(Scan de tous les salons de jeu textuels, confessionnaux, duos et logs)*",
+        ephemeral=True
+    )
+
+    for channel in guild.text_channels:
+        est_salon_log = (channel.name.lower() == "log-deplacements")
+        
+        # Filtrer uniquement les catégories de jeu pertinentes
+        if not est_categorie_candidate(channel.category) and not est_salon_log:
+            continue
+        if channel.name.startswith("🔒arch-"):
+            continue
+
+        try:
+            async for msg in channel.history(limit=limite_par_salon, oldest_first=False):
+                if msg.author.bot and not est_salon_log:
+                    continue
+
+                contenu = msg.content.strip()
+                if not contenu:
+                    continue
+
+                # 1. Message écrit PAR le candidat
+                if msg.author.id == candidat.id:
+                    messages_candidat.append(f"[#{channel.name}] {candidat.display_name}: {contenu}")
+
+                # 2. Message écrit PAR UN AUTRE mais parlant DU candidat
+                else:
+                    contenu_clean = nettoyer_texte(contenu)
+                    if (
+                        nom_candidat_clean in contenu_clean 
+                        or pseudo_global_clean in contenu_clean 
+                        or mention_id in msg.content
+                    ):
+                        messages_sur_candidat.append(f"[#{channel.name}] {msg.author.display_name} sur {candidat.display_name}: {contenu}")
+
+        except Exception:
+            continue
+
+    if not messages_candidat and not messages_sur_candidat:
+        await interaction.followup.send(f"⚠️ Aucune donnée ou discussion trouvée pour {candidat.mention}.", ephemeral=True)
+        return
+
+    # Analyse IA
+    rapport_bilan = await generer_bilan_candidat_ia(
+        candidat_nom=candidat.display_name,
+        messages_candidat=messages_candidat[:120],
+        messages_sur_candidat=messages_sur_candidat[:120]
+    )
+
+    date_str = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y à %H:%M")
+    embed = discord.Embed(
+        title=f"📊 BILAN D'AVENTURE — {candidat.display_name.upper()}",
+        description=rapport_bilan if len(rapport_bilan) <= 3900 else None,
+        color=discord.Color.gold()
+    )
+    embed.set_thumbnail(url=candidat.display_avatar.url)
+    embed.set_footer(text=f"Bilan Staff Officiel • Demandé par {interaction.user.display_name} • {date_str}")
+
+    salon_orgas = bot.get_channel(SALON_REMARQUES_QUESTIONS_ID) or interaction.channel
+
+    if len(rapport_bilan) > 3900:
+        await salon_orgas.send(f"📊 **RAPPORT COMPLET — {candidat.mention}**")
+        for chunk in decouper_texte_intelligent(rapport_bilan, limite=1900):
+            await salon_orgas.send(chunk)
+            await asyncio.sleep(0.3)
+    else:
+        await salon_orgas.send(embed=embed)
+
+    await interaction.followup.send(
+        f"✅ **Bilan généré avec succès !** Le rapport a été transmis dans {salon_orgas.mention}.",
+        ephemeral=True
+    )
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
