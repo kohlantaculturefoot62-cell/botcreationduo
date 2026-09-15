@@ -102,7 +102,8 @@ CHRONOS_EN_COURS = {}      # {key: start_datetime}
 SESSIONS_RECHERCHE_ACTIVES = {}  # {channel_id: {"joueur": "...", "candidat_id": 123}}
 # Suivi des minuteurs actifs : {channel_id: {"task": asyncio.Task, "start": datetime, "total_seconds": int}}
 MINUTEURS_ACTIFS = {}
-
+# Suivi du traducteur en direct : {channel_id: {"user_id": int, "nom": str}}
+SESSIONS_DECODEUR = {}
 CONFIG_EPREUVE_GLOBALE = {
     "questions": [],
     "temps_par_defaut": 15,
@@ -779,7 +780,22 @@ async def on_message(message: discord.Message):
     """Écouteur de messages pour la recherche en direct, la draft et les commandes préfixes."""
     if message.author.bot:
         return
-
+    # 1. Décodeur / Traducteur humoristique en direct
+    if message.channel.id in SESSIONS_DECODEUR:
+        cible_data = SESSIONS_DECODEUR[message.channel.id]
+        if message.author.id == cible_data["user_id"]:
+            texte = message.content.strip()
+            # On ignore les messages vides ou trop courts
+            if len(texte) >= 2:
+                async with message.channel.typing():
+                    traduction = await decoder_charabia_ia(message.author.display_name, texte)
+                    embed_decodeur = discord.Embed(
+                        description=f"🌐 **DÉCODEUR OFFICIEL — Langue parlée : `{message.author.display_name}`**\n\n{traduction}",
+                        color=discord.Color.teal()
+                    )
+                    embed_decodeur.set_footer(text="Service de traduction automatique en temps réel")
+                    await message.reply(embed=embed_decodeur, mention_author=False)
+                    
     # 1. Détection des questions posées pendant l'épreuve de recherche
     if message.channel.id in SESSIONS_RECHERCHE_ACTIVES:
         session = SESSIONS_RECHERCHE_ACTIVES[message.channel.id]
@@ -5755,6 +5771,93 @@ async def chercher_mot_candidats(
 
     # Envoi public sur le salon
     await interaction.followup.send(embed=embed)
+
+async def decoder_charabia_ia(nom_membre: str, texte_brut: str) -> str:
+    """Traduit une phrase incompréhensible avec humour, emphase et second degré."""
+    prompt = (
+        "Tu es un linguiste d'élite, anthropologue du futur et expert en déchiffrage de dialectes cosmiques.\n"
+        f"Un utilisateur sur Discord nommé **{nom_membre}** vient d'envoyer ce message lunaire / difficile à comprendre :\n"
+        f"\"\"\"{texte_brut}\"\"\"\n\n"
+        "TON RÔLE :\n"
+        "Rédige une TRADUCTION / EXPLICATION HILARANTE de ce qu'il a voulu dire en français intelligible.\n\n"
+        "DIRECTIVES D'HUMOUR :\n"
+        "1. SECOND DEGRÉ & BIENVEILLANCE : C'est du chambrage amical entre potes sur Discord.\n"
+        "2. FORME : Structure ta réponse de façon courte et rythmée (2 à 3 lignes max) :\n"
+        "   - 🗣️ **Traduction littérale :** (Ce que son cerveau a tenté d'exprimer avec des mots humains)\n"
+        "   - 🔬 **Analyse sémiotique :** (Pourquoi c'est sorti de façon aussi chaotique ou obscure)\n"
+        "3. Renvoie UNIQUEMENT le texte formaté, sans formule de politesse."
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"🗣️ **Traduction d'urgence :** Le message est tellement cryptique que même les serveurs quantiques ont planté ({e})."
+
+# ========================================================
+# 34. COMMANDES DU DÉCODEUR / TRADUCTEUR HUMORISTIQUE
+# ========================================================
+
+@bot.tree.command(
+    name="lancer_decodeur",
+    description="Active la traduction automatique humoristique à chaque message d'un membre."
+)
+@app_commands.describe(
+    cible="Le spectateur ou membre qui parle en dialecte alien",
+    salon="Optionnel : salon surveillé (par défaut : salon actuel)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def lancer_decodeur(
+    interaction: discord.Interaction,
+    cible: discord.Member,
+    salon: discord.TextChannel = None
+):
+    channel = salon or interaction.channel
+
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.response.send_message("❌ Cette commande ne fonctionne que dans un salon textuel.", ephemeral=True)
+        return
+
+    SESSIONS_DECODEUR[channel.id] = {
+        "user_id": cible.id,
+        "nom": cible.display_name
+    }
+
+    embed_activation = discord.Embed(
+        title="🌐 DÉCODEUR UNIVERSEL ACTIVÉ !",
+        description=(
+            f"📡 **Cible verrouillée :** {cible.mention}\n\n"
+            "Chacune de ses interventions dans ce salon sera désormais traduite et explicitée "
+            "en direct par le laboratoire linguistique officiel.\n\n"
+            "*(Pour désactiver : `/arreter_decodeur`)*"
+        ),
+        color=discord.Color.teal()
+    )
+    await channel.send(embed=embed_activation)
+    await interaction.response.send_message(f"✅ Décodeur activé sur {cible.mention} dans {channel.mention}.", ephemeral=True)
+
+
+@bot.tree.command(
+    name="arreter_decodeur",
+    description="Désactive la traduction automatique pour ce salon."
+)
+@app_commands.describe(salon="Optionnel : salon à libérer (par défaut : salon actuel)")
+@app_commands.check(est_orga_ou_admin)
+async def arreter_decodeur(interaction: discord.Interaction, salon: discord.TextChannel = None):
+    channel = salon or interaction.channel
+
+    if channel.id in SESSIONS_DECODEUR:
+        cible = SESSIONS_DECODEUR.pop(channel.id)
+        await channel.send(f"🔌 **Décodeur universel désactivé.** {cible['nom']} peut à nouveau s'exprimer sans filtre.")
+        await interaction.response.send_message(f"✅ Décodeur désactivé dans {channel.mention}.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"ℹ️ Aucun décodeur n'est actif dans {channel.mention}.", ephemeral=True)
+
+
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
