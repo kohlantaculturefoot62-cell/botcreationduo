@@ -5520,6 +5520,127 @@ async def chrono_minuteur_stop(interaction: discord.Interaction, salon: discord.
 
     await channel.send(embed=embed_stop)
     await interaction.response.send_message(f"✅ Minuteur arrêté dans {channel.mention} (Temps total : `{texte_total}`).", ephemeral=True)
+
+from collections import Counter, defaultdict
+
+# Mots vides courants à ignorer pour ne garder que les mots significatifs
+MOTS_VIDES_FR = {
+    "le", "la", "les", "un", "une", "des", "du", "de", "d", "l", "au", "aux",
+    "et", "ou", "mais", "donc", "car", "ni", "or", "si", "que", "qui", "quoi",
+    "dont", "ou", "quand", "comment", "pourquoi", "est", "sont", "a", "ont",
+    "ai", "as", "suis", "es", "etre", "avoir", "faire", "fait", "je", "tu",
+    "il", "elle", "on", "nous", "vous", "ils", "elles", "me", "te", "se",
+    "lui", "leur", "y", "en", "ce", "cet", "cette", "ces", "mon", "ton",
+    "son", "ma", "ta", "sa", "mes", "tes", "ses", "notre", "votre", "nos",
+    "vos", "pour", "dans", "sur", "par", "avec", "sans", "sous", "vers",
+    "chez", "tout", "tous", "toute", "toutes", "plus", "moins", "tres",
+    "bien", "aussi", "trop", "peu", "pas", "ne", "non", "oui", "ca", "cest",
+    "c", "va", "vais", "vas", "vont", "meme", "comme", "alors", "apres", "avant"
+}
+
+@bot.tree.command(
+    name="stats_mots_candidats",
+    description="Top des mots les plus prononcés par les candidats avec la répartition exacte."
+)
+@app_commands.describe(
+    top="Nombre de mots à afficher (par défaut : 10)",
+    longueur_min="Taille minimale d'un mot (par défaut : 4 lettres)",
+    role_equipe="Optionnel : filtrer uniquement une équipe"
+)
+@app_commands.check(est_orga_ou_admin)
+async def stats_mots_candidats(
+    interaction: discord.Interaction,
+    top: int = 10,
+    longueur_min: int = 4,
+    role_equipe: discord.Role = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+
+    candidats_ids = set()
+    noms_candidats = {}
+
+    # 1. Identification des candidats
+    async for member in guild.fetch_members(limit=None):
+        if member.bot:
+            continue
+        if role_equipe and role_equipe not in member.roles:
+            continue
+        if role_orgas and role_orgas in member.roles:
+            continue
+        if role_spectateurs and role_spectateurs in member.roles and not role_equipe:
+            continue
+
+        candidats_ids.add(member.id)
+        noms_candidats[member.id] = member.display_name
+
+    if not candidats_ids:
+        await interaction.followup.send("❌ Aucun candidat trouvé pour l'analyse.", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        f"⏳ **Analyse lexicale en cours sur {len(candidats_ids)} candidat(s)...**",
+        ephemeral=True
+    )
+
+    # 2. Collecte & Comptage des mots
+    compteur_global = Counter()
+    auteurs_par_mot = defaultdict(lambda: Counter())
+
+    for channel in guild.text_channels:
+        est_salon_log = (channel.name.lower() == "log-deplacements")
+        if not est_categorie_candidate(channel.category) and not est_salon_log:
+            continue
+        if channel.name.startswith("🔒arch-"):
+            continue
+
+        try:
+            async for msg in channel.history(limit=500, oldest_first=False):
+                if msg.author.id in candidats_ids and msg.content.strip():
+                    # Nettoyage : retire ponctuation, liens et accents
+                    texte_propre = re.sub(r'https?://\S+', '', msg.content)
+                    texte_propre = nettoyer_texte(texte_propre)
+                    
+                    mots = texte_propre.split()
+                    for m in mots:
+                        if len(m) >= longueur_min and m not in MOTS_VIDES_FR and not m.isdigit():
+                            compteur_global[m] += 1
+                            auteurs_par_mot[m][msg.author.id] += 1
+        except Exception:
+            continue
+
+    if not compteur_global:
+        await interaction.followup.send("⚠️ Aucun mot significatif trouvé dans les salons analysés.", ephemeral=True)
+        return
+
+    # 3. Formatage des résultats
+    top_mots = compteur_global.most_common(min(top, 25))
+    lignes = []
+
+    for rank, (mot, total) in enumerate(top_mots, 1):
+        # Récupération des plus gros utilisateurs de ce mot
+        auteurs = auteurs_par_mot[mot].most_common(3)
+        details_auteurs = ", ".join([f"**{noms_candidats.get(uid, 'Inconnu')}** ({c})" for uid, c in auteurs])
+
+        medaille = "🥇" if rank == 1 else ("🥈" if rank == 2 else ("🥉" if rank == 3 else f"`#{rank}`"))
+        lignes.append(
+            f"{medaille} **{mot.upper()}** — **{total} fois**\n"
+            f"   └ 👤 *Utilisé par :* {details_auteurs}"
+        )
+
+    embed = discord.Embed(
+        title="📊 TOP DES MOTS LES PLUS PRONONCÉS",
+        description="\n\n".join(lignes),
+        color=discord.Color.purple()
+    )
+    if role_equipe:
+        embed.set_author(name=f"Filtre : {role_equipe.name}")
+    embed.set_footer(text=f"Mots d'au moins {longueur_min} lettres • Stop-words exclus")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
