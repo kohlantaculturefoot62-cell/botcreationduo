@@ -5011,7 +5011,7 @@ async def generer_bilan_orga_ia(orga_nom: str, messages_orga: list[str], message
 
 @bot.tree.command(
     name="bilan_orga",
-    description="Génère le bilan complet d'un organisateur : Note/10, critères clés (objectivité, présence) et bêtisier."
+    description="Bilan complet d'un orga : Note sur 10, analyse des critères clés et bêtisier."
 )
 @app_commands.describe(
     orga="Le membre du staff à évaluer",
@@ -5023,6 +5023,7 @@ async def bilan_orga(
     orga: discord.Member,
     limite_par_salon: int = 80
 ):
+    # ... (le reste de la fonction reste identique)
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
