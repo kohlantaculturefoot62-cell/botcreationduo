@@ -5641,6 +5641,120 @@ async def stats_mots_candidats(
     embed.set_footer(text=f"Mots d'au moins {longueur_min} lettres • Stop-words exclus")
 
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+@bot.tree.command(
+    name="chercher_mot_candidats",
+    description="Recherche un mot précis chez les candidats et affiche publiquement le classement."
+)
+@app_commands.describe(
+    mot="Le mot ou l'expression exacte à rechercher (ex: alliance, trahison, vote)",
+    role_equipe="Optionnel : filtrer uniquement les candidats d'une équipe"
+)
+@app_commands.check(est_orga_ou_admin)
+async def chercher_mot_candidats(
+    interaction: discord.Interaction,
+    mot: str,
+    role_equipe: discord.Role = None
+):
+    # ephemeral=False pour que la réponse finale soit visible par tout le monde sur le salon
+    await interaction.response.defer(ephemeral=False)
+    guild = interaction.guild
+
+    mot_recherche_clean = nettoyer_texte(mot)
+    if not mot_recherche_clean:
+        await interaction.followup.send("❌ Veuillez spécifier un mot valide.", ephemeral=True)
+        return
+
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+
+    candidats_ids = set()
+    noms_candidats = {}
+
+    # 1. Récupération des candidats
+    async for member in guild.fetch_members(limit=None):
+        if member.bot:
+            continue
+        if role_equipe and role_equipe not in member.roles:
+            continue
+        if role_orgas and role_orgas in member.roles:
+            continue
+        if role_spectateurs and role_spectateurs in member.roles and not role_equipe:
+            continue
+
+        candidats_ids.add(member.id)
+        noms_candidats[member.id] = {
+            "nom": member.display_name,
+            "mention": member.mention,
+            "count": 0
+        }
+
+    if not candidats_ids:
+        await interaction.followup.send("❌ Aucun candidat trouvé pour cette analyse.", ephemeral=True)
+        return
+
+    total_occurrences = 0
+
+    # Pattern regex pour cibler le mot exact (évite les faux positifs au milieu d'un autre mot)
+    pattern = re.compile(rf'\b{re.escape(mot_recherche_clean)}\b', re.IGNORECASE)
+
+    # 2. Scan des salons de jeu
+    for channel in guild.text_channels:
+        est_salon_log = (channel.name.lower() == "log-deplacements")
+        if not est_categorie_candidate(channel.category) and not est_salon_log:
+            continue
+        if channel.name.startswith("🔒arch-"):
+            continue
+
+        try:
+            async for msg in channel.history(limit=500, oldest_first=False):
+                if msg.author.id in candidats_ids and msg.content.strip():
+                    texte_propre = nettoyer_texte(msg.content)
+                    occurrences = len(pattern.findall(texte_propre))
+                    
+                    if occurrences > 0:
+                        noms_candidats[msg.author.id]["count"] += occurrences
+                        total_occurrences += occurrences
+        except Exception:
+            continue
+
+    # 3. Tri et mise en page du classement
+    candidats_actifs = [c for c in noms_candidats.values() if c["count"] > 0]
+    candidats_actifs.sort(key=lambda x: x["count"], reverse=True)
+
+    if total_occurrences == 0:
+        embed_vide = discord.Embed(
+            title=f"🔍 RECHERCHE : « {mot.upper()} »",
+            description=f"Le mot **« {mot} »** n'a **jamais été prononcé** par les candidats dans les salons de jeu.",
+            color=discord.Color.dark_grey()
+        )
+        await interaction.followup.send(embed=embed_vide)
+        return
+
+    lignes_resultats = []
+    for i, c in enumerate(candidats_actifs, 1):
+        icone = "🥇" if i == 1 else ("🥈" if i == 2 else ("🥉" if i == 3 else f"`#{i}`"))
+        lignes_resultats.append(f"{icone} **{c['nom']}** ({c['mention']}) : **{c['count']}** fois")
+
+    description = (
+        f"🎯 **Mot recherché :** `« {mot} »`\n"
+        f"💬 **Occurrences totales :** **{total_occurrences} fois**\n"
+        f"👥 **Candidats l'ayant prononcé :** `{len(candidats_actifs)}/{len(candidats_ids)}`\n"
+    )
+    if role_equipe:
+        description += f"🛡️ **Équipe :** {role_equipe.mention}\n"
+
+    description += "\n━━━━━━━━━━━━━━━━━━━━━━\n\n" + "\n".join(lignes_resultats)
+
+    embed = discord.Embed(
+        title=f"🔍 CLASSEMENT DU MOT : « {mot.upper()} »",
+        description=description if len(description) <= 3900 else description[:3900] + "\n...",
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text=f"Recherche effectuée par {interaction.user.display_name} • Salons de jeu scannés")
+
+    # Envoi public sur le salon
+    await interaction.followup.send(embed=embed)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
