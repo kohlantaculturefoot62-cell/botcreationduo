@@ -5323,6 +5323,179 @@ async def creer_salon_focus_candidat(
         f"👁️ **Lecture seule ({len(observateurs)}) :** {mentions_obs}",
         ephemeral=True
     )
+
+# ========================================================
+# 33. MINUTEUR INTELLIGENT D'ÉPREUVE (ALERTES & DÉCOMPTE)
+# ========================================================
+
+async def boucle_minuteur(channel: discord.TextChannel, total_seconds: int):
+    """Gère le compte à rebours asynchrone avec alertes à mi-temps, 5min et décompte final."""
+    start_time = time.perf_counter()
+    
+    # Points de passage programmés (temps restant en secondes : message)
+    alertes_programmees = []
+    
+    # 1. Alerte mi-temps (si l'épreuve dure au moins 60s)
+    mi_temps = total_seconds // 2
+    if mi_temps > 60:
+        minutes_restantes = mi_temps // 60
+        alertes_programmees.append((mi_temps, f"⏳ **MI-TEMPS ÉCOULÉE !** Il vous reste **{minutes_restantes} minute(s)**."))
+
+    # 2. Alerte 5 minutes restantes (si la durée initiale est > 5 min)
+    if total_seconds > 300:
+        alertes_programmees.append((300, "⚠️ **ATTENTION :** Il ne reste plus que **5 minutes** !"))
+
+    # 3. Alertes dernière minute
+    if total_seconds >= 60:
+        alertes_programmees.append((60, "🚨 **DERNIÈRE MINUTE !** Plus que **60 secondes** !"))
+    if total_seconds >= 30:
+        alertes_programmees.append((30, "⏱️ **30 secondes restantes !**"))
+    if total_seconds >= 10:
+        alertes_programmees.append((10, "⚡ **10 secondes !**"))
+    
+    for s in [5, 4, 3, 2, 1]:
+        if total_seconds >= s:
+            alertes_programmees.append((s, f"🔥 **{s}...**"))
+
+    # Tri décroissant du temps restant
+    alertes_programmees.sort(key=lambda x: x[0], reverse=True)
+
+    try:
+        for t_restant, texte_alerte in alertes_programmees:
+            temps_ecoule = time.perf_counter() - start_time
+            temps_a_attendre = (total_seconds - t_restant) - temps_ecoule
+            
+            if temps_a_attendre > 0:
+                await asyncio.sleep(temps_a_attendre)
+                await channel.send(texte_alerte)
+
+        # Attente jusqu'à la fin exacte (0s)
+        temps_restant_final = total_seconds - (time.perf_counter() - start_time)
+        if temps_restant_final > 0:
+            await asyncio.sleep(temps_restant_final)
+
+        # Signal de fin d'épreuve
+        embed_fin = discord.Embed(
+            title="🛑 TEMPS ÉCOULÉ — FIN DE L'ÉPREUVE !",
+            description=(
+                "⛔ **Le chrono est arrivé à son terme !**\n\n"
+                "- Les candidats doivent lâcher leurs claviers / stopper leurs actions.\n"
+                "- Plus aucune réponse ou tentative n'est acceptée."
+            ),
+            color=discord.Color.dark_red()
+        )
+        embed_fin.set_footer(text="Fin officielle validée par le minuteur.")
+        await channel.send(embed=embed_fin)
+
+    except asyncio.CancelledError:
+        pass
+    finally:
+        MINUTEURS_ACTIFS.pop(channel.id, None)
+
+
+@bot.tree.command(
+    name="chrono_minuteur",
+    description="Lance un minuteur avec alertes (mi-temps, 5min, dernière minute) et arrêt automatique."
+)
+@app_commands.describe(
+    minutes="Durée totale de l'épreuve en minutes (ex: 15, 20, 30)",
+    epreuve="Optionnel : nom ou intitulé de l'épreuve",
+    salon="Optionnel : salon ciblé (par défaut : salon actuel)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def chrono_minuteur(
+    interaction: discord.Interaction,
+    minutes: int,
+    epreuve: str = "Épreuve",
+    salon: discord.TextChannel = None
+):
+    channel = salon or interaction.channel
+    
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.response.send_message("❌ Le minuteur ne peut être lancé que dans un salon textuel.", ephemeral=True)
+        return
+
+    if minutes <= 0:
+        await interaction.response.send_message("❌ La durée doit être supérieure à 0 minute.", ephemeral=True)
+        return
+
+    if channel.id in MINUTEURS_ACTIFS:
+        await interaction.response.send_message(
+            f"⚠️ Un minuteur est déjà en cours dans {channel.mention}. Utilise `/chrono_minuteur_stop` d'abord.",
+            ephemeral=True
+        )
+        return
+
+    total_seconds = minutes * 60
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    fin_timestamp = int((now_utc + datetime.timedelta(seconds=total_seconds)).timestamp())
+
+    embed_start = discord.Embed(
+        title="⏱️ TOP DÉPART DU MINUTEUR !",
+        description=(
+            f"🎯 **Épreuve :** {epreuve}\n"
+            f"⏳ **Durée totale :** `{minutes} minute(s)`\n\n"
+            f"🏁 **Fin du chrono :** <t:{fin_timestamp}:R> *(à <t:{fin_timestamp}:T>)*\n\n"
+            "*(Des alertes automatiques seront envoyées à la mi-temps et sur la dernière minute)*"
+        ),
+        color=discord.Color.green()
+    )
+    embed_start.set_footer(text="Que le meilleur gagne !")
+
+    task = asyncio.create_task(boucle_minuteur(channel, total_seconds))
+    MINUTEURS_ACTIFS[channel.id] = {
+        "task": task,
+        "start": datetime.datetime.now(),
+        "total_seconds": total_seconds
+    }
+
+    await interaction.response.send_message(f"✅ Minuteur de **{minutes} min** lancé dans {channel.mention}.", ephemeral=True)
+    await channel.send(embed=embed_start)
+
+
+@bot.tree.command(
+    name="chrono_minuteur_stop",
+    description="Interrompt immédiatement le minuteur en cours et calcule le temps total écoulé."
+)
+@app_commands.describe(salon="Optionnel : salon où arrêter le minuteur (par défaut : salon actuel)")
+@app_commands.check(est_orga_ou_admin)
+async def chrono_minuteur_stop(interaction: discord.Interaction, salon: discord.TextChannel = None):
+    channel = salon or interaction.channel
+
+    if channel.id not in MINUTEURS_ACTIFS:
+        await interaction.response.send_message(
+            f"❌ Aucun minuteur actif dans {channel.mention}.",
+            ephemeral=True
+        )
+        return
+
+    minuteur = MINUTEURS_ACTIFS.pop(channel.id)
+    minuteur["task"].cancel()
+
+    fin = datetime.datetime.now()
+    duree_totale = (fin - minuteur["start"]).total_seconds()
+
+    minutes = int(duree_totale // 60)
+    secondes = round(duree_totale % 60, 2)
+
+    if minutes > 0:
+        temps_affiche = f"{minutes} min {secondes} s"
+    else:
+        temps_affiche = f"{secondes} secondes"
+
+    embed_stop = discord.Embed(
+        title="🛑 MINUTEUR ARRÊTÉ MANUELLEMENT",
+        description=(
+            f"Le staff a interrompu le compte à rebours.\n\n"
+            f"⏱️ **Temps exact écoulé :** `{temps_affiche}`\n"
+            f"*(Précision brute : {round(duree_totale, 2)}s)*"
+        ),
+        color=discord.Color.gold()
+    )
+    embed_stop.set_footer(text=f"Arrêté par {interaction.user.display_name}")
+
+    await channel.send(embed=embed_stop)
+    await interaction.response.send_message(f"✅ Minuteur arrêté dans {channel.mention} (Temps : `{temps_affiche}`).", ephemeral=True)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
