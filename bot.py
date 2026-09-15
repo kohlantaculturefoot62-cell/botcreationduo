@@ -33,7 +33,7 @@ CATEGORY_TRIO_ID = 1541397070898921482
 CATEGORY_QUATUOR_ID = 1541397227744927835
 RESULTATS_CHANNEL_ID = 1545186500960985148
 SALON_REMARQUES_QUESTIONS_ID = 1545503543405060178
-
+SALON_BILAN_ORGAS_ID = 1549193526007435345        # 🛠️ Fiches Bilans Organisateurs (ou l'ID de ton choix)
 # Salons Spectateurs
 SALON_CHAT_SPECTATEURS_ID = 1544355721024635061
 SALON_RECAP_SPECTATEURS_ID = 1546598600555888670
@@ -4961,6 +4961,151 @@ async def bilan_candidat(
 
     await interaction.followup.send(
         f"✅ **Bilan généré avec succès !** Le rapport a été envoyé dans {salon_dest.mention}.",
+        ephemeral=True
+    )
+
+# ========================================================
+# 31. BILAN & AUDIT ORGANISATEUR (NOTE, CRITÈRES & BÊTISIER)
+# ========================================================
+
+async def generer_bilan_orga_ia(orga_nom: str, messages_orga: list[str], messages_sur_orga: list[str]) -> str:
+    """Génère l'audit et le bilan complet d'un membre du staff sur le serveur Discord."""
+    texte_dits = "\n".join(messages_orga) if messages_orga else "Aucun message direct trouvé."
+    texte_sur_lui = "\n".join(messages_sur_orga) if messages_sur_orga else "Aucun message parlant de cet orga trouvé."
+
+    prompt = (
+        "Tu es le superviseur général, auditeur impartial et juge suprême d'une équipe d'organisation d'un jeu communautaire sur Discord.\n"
+        f"🎯 MEMBRE DU STAFF ÉVALUÉ : **{orga_nom}**\n\n"
+        "=== CE QUE L'ORGA A FAIT / DIT (SALONS STAFF, ÉPREUVES, ANNONCES, GESTION, DUOS) ===\n"
+        f"{texte_dits[:20000]}\n\n"
+        "=== CE QUE LES AUTRES (STAFF & CANDIDATS) ONT DIT SUR LUI ===\n"
+        f"{texte_sur_lui[:20000]}\n\n"
+        "DIRECTIVES D'ÉVALUATION DISCORD :\n"
+        "1. Contexte 100% Discord : Animation de salons, gestion des bots/règles, présence en vocal/texte, arbitrage des litiges et écriture des épreuves.\n"
+        "2. Ton : Juste, constructif, sans complaisance mais teinté d'humour bienveillant.\n\n"
+        "STRUCTURE STRICTE DU RAPPORT ATTENDUE :\n\n"
+        f"## 🏆 1. LA NOTE GLOBALE DU STAFF : [NOTE/10] — [TITRE ÉVOCATEUR]\n"
+        "- Justification synthétique de la note en 2 phrases denses.\n\n"
+        "## 📊 2. ÉVALUATION PAR CRITÈRES CLÉS\n"
+        "- ⚖️ **Objectivité & Impartialité :** (Arbitrage neutre, gestion des drama, équité envers les tribus)\n"
+        "- ⏱️ **Présence & Réactivité :** (Disponibilité lors des épreuves, tenue des délais, régularité sur le serveur)\n"
+        "- 💡 **Apport Logistique & Créativité :** (Conception des jeux, gestion technique, animation de l'ambiance, idées apportées)\n\n"
+        "## 🛠️ 3. BILAN DE COMPORTEMENT\n"
+        "- 🟢 **Points forts / Masterclasses :** (2 bullet points sur ses réussites majeures)\n"
+        "- 🔴 **Axes d'amélioration / Fails :** (2 bullet points sur ses retards, moments de flemme ou égarements)\n\n"
+        "## 🤡 4. LE BÊTISIER DE L'ORGA (PERLES & MOMENTS LUNAIRES)\n"
+        "- Relève 3 à 5 citations drôles, moments de panique en coulisses, messages incompréhensibles ou gaffes commises sur le serveur.\n\n"
+        "Reste structuré, percutant et lisible."
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"❌ Erreur lors de l'analyse IA de l'orga : {e}"
+
+
+@bot.tree.command(
+    name="bilan_orga",
+    description="Génère le bilan complet d'un organisateur : Note/10, critères clés (objectivité, présence) et bêtisier."
+)
+@app_commands.describe(
+    orga="Le membre du staff à évaluer",
+    limite_par_salon="Nombre de messages récents à scanner par salon (par défaut : 80)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def bilan_orga(
+    interaction: discord.Interaction,
+    orga: discord.Member,
+    limite_par_salon: int = 80
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    nom_orga_clean = nettoyer_texte(orga.display_name)
+    pseudo_global_clean = nettoyer_texte(orga.name)
+    mention_id = str(orga.id)
+
+    messages_orga = []
+    messages_sur_orga = []
+
+    await interaction.followup.send(
+        f"⏳ **Audit et collecte des actions de {orga.mention} en cours...**\n"
+        f"*(Scan complet des salons staff, épreuves, gestion et salons de jeu)*",
+        ephemeral=True
+    )
+
+    # Scan de tous les salons textuels (y compris catégories staff/organisation)
+    for channel in guild.text_channels:
+        if channel.name.startswith("🔒arch-"):
+            continue
+
+        try:
+            async for msg in channel.history(limit=limite_par_salon, oldest_first=False):
+                if msg.author.bot:
+                    continue
+
+                contenu = msg.content.strip()
+                if not contenu:
+                    continue
+
+                # 1. Message écrit PAR l'orga
+                if msg.author.id == orga.id:
+                    messages_orga.append(f"[#{channel.name}] {orga.display_name}: {contenu}")
+
+                # 2. Message écrit PAR UN AUTRE parlant de cet orga
+                else:
+                    contenu_clean = nettoyer_texte(contenu)
+                    if (
+                        nom_orga_clean in contenu_clean 
+                        or pseudo_global_clean in contenu_clean 
+                        or mention_id in msg.content
+                    ):
+                        messages_sur_orga.append(f"[#{channel.name}] {msg.author.display_name} sur {orga.display_name}: {contenu}")
+
+        except Exception:
+            continue
+
+    if not messages_orga and not messages_sur_orga:
+        await interaction.followup.send(f"⚠️ Aucune trace d'activité trouvée pour {orga.mention}.", ephemeral=True)
+        return
+
+    # Analyse Gemini
+    rapport_orga = await generer_bilan_orga_ia(
+        orga_nom=orga.display_name,
+        messages_orga=messages_orga[:150],
+        messages_sur_orga=messages_sur_orga[:150]
+    )
+
+    date_str = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%d/%m/%Y à %H:%M")
+    embed = discord.Embed(
+        title=f"🛠️ BILAN D'ORGANISATEUR — {orga.display_name.upper()}",
+        description=rapport_orga if len(rapport_orga) <= 3900 else None,
+        color=discord.Color.red()
+    )
+    embed.set_thumbnail(url=orga.display_avatar.url)
+    embed.set_footer(text=f"Audit Staff Interne • Demandé par {interaction.user.display_name} • {date_str}")
+
+    salon_dest = (
+        bot.get_channel(SALON_BILAN_ORGAS_ID)
+        or bot.get_channel(SALON_PRESENTATION_ORGAS_ID)
+        or interaction.channel
+    )
+
+    if len(rapport_orga) > 3900:
+        await salon_dest.send(f"🛠️ **AUDIT COMPLET DE L'ORGANISATEUR — {orga.mention}**")
+        for chunk in decouper_texte_intelligent(rapport_orga, limite=1900):
+            await salon_dest.send(chunk)
+            await asyncio.sleep(0.3)
+    else:
+        await salon_dest.send(embed=embed)
+
+    await interaction.followup.send(
+        f"✅ **Bilan orga généré avec succès !** Le rapport a été transmis dans {salon_dest.mention}.",
         ephemeral=True
     )
 # ==========================================
