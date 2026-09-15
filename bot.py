@@ -6232,6 +6232,154 @@ async def transcrire_vocal_menu(interaction: discord.Interaction, message: disco
     embed.set_footer(text="Visible uniquement par toi • Confidentiel Staff")
 
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ========================================================
+# 37. RÉSUMÉ DES X DERNIERS VOCAUX DU SALON (ÉPHÉMÈRE)
+# ========================================================
+
+async def synthetiser_multiples_vocaux_ia(pieces_audio: list[dict], nom_salon: str) -> str:
+    """Envoie une liste d'audios avec leur contexte à Gemini pour synthèse globale."""
+    prompt = (
+        "Tu es l'analyste stratégique officiel d'un jeu communautaire sur Discord.\n"
+        f"Voici les {len(pieces_audio)} dernières notes vocales envoyées dans le salon #{nom_salon}.\n\n"
+        "MISSIONS :\n"
+        "1. Identifie ce qui se dit dans chaque note vocale (qui parle et quel est le message principal).\n"
+        "2. Rédige une SYNTHÈSE GLOBALE des intentions, des plans de vote, des alliances ou des non-dits.\n"
+        "3. Détecte le ton (confiance, hésitation, panique, mensonge flagrant, colère).\n\n"
+        "STRUCTURE DE RÉPONSE STRICTE :\n"
+        "## 🎙️ SYNTHÈSE GLOBALE DES ÉCHANGES VOCAUX\n"
+        "[Résumé fluide en 2-3 phrases de la dynamique générale de ces vocaux]\n\n"
+        "## 📋 DÉTAIL PAR VOCAL (CHRONOLOGIQUE)\n"
+    )
+
+    contenus_payload = [prompt]
+
+    for item in pieces_audio:
+        tag = (
+            f"\n--- VOCAL #{item['index']} ---\n"
+            f"Auteur : {item['auteur']}\n"
+            f"Heure  : {item['heure']}\n"
+            f"Fichier: {item['nom_fichier']}\n"
+        )
+        contenus_payload.append(tag)
+        contenus_payload.append(
+            genai.types.Part.from_bytes(data=item["bytes"], mime_type=item["mime"])
+        )
+
+    contenus_payload.append(
+        "\n\nPour chaque vocal ci-dessus, dresse :\n"
+        "- **[Auteur] ([Heure]) :** [Ce qu'il dit] *(Ton/Posture : [ton])*."
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=contenus_payload
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"❌ Erreur lors de l'analyse IA des vocaux : {e}"
+
+
+@bot.tree.command(
+    name="resumer_vocaux",
+    description="Résume les X dernières notes vocales d'un salon (100% éphémère / visible par toi seul)."
+)
+@app_commands.describe(
+    nombre_vocaux="Nombre de notes vocales récentes à analyser (ex: 3, 5, 10 - défaut : 5)",
+    salon="Optionnel : salon à scanner (par défaut : salon actuel)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def resumer_vocaux(
+    interaction: discord.Interaction,
+    nombre_vocaux: int = 5,
+    salon: discord.TextChannel = None
+):
+    await interaction.response.defer(ephemeral=True)
+    target_channel = salon or interaction.channel
+
+    if not isinstance(target_channel, discord.TextChannel):
+        await interaction.followup.send("❌ Seuls les salons textuels peuvent être analysés.", ephemeral=True)
+        return
+
+    if nombre_vocaux <= 0:
+        await interaction.followup.send("❌ Le nombre de vocaux doit être supérieur à 0.", ephemeral=True)
+        return
+
+    limite_vocaux = min(nombre_vocaux, 15)  # Sécurité pour éviter de saturer la payload
+    extensions_valides = [".ogg", ".mp3", ".wav", ".m4a"]
+    paris_tz = ZoneInfo("Europe/Paris")
+
+    # 1. Scan des messages pour trouver les pièces jointes audio
+    vocaux_trouves = []
+    async for msg in target_channel.history(limit=250, oldest_first=False):
+        if msg.attachments:
+            for att in msg.attachments:
+                if any(att.filename.lower().endswith(ext) for ext in extensions_valides):
+                    vocaux_trouves.append((msg, att))
+                    if len(vocaux_trouves) >= limite_vocaux:
+                        break
+        if len(vocaux_trouves) >= limite_vocaux:
+            break
+
+    if not vocaux_trouves:
+        await interaction.followup.send(
+            f"❌ Aucune note vocale trouvée dans les derniers messages de {target_channel.mention}.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.followup.send(
+        f"⏳ **Téléchargement et analyse de {len(vocaux_trouves)} note(s) vocale(s) de {target_channel.mention} en cours...**",
+        ephemeral=True
+    )
+
+    # 2. Téléchargement des audios en mémoire dans l'ordre chronologique
+    vocaux_trouves.reverse()
+    pieces_audio = []
+
+    for idx, (msg, att) in enumerate(vocaux_trouves, 1):
+        try:
+            audio_bytes = await att.read()
+            date_paris = msg.created_at.astimezone(paris_tz).strftime("%H:%M")
+            mime = att.content_type or "audio/ogg"
+            
+            pieces_audio.append({
+                "index": idx,
+                "auteur": msg.author.display_name,
+                "heure": date_paris,
+                "nom_fichier": att.filename,
+                "mime": mime,
+                "bytes": audio_bytes
+            })
+        except Exception as e:
+            print(f"Erreur téléchargement vocal {att.filename}: {e}")
+
+    if not pieces_audio:
+        await interaction.followup.send("❌ Impossible de lire les fichiers audio récupérés.", ephemeral=True)
+        return
+
+    # 3. Traitement global par Gemini
+    rapport = await synthetiser_multiples_vocaux_ia(pieces_audio, target_channel.name)
+
+    # 4. Envoi de l'embed éphémère (découpé si très long)
+    if len(rapport) <= 3900:
+        embed = discord.Embed(
+            title=f"🎙️ SYNTHÈSE DE {len(pieces_audio)} VOCAUX — #{target_channel.name}",
+            description=rapport,
+            color=discord.Color.teal()
+        )
+        embed.set_footer(text=f"Demandé par {interaction.user.display_name} • Visible uniquement par toi")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    else:
+        morceaux = decouper_texte_intelligent(rapport, limite=1900)
+        await interaction.followup.send(
+            content=f"🎙️ **SYNTHÈSE DE {len(pieces_audio)} VOCAUX — #{target_channel.name}**\n*(Visible uniquement par toi)*\n\n" + morceaux[0],
+            ephemeral=True
+        )
+        for chunk in morceaux[1:]:
+            await interaction.followup.send(content=chunk, ephemeral=True)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
