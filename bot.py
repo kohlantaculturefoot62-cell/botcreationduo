@@ -100,6 +100,8 @@ DERNIERS_BINOMES_TIRES = []
 ROLES_PERSO_EN_PAUSE = {}  # {member_id: role_id}
 CHRONOS_EN_COURS = {}      # {key: start_datetime}
 SESSIONS_RECHERCHE_ACTIVES = {}  # {channel_id: {"joueur": "...", "candidat_id": 123}}
+# Suivi des minuteurs actifs : {channel_id: {"task": asyncio.Task, "start": datetime, "total_seconds": int}}
+MINUTEURS_ACTIFS = {}
 
 CONFIG_EPREUVE_GLOBALE = {
     "questions": [],
