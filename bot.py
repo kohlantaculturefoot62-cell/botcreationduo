@@ -350,6 +350,7 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
     )
 
     salons_transcripts = []
+    pieces_audio_gemini = []
 
     for channel in guild.text_channels:
         est_salon_log = (channel.name.lower() == "log-deplacements")
@@ -364,9 +365,12 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
                     continue
 
                 texte_msg = msg.content.strip()
+                date_paris_msg = msg.created_at.astimezone(tz_paris)
+                tag_heure = date_paris_msg.strftime('%H:%M')
 
                 if msg.attachments:
                     for att in msg.attachments:
+                        # 1. Fichiers texte
                         if att.filename.endswith(".txt"):
                             try:
                                 file_bytes = await att.read()
@@ -375,9 +379,23 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
                             except Exception as e:
                                 print(f"Impossible de lire le fichier {att.filename} : {e}")
 
+                        # 2. Notes vocales Discord / Fichiers audio
+                        elif any(att.filename.lower().endswith(ext) for ext in [".ogg", ".mp3", ".wav", ".m4a"]):
+                            try:
+                                audio_bytes = await att.read()
+                                mime = att.content_type or "audio/ogg"
+                                tag_audio = f"[{tag_heure}] Note vocale de {msg.author.display_name} dans #{channel.name} :"
+                                
+                                pieces_audio_gemini.append(tag_audio)
+                                pieces_audio_gemini.append(
+                                    genai.types.Part.from_bytes(data=audio_bytes, mime_type=mime)
+                                )
+                                texte_msg += f" 🎙️ [Note vocale envoyée par {msg.author.display_name}]"
+                            except Exception as e:
+                                print(f"Impossible de charger la note vocale {att.filename} : {e}")
+
                 if texte_msg.strip():
-                    date_paris_msg = msg.created_at.astimezone(tz_paris)
-                    lines.append(f"[{date_paris_msg.strftime('%H:%M')}] {msg.author.display_name}: {texte_msg.strip()}")
+                    lines.append(f"[{tag_heure}] {msg.author.display_name}: {texte_msg.strip()}")
 
             if lines:
                 cat_nom = channel.category.name if channel.category else "Sans Catégorie"
@@ -385,7 +403,7 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
                     f"=== [{cat_nom.upper()}] #{channel.name} ({len(lines)} messages) ===\n" + "\n".join(lines)
                 )
 
-    if not salons_transcripts:
+    if not salons_transcripts and not pieces_audio_gemini:
         await target_channel.send("😴 **Journal du jour :** Aucun échange sur le serveur aujourd'hui.")
         return
 
@@ -399,6 +417,8 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
         f"{texte_contexte_passe}\n\n"
         "=== DISCUSSIONS DE LA JOURNÉE SUR LES SALONS DISCORD ===\n"
         f"{full_context}\n\n"
+        "NOTE IMPORTANTE SUR LES AUDIO : Plusieurs notes vocales réelles des candidats sont jointes en pièces jointes à cette requête. "
+        "Écoute-les attentivement et intègre leurs propos, complots, aveux et hésitations dans le journal exactement comme les messages écrits.\n\n"
         "Rédige le **Journal de Bord Stratégique Global de la Journée** pour l'équipe d'organisation.\n"
         "Consignes de cadrage :\n"
         "1. CONTEXTE RÉEL : C'est un jeu sur serveur Discord. Parle de salons textuels, vocaux, discussions de camp, confessionnaux, logs et pactes. Zéro cliché d'île déserte, de sable ou de jungle.\n"
@@ -408,7 +428,7 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
         "   - 🤝 **Pactes, Alliances & Négociations**\n"
         "   - 🎯 **Cibles Évoquées, Plans & Votes**\n"
         "   - ⚠️ **Double-Jeu, Secrets & Fuites d'Infos**\n"
-        "   - 🎙️ **Points Clés des Confessionnaux & Salons Privés**\n"
+        "   - 🎙️ **Points Clés des Confessionnaux & Salons Privés** (inclus l'analyse des notes vocales)\n"
         "   - 🗺️ **Mouvements & Logs Notables**\n"
         "   - 📌 **Synthèse par Salon Actif**\n"
         "   - 🕸️ **Cartographie des Liens** (Qui joue avec qui, les pivots, les joueurs isolés)\n"
@@ -420,17 +440,19 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
         "4. Reste analytique, percutant et direct."
     )
 
+    payload_gemini = [prompt] + pieces_audio_gemini
+
     max_tentatives = 3
     for tentative in range(max_tentatives):
         try:
             response = await asyncio.to_thread(
                 gemini_client.models.generate_content,
                 model=MODEL_NAME,
-                contents=prompt
+                contents=payload_gemini
             )
             recap_text = response.text
 
-            header = f"📰 **JOURNAL STRATÉGIQUE GLOBAL DU {date_str}**\n*(Réservé aux Orgas, Spectateurs et Admins)*\n\n"
+            header = f"📰 **JOURNAL STRATÉGIQUE GLOBAL DU {date_str}**\n*(Réservé aux Orgas, Spectateurs et Admins • Écrit & Vocaux analysés)*\n\n"
             full_message = header + recap_text
 
             for chunk in decouper_texte_intelligent(full_message, 1900):
@@ -449,7 +471,6 @@ async def generer_et_envoyer_recap_quotidien(guild: discord.Guild, target_channe
             else:
                 await target_channel.send(f"❌ Erreur lors de la génération du journal : {e}")
                 return
-
 
 # =======================================================
 # 2. COMMANDE MANUELLE /questions_confessionnal
