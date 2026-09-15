@@ -5109,6 +5109,218 @@ async def bilan_orga(
         f"✅ **Bilan orga généré avec succès !** Le rapport a été transmis dans {salon_dest.mention}.",
         ephemeral=True
     )
+
+# ========================================================
+# 32. SALONS D'ANNONCES & FOCUS CANDIDAT (LECTURE SEULE)
+# ========================================================
+
+@bot.tree.command(
+    name="creer_salon_annonces_groupe",
+    description="Crée un salon textuel privé où tous les candidats choisis sont en lecture seule."
+)
+@app_commands.describe(
+    nom_salon="Nom du salon (ex: annonces-epreuve-1, briefing-orientation)",
+    nom_categorie="Catégorie où créer le salon",
+    candidat_1="1er candidat",
+    candidat_2="2ème candidat",
+    candidat_3="3ème candidat (optionnel)",
+    candidat_4="4ème candidat (optionnel)",
+    candidat_5="5ème candidat (optionnel)",
+    candidat_6="6ème candidat (optionnel)",
+    candidat_7="7ème candidat (optionnel)",
+    candidat_8="8ème candidat (optionnel)",
+    candidat_9="9ème candidat (optionnel)",
+    candidat_10="10ème candidat (optionnel)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def creer_salon_annonces_groupe(
+    interaction: discord.Interaction,
+    nom_salon: str,
+    nom_categorie: str,
+    candidat_1: discord.Member,
+    candidat_2: discord.Member,
+    candidat_3: discord.Member = None,
+    candidat_4: discord.Member = None,
+    candidat_5: discord.Member = None,
+    candidat_6: discord.Member = None,
+    candidat_7: discord.Member = None,
+    candidat_8: discord.Member = None,
+    candidat_9: discord.Member = None,
+    candidat_10: discord.Member = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    clean_cat_name = nettoyer_texte(nom_categorie)
+    categorie = discord.utils.find(lambda c: nettoyer_texte(c.name) == clean_cat_name, guild.categories)
+    if not categorie:
+        categorie = await guild.create_category(nom_categorie)
+
+    participants = [c for c in [candidat_1, candidat_2, candidat_3, candidat_4, candidat_5, candidat_6, candidat_7, candidat_8, candidat_9, candidat_10] if c is not None]
+    participants = list(set(participants))
+
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False, read_messages=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True)
+    }
+
+    # Permissions lecture seule stricte pour tous les candidats
+    perms_lecture_seule = discord.PermissionOverwrite(
+        view_channel=True,
+        read_messages=True,
+        read_message_history=True,
+        send_messages=False,
+        send_messages_in_threads=False,
+        create_public_threads=False,
+        create_private_threads=False,
+        add_reactions=False
+    )
+
+    for p in participants:
+        r_perso = trouver_role_personnel(p)
+        cible_perm = r_perso if r_perso else p
+        overwrites[cible_perm] = perms_lecture_seule
+
+    if role_spectateurs:
+        overwrites[role_spectateurs] = get_spectateur_overwrites()
+
+    if role_orgas:
+        overwrites[role_orgas] = discord.PermissionOverwrite(
+            view_channel=True, read_messages=True, read_message_history=True, send_messages=True
+        )
+
+    nom_salon_clean = formater_nom_salon(nom_salon)
+    salon_cree = await guild.create_text_channel(
+        name=f"📢・{nom_salon_clean}",
+        category=categorie,
+        overwrites=overwrites
+    )
+
+    mentions = ", ".join([p.mention for p in participants])
+    await salon_cree.send(
+        f"📢 **SALON D'ANNONCES & CONSIGNES**\n"
+        f"Bienvenue {mentions}.\n"
+        f"*(Ce salon est configuré en lecture seule pour les candidats)*"
+    )
+
+    await interaction.followup.send(
+        f"✅ **Salon d'annonces créé :** {salon_cree.mention} dans **{categorie.name}**\n"
+        f"👥 **Candidats en lecture seule ({len(participants)}) :** {mentions}",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="creer_salon_focus_candidat",
+    description="Crée un salon où 1 candidat écrit et les autres sont en lecture seule."
+)
+@app_commands.describe(
+    nom_salon="Nom du salon (ex: passage-lucas, epreuve-sarah)",
+    nom_categorie="Catégorie où créer le salon",
+    candidat_actif="Le candidat qui A LE DROIT D'ÉCRIRE",
+    observateur_1="1er candidat observateur (lecture seule)",
+    observateur_2="2ème candidat observateur (optionnel)",
+    observateur_3="3ème candidat observateur (optionnel)",
+    observateur_4="4ème candidat observateur (optionnel)",
+    observateur_5="5ème candidat observateur (optionnel)",
+    observateur_6="6ème candidat observateur (optionnel)",
+    observateur_7="7ème candidat observateur (optionnel)",
+    observateur_8="8ème candidat observateur (optionnel)",
+    observateur_9="9ème candidat observateur (optionnel)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def creer_salon_focus_candidat(
+    interaction: discord.Interaction,
+    nom_salon: str,
+    nom_categorie: str,
+    candidat_actif: discord.Member,
+    observateur_1: discord.Member,
+    observateur_2: discord.Member = None,
+    observateur_3: discord.Member = None,
+    observateur_4: discord.Member = None,
+    observateur_5: discord.Member = None,
+    observateur_6: discord.Member = None,
+    observateur_7: discord.Member = None,
+    observateur_8: discord.Member = None,
+    observateur_9: discord.Member = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    clean_cat_name = nettoyer_texte(nom_categorie)
+    categorie = discord.utils.find(lambda c: nettoyer_texte(c.name) == clean_cat_name, guild.categories)
+    if not categorie:
+        categorie = await guild.create_category(nom_categorie)
+
+    observateurs = [c for c in [observateur_1, observateur_2, observateur_3, observateur_4, observateur_5, observateur_6, observateur_7, observateur_8, observateur_9] if c is not None and c.id != candidat_actif.id]
+    observateurs = list(set(observateurs))
+
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False, read_messages=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True)
+    }
+
+    # 1. Candidat actif : Plein accès écriture
+    r_actif = trouver_role_personnel(candidat_actif)
+    cible_actif = r_actif if r_actif else candidat_actif
+    overwrites[cible_actif] = discord.PermissionOverwrite(
+        view_channel=True,
+        read_messages=True,
+        read_message_history=True,
+        send_messages=True
+    )
+
+    # 2. Candidats observateurs : Lecture seule
+    perms_lecture_seule = discord.PermissionOverwrite(
+        view_channel=True,
+        read_messages=True,
+        read_message_history=True,
+        send_messages=False,
+        send_messages_in_threads=False,
+        create_public_threads=False,
+        create_private_threads=False,
+        add_reactions=False
+    )
+
+    for obs in observateurs:
+        r_obs = trouver_role_personnel(obs)
+        cible_obs = r_obs if r_obs else obs
+        overwrites[cible_obs] = perms_lecture_seule
+
+    if role_spectateurs:
+        overwrites[role_spectateurs] = get_spectateur_overwrites()
+
+    if role_orgas:
+        overwrites[role_orgas] = discord.PermissionOverwrite(
+            view_channel=True, read_messages=True, read_message_history=True, send_messages=True
+        )
+
+    nom_salon_clean = formater_nom_salon(nom_salon)
+    salon_cree = await guild.create_text_channel(
+        name=f"🎯・{nom_salon_clean}",
+        category=categorie,
+        overwrites=overwrites
+    )
+
+    mentions_obs = ", ".join([o.mention for o in observateurs]) if observateurs else "*Aucun*"
+    await salon_cree.send(
+        f"🎯 **SALON ÉPREUVE — PASSAGE DE {candidat_actif.mention}**\n"
+        f"✍️ **Candidat actif :** {candidat_actif.mention} *(peut écrire)*\n"
+        f"👁️ **Observateurs :** {mentions_obs} *(lecture seule)*"
+    )
+
+    await interaction.followup.send(
+        f"✅ **Salon focus créé :** {salon_cree.mention} dans **{categorie.name}**\n"
+        f"✍️ **Écriture :** {candidat_actif.mention}\n"
+        f"👁️ **Lecture seule ({len(observateurs)}) :** {mentions_obs}",
+        ephemeral=True
+    )
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
