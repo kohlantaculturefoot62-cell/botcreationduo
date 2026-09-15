@@ -6150,6 +6150,88 @@ async def generer_une_journal(
     )
 
     await interaction.followup.send(f"✅ **Une du journal publiée avec succès dans {dest_ch.mention} !**", ephemeral=True)
+
+# ========================================================
+# 36. TRANSCRIPTION ET RÉSUMÉ DE VOCAL À LA DEMANDE (CLIC DROIT)
+# ========================================================
+
+async def transcrire_audio_ia(audio_bytes: bytes, mime_type: str, auteur_nom: str) -> str:
+    """Demande à Gemini de transcrire mot à mot et de résumer l'audio."""
+    prompt = (
+        f"Tu es l'assistant d'organisation d'un jeu de stratégie sur Discord.\n"
+        f"Voici un message vocal envoyé par le candidat **{auteur_nom}**.\n\n"
+        "MISSIONS :\n"
+        "1. Transcris fidèlement les propos énoncés dans le vocal.\n"
+        "2. Rédige un résumé rapide des intentions, stratégies, alliances ou infos clés divulguées.\n\n"
+        "FORMAT DE RÉPONSE STRICT :\n"
+        "### 📝 Transcription intégrale :\n"
+        "[Texte retranscrit]\n\n"
+        "### 🎯 Analyse & Points clés :\n"
+        "- [Point 1]\n"
+        "- [Point 2]"
+    )
+
+    contenus = [
+        prompt,
+        genai.types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
+    ]
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=contenus
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"❌ Erreur lors de l'analyse IA de l'audio : {e}"
+
+
+@bot.tree.context_menu(name="Transcrire le vocal")
+@app_commands.check(est_orga_ou_admin)
+async def transcrire_vocal_menu(interaction: discord.Interaction, message: discord.Message):
+    """Commande Clic Droit -> Applications -> Transcrire le vocal (Éphémère)."""
+    await interaction.response.defer(ephemeral=True)
+
+    # 1. Vérification si le message contient un fichier audio
+    piece_audio = None
+    extensions_valides = [".ogg", ".mp3", ".wav", ".m4a"]
+    
+    if message.attachments:
+        for att in message.attachments:
+            if any(att.filename.lower().endswith(ext) for ext in extensions_valides):
+                piece_audio = att
+                break
+
+    if not piece_audio:
+        await interaction.followup.send(
+            "❌ Ce message ne contient aucune note vocale ou fichier audio valide.",
+            ephemeral=True
+        )
+        return
+
+    # 2. Téléchargement de l'audio en mémoire
+    try:
+        audio_bytes = await piece_audio.read()
+    except Exception as e:
+        await interaction.followup.send(f"❌ Impossible de télécharger le fichier audio : {e}", ephemeral=True)
+        return
+
+    mime = piece_audio.content_type or "audio/ogg"
+    auteur = message.author.display_name
+
+    # 3. Traitement Gemini
+    rapport = await transcrire_audio_ia(audio_bytes, mime, auteur)
+
+    # 4. Envoi de l'embed éphémère
+    embed = discord.Embed(
+        title=f"🎙️ ANALYSE VOCALE — {auteur.upper()}",
+        description=rapport if len(rapport) <= 3900 else rapport[:3900] + "\n...",
+        color=discord.Color.teal()
+    )
+    embed.set_footer(text="Visible uniquement par toi • Confidentiel Staff")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
