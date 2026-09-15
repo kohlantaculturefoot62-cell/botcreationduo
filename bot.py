@@ -16,6 +16,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from google import genai
 
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
 # ==========================================
 # CONFIGURATION & ENVIRONNEMENT
 # ==========================================
@@ -5858,6 +5860,258 @@ async def arreter_decodeur(interaction: discord.Interaction, salon: discord.Text
         await interaction.response.send_message(f"ℹ️ Aucun décodeur n'est actif dans {channel.mention}.", ephemeral=True)
 
 
+# ========================================================
+# 35. GÉNÉRATEUR DE FAUSSE UNE DE JOURNAL (STYLE L'ÉQUIPE)
+# ========================================================
+
+async def extraire_articles_une_ia(transcriptions: str) -> dict:
+    """Demande à Gemini de structurer les gros titres satiriques du journal."""
+    prompt = (
+        "Tu es le rédacteur en chef satirique d'un grand journal sportif (type L'Équipe / Le Gorafi) qui couvre une aventure Discord.\n"
+        "Voici les échanges et événements de la journée sur le serveur :\n"
+        f"\"\"\"{transcriptions[:25000]}\"\"\"\n\n"
+        "Rédige le contenu pour la UNE DU JOURNAL du jour avec ironie, punchlines et second degré.\n\n"
+        "FORMAT DE RÉPONSE OBLIGATOIRE (STRICT SANS INTRO) :\n"
+        "TITRE_PRINCIPAL: <Gros titre en 3 à 6 mots percutants>\n"
+        "SOUS_TITRE_PRINCIPAL: <Texte explicatif du gros événement du jour en 2 phrases>\n"
+        "CANDIDAT_PRINCIPAL: <Prénom du joueur au centre de l'événement principal>\n"
+        "ENCART_1_CATEGORIE: <Catégorie en 1 mot, ex: VENGEANCE, INTERNET, REBONDISSEMENT>\n"
+        "ENCART_1_TITRE: <Citation ou titre drôle en 1 phrase>\n"
+        "ENCART_1_CANDIDAT: <Prénom du candidat concerné>\n"
+        "ENCART_2_CATEGORIE: <Catégorie en 1 mot, ex: DÉBATS, STRATÉGIE, DINGUERIE>\n"
+        "ENCART_2_TITRE: <Citation ou titre drôle en 1 phrase>\n"
+        "ENCART_2_CANDIDAT: <Prénom du candidat concerné>\n"
+        "ENCART_3_CATEGORIE: <Catégorie en 1 mot, ex: ANIMATEURS, COULISSES, LE SAVIEZ-VOUS>\n"
+        "ENCART_3_TITRE: <Citation ou fail de l'orga ou punchline spectateur>\n"
+        "ENCART_3_CANDIDAT: <Prénom de la personne concernée>"
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        texte = response.text.strip()
+
+        data = {}
+        for ligne in texte.split("\n"):
+            if ":" in ligne:
+                cle, val = ligne.split(":", 1)
+                data[cle.strip()] = val.strip()
+
+        return data
+    except Exception as e:
+        print(f"Erreur extraction Une IA : {e}")
+        return {
+            "TITRE_PRINCIPAL": "C'EST ENCORE LOUPE !",
+            "SOUS_TITRE_PRINCIPAL": "Une journée pleine de rebondissements et de mauvaises décisions sur le serveur.",
+            "CANDIDAT_PRINCIPAL": "Aventurier",
+            "ENCART_1_CATEGORIE": "RUMEURS",
+            "ENCART_1_TITRE": "« Je pensais que mon alliance était solide... »",
+            "ENCART_1_CANDIDAT": "Candidat",
+            "ENCART_2_CATEGORIE": "PERLE",
+            "ENCART_2_TITRE": "« Si je sors ce soir, je porte plainte contre le bot. »",
+            "ENCART_2_CANDIDAT": "Candidat",
+            "ENCART_3_CATEGORIE": "STAFF",
+            "ENCART_3_TITRE": "« L'épreuve était trop facile, on va sévir demain. »",
+            "ENCART_3_CANDIDAT": "Orga"
+        }
+
+
+def creer_image_une(donnees_une: dict, photos_candidats: dict) -> io.BytesIO:
+    """Dessine la maquette de la Une de journal avec Pillow."""
+    largeur, hauteur = 800, 1150
+    fond = Image.new("RGB", (largeur, hauteur), color="#FFFFFF")
+    draw = ImageDraw.Draw(fond)
+
+    # Chargement polices
+    try:
+        font_logo = ImageFont.truetype("impact.ttf", 68)
+        font_titre = ImageFont.truetype("impact.ttf", 44)
+        font_rubrique = ImageFont.truetype("arialbd.ttf", 16)
+        font_texte_gras = ImageFont.truetype("arialbd.ttf", 15)
+        font_texte = ImageFont.truetype("arial.ttf", 14)
+        font_petit = ImageFont.truetype("arial.ttf", 11)
+    except Exception:
+        font_logo = font_titre = font_rubrique = font_texte_gras = font_texte = font_petit = ImageFont.load_default()
+
+    # 1. Bandeau supérieur (Date, Prix, En-tête)
+    date_jour = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%A %d %B %Y").upper()
+    draw.rectangle([(0, 0), (largeur, 24)], fill="#EAEAEA")
+    draw.text((15, 6), f"N° 24 566 • 50 KOH • ÉDITION SPÉCIALE", fill="#555555", font=font_petit)
+    draw.text((largeur - 230, 6), date_jour, fill="#555555", font=font_petit)
+
+    # 2. Logo L'ÉQUIPE (Bandeau rouge ou image)
+    draw.rectangle([(20, 35), (280, 105)], fill="#E30613")
+    draw.text((30, 38), "L'ÉQUIPE", fill="#FFFFFF", font=font_logo)
+    draw.text((300, 75), "LE QUOTIDIEN DU SERVEUR ET DE LA STRATÉGIE", fill="#333333", font=font_rubrique)
+    draw.line([(0, 115), (largeur, 115)], fill="#CCCCCC", width=2)
+
+    # 3. Encart 1 (Haut Gauche)
+    cat1 = donnees_une.get("ENCART_1_CATEGORIE", "ACTUALITÉ").upper()
+    tit1 = donnees_une.get("ENCART_1_TITRE", "")
+    cand1 = donnees_une.get("ENCART_1_CANDIDAT", "")
+    draw.text((20, 125), f"🔴 {cat1}", fill="#E30613", font=font_rubrique)
+    draw.text((20, 148), f"{cand1} :", fill="#111111", font=font_texte_gras)
+    # Découpage du texte encart 1
+    mots_e1 = tit1.split()
+    ligne1, ligne2 = " ".join(mots_e1[:6]), " ".join(mots_e1[6:13])
+    draw.text((20, 168), ligne1, fill="#333333", font=font_texte)
+    draw.text((20, 186), ligne2, fill="#333333", font=font_texte)
+
+    # Photo encart 1 si dispo
+    if cand1 in photos_candidats:
+        img_c1 = photos_candidats[cand1].resize((80, 80))
+        fond.paste(img_c1, (270, 125))
+
+    draw.line([(365, 120), (365, 220)], fill="#EEEEEE", width=1)
+
+    # 4. Encart 2 (Haut Droite)
+    cat2 = donnees_une.get("ENCART_2_CATEGORIE", "INTERNET").upper()
+    tit2 = donnees_une.get("ENCART_2_TITRE", "")
+    cand2 = donnees_une.get("ENCART_2_CANDIDAT", "")
+    draw.text((385, 125), f"🔴 {cat2}", fill="#E30613", font=font_rubrique)
+    draw.text((385, 148), f"{cand2} :", fill="#111111", font=font_texte_gras)
+    mots_e2 = tit2.split()
+    ligne1_b, ligne2_b = " ".join(mots_e2[:6]), " ".join(mots_e2[6:13])
+    draw.text((385, 168), ligne1_b, fill="#333333", font=font_texte)
+    draw.text((385, 186), ligne2_b, fill="#333333", font=font_texte)
+
+    if cand2 in photos_candidats:
+        img_c2 = photos_candidats[cand2].resize((80, 80))
+        fond.paste(img_c2, (695, 125))
+
+    draw.line([(0, 225), (largeur, 225)], fill="#111111", width=3)
+
+    # 5. Zone Centrale Principale (Gros Titre + Grande Photo)
+    cand_princ = donnees_une.get("CANDIDAT_PRINCIPAL", "")
+    if cand_princ in photos_candidats:
+        img_princ = photos_candidats[cand_princ].resize((520, 420))
+        fond.paste(img_princ, (20, 240))
+    else:
+        # Cadre gris si pas d'image
+        draw.rectangle([(20, 240), (540, 660)], fill="#F4F4F4", outline="#DDDDDD")
+        draw.text((180, 440), "PHOTO À LA UNE", fill="#999999", font=font_titre)
+
+    # Titre principal géant
+    titre_p = donnees_une.get("TITRE_PRINCIPAL", "C'EST ENCORE LOUPE !").upper()
+    draw.text((20, 675), titre_p, fill="#111111", font=font_titre)
+
+    # Sous-titre explicatif
+    sous_titre = donnees_une.get("SOUS_TITRE_PRINCIPAL", "")
+    mots_st = sous_titre.split()
+    st_l1, st_l2, st_l3 = " ".join(mots_st[:10]), " ".join(mots_st[10:20]), " ".join(mots_st[20:30])
+    draw.text((20, 730), st_l1, fill="#333333", font=font_texte)
+    draw.text((20, 750), st_l2, fill="#333333", font=font_texte)
+    draw.text((20, 770), st_l3, fill="#333333", font=font_texte)
+
+    # 6. Colonne de Droite (Petits Articles / Brèves)
+    draw.line([(560, 235), (560, 820)], fill="#DDDDDD", width=1)
+    
+    # Brève 1
+    draw.text((580, 245), "GASTRONOMIE", fill="#E30613", font=font_rubrique)
+    draw.text((580, 268), "Le chef du camp surpris\nen train de voler des rations.", fill="#333333", font=font_texte)
+    
+    # Brève 2 / Encart 3
+    cat3 = donnees_une.get("ENCART_3_CATEGORIE", "COULISSES").upper()
+    tit3 = donnees_une.get("ENCART_3_TITRE", "")
+    cand3 = donnees_une.get("ENCART_3_CANDIDAT", "")
+    draw.text((580, 360), f"{cat3}", fill="#E30613", font=font_rubrique)
+    draw.text((580, 385), f"{cand3} :", fill="#111111", font=font_texte_gras)
+    
+    mots_e3 = tit3.split()
+    draw.text((580, 405), " ".join(mots_e3[:5]), fill="#333333", font=font_texte)
+    draw.text((580, 425), " ".join(mots_e3[5:10]), fill="#333333", font=font_texte)
+    draw.text((580, 445), " ".join(mots_e3[10:16]), fill="#333333", font=font_texte)
+
+    if cand3 in photos_candidats:
+        img_c3 = photos_candidats[cand3].resize((180, 180))
+        fond.paste(img_c3, (580, 490))
+
+    # 7. Bandeau Inférieur (Animateurs & Coulisses)
+    draw.line([(0, 830), (largeur, 830)], fill="#111111", width=2)
+    draw.rectangle([(0, 835), (largeur, 860)], fill="#F8F8F8")
+    draw.text((20, 840), "🎙️ DANS LES COULISSES DU STAFF & DES ÉPREUVES", fill="#111111", font=font_rubrique)
+
+    draw.text((20, 875), "Arbitrage & Organisation :", fill="#E30613", font=font_texte_gras)
+    draw.text((20, 900), "« Aucun favoritisme constaté, mais certains candidats mériteraient un carton rouge. »", fill="#333333", font=font_texte)
+    draw.text((20, 925), "Les statistiques complètes de la journée sont disponibles sur le serveur.", fill="#555555", font=font_petit)
+
+    # Export en mémoire
+    buffer = io.BytesIO()
+    fond.save(buffer, format="JPEG", quality=92)
+    buffer.seek(0)
+    return buffer
+
+
+@bot.tree.command(
+    name="generer_une_journal",
+    description="Génère la Une satirique du journal L'Équipe avec les moments forts du jour."
+)
+@app_commands.describe(
+    salon_destination="Optionnel : salon où publier la Une (par défaut : salon actuel)",
+    salon_photos="Optionnel : salon contenant les photos de présentation des candidats"
+)
+@app_commands.check(est_orga_ou_admin)
+async def generer_une_journal(
+    interaction: discord.Interaction,
+    salon_destination: discord.TextChannel = None,
+    salon_photos: discord.abc.GuildChannel = None
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    dest_ch = salon_destination or interaction.channel
+
+    # 1. Collecte des discussions de la journée pour l'IA
+    paris_tz = ZoneInfo("Europe/Paris")
+    maintenant_paris = datetime.datetime.now(paris_tz)
+    debut_jour = maintenant_paris.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(datetime.timezone.utc)
+
+    transcripts = []
+    for ch in guild.text_channels:
+        if est_categorie_candidate(ch.category):
+            async for msg in ch.history(limit=60, after=debut_jour, oldest_first=False):
+                if not msg.author.bot and msg.content.strip():
+                    transcripts.append(f"{msg.author.display_name}: {msg.content.strip()}")
+
+    if not transcripts:
+        await interaction.followup.send("❌ Pas assez d'activité aujourd'hui pour générer la Une.", ephemeral=True)
+        return
+
+    await interaction.followup.send("⏳ **Rédaction des articles et mise en page du journal en cours...**", ephemeral=True)
+
+    # 2. Extraction des articles via Gemini
+    donnees_une = await extraire_articles_une_ia("\n".join(transcripts))
+
+    # 3. Récupération des photos de profil / présentation des candidats
+    photos_candidats = {}
+    async with aiohttp.ClientSession() as session:
+        for member in guild.members:
+            if not member.bot:
+                try:
+                    async with session.get(member.display_avatar.url) as resp:
+                        if resp.status == 200:
+                            img_bytes = await resp.read()
+                            img_p = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                            photos_candidats[member.display_name] = img_p
+                            # Clé simplifiée (prénom seul)
+                            prenom = member.display_name.split()[0]
+                            photos_candidats[prenom] = img_p
+                except Exception:
+                    pass
+
+    # 4. Dessin de l'image de la Une
+    image_une_bytes = creer_image_une(donnees_une, photos_candidats)
+    discord_file = discord.File(image_une_bytes, filename="une_lequipe_journal.jpg")
+
+    date_str = maintenant_paris.strftime("%d/%m/%Y")
+    await dest_ch.send(
+        content=f"📰 **L'ÉQUIPE DU SERVEUR — ÉDITION DU {date_str}**\n*(Disponible en kiosque dès maintenant)*",
+        file=discord_file
+    )
+
+    await interaction.followup.send(f"✅ **Une du journal publiée avec succès dans {dest_ch.mention} !**", ephemeral=True)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
