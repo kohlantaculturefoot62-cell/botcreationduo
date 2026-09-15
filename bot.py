@@ -5939,57 +5939,128 @@ def creer_image_une(donnees_une: dict, photos_candidats: dict) -> io.BytesIO:
     fond = Image.new("RGB", (largeur, hauteur), color="#FFFFFF")
     draw = ImageDraw.Draw(fond)
 
+    # 1. Chargement des polices téléchargées
     try:
-        font_logo = ImageFont.truetype("fonts/Anton-Regular.ttf", 60)
-        font_gros = ImageFont.truetype("fonts/Anton-Regular.ttf", 46)
-        font_rub = ImageFont.truetype("fonts/Roboto-Bold.ttf", 16)
-        font_txt = ImageFont.truetype("fonts/Roboto-Regular.ttf", 14)
+        font_logo = ImageFont.truetype("fonts/Anton-Regular.ttf", 62)
+        font_gros_titre = ImageFont.truetype("fonts/Anton-Regular.ttf", 46)
+        font_rubrique = ImageFont.truetype("fonts/Roboto-Bold.ttf", 16)
+        font_nom_gras = ImageFont.truetype("fonts/Roboto-Bold.ttf", 15)
+        font_texte = ImageFont.truetype("fonts/Roboto-Regular.ttf", 14)
         font_st = ImageFont.truetype("fonts/Roboto-Bold.ttf", 17)
-        font_mini = ImageFont.truetype("fonts/Roboto-Regular.ttf", 11)
+        font_petit = ImageFont.truetype("fonts/Roboto-Regular.ttf", 11)
     except Exception:
-        font_logo = font_gros = font_rub = font_txt = font_st = font_mini = ImageFont.load_default()
+        font_logo = font_gros_titre = font_rubrique = font_nom_gras = font_texte = font_st = font_petit = ImageFont.load_default()
 
-    # Bandeau haut
-    draw.rectangle([(0, 0), (largeur, 22)], fill="#F0F0F0")
-    draw.text((15, 4), "N° 24 566 • 50 KOH • ÉDITION OFFICIELLE", fill="#444", font=font_mini)
+    # 2. Bandeau supérieur (En-tête & Date)
+    draw.rectangle([(0, 0), (largeur, 24)], fill="#F0F0F0")
+    draw.text((15, 5), "N° 24 566 • 50 KOH • ÉDITION OFFICIELLE", fill="#444444", font=font_petit)
+    date_str = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%A %d %B %Y").upper()
+    draw.text((largeur - 260, 5), date_str, fill="#444444", font=font_petit)
 
-    # Logo L'ÉQUIPE
-    draw.rectangle([(15, 30), (280, 95)], fill="#E30613")
-    draw.text((25, 26), "L'ÉQUIPE", fill="#FFF", font=font_logo)
-    draw.text((295, 50), "LE QUOTIDIEN DU SERVEUR ET DE LA STRATÉGIE", fill="#222", font=font_rub)
-    draw.line([(0, 105), (largeur, 105)], fill="#000", width=2)
+    # 3. Logo L'ÉQUIPE (Rouge) & Slogan
+    draw.rectangle([(15, 32), (280, 98)], fill="#E30613")
+    draw.text((25, 28), "L'ÉQUIPE", fill="#FFFFFF", font=font_logo)
+    draw.text((295, 48), "LE QUOTIDIEN DU SERVEUR ET DE LA STRATÉGIE", fill="#222222", font=font_rubrique)
+    draw.text((295, 72), "www.discord-game.fr", fill="#777777", font=font_petit)
+    draw.line([(0, 108), (largeur, 108)], fill="#000000", width=2)
 
-    # Encart 1
-    cat1 = donnees_une.get("ENCART_1_CATEGORIE", "ACTU").upper()
-    cand1 = donnees_une.get("ENCART_1_CANDIDAT", "Candidat")
-    draw.text((15, 115), cat1, fill="#E30613", font=font_rub)
-    draw.text((15, 135), f"{cand1} : {donnees_une.get('ENCART_1_TITRE', '')[:50]}", fill="#222", font=font_txt)
+    # 4. Encarts supérieurs (Gauche & Droite)
+    # Encart Haut Gauche (1)
+    cat1 = donnees_une.get("ENCART_1_CATEGORIE", "VENGEANCE").upper()
+    tit1 = donnees_une.get("ENCART_1_TITRE", "")
+    cand1 = donnees_une.get("ENCART_1_CANDIDAT", "")
+    
+    draw.text((15, 118), f"🔴 {cat1}", fill="#E30613", font=font_rubrique)
+    draw.text((15, 138), f"{cand1} :", fill="#000000", font=font_nom_gras)
+    
+    y_t1 = 158
+    for ligne in textwrap.wrap(tit1, width=32)[:3]:
+        draw.text((15, y_t1), ligne, fill="#222222", font=font_texte)
+        y_t1 += 18
+
     if cand1 in photos_candidats:
-        fond.paste(photos_candidats[cand1].resize((80, 80)), (320, 115))
+        fond.paste(photos_candidats[cand1].resize((85, 85)), (310, 118))
 
-    draw.line([(0, 210), (largeur, 210)], fill="#000", width=2)
+    draw.line([(415, 112), (415, 218)], fill="#DDDDDD", width=1)
 
-    # Photo centrale & Titre
+    # Encart Haut Droite (2)
+    cat2 = donnees_une.get("ENCART_2_CATEGORIE", "INTERNET").upper()
+    tit2 = donnees_une.get("ENCART_2_TITRE", "")
+    cand2 = donnees_une.get("ENCART_2_CANDIDAT", "")
+    
+    draw.text((430, 118), f"🔴 {cat2}", fill="#E30613", font=font_rubrique)
+    draw.text((430, 138), f"{cand2} :", fill="#000000", font=font_nom_gras)
+    
+    y_t2 = 158
+    for ligne in textwrap.wrap(tit2, width=38)[:3]:
+        draw.text((430, y_t2), ligne, fill="#222222", font=font_texte)
+        y_t2 += 18
+
+    if cand2 in photos_candidats:
+        fond.paste(photos_candidats[cand2].resize((85, 85)), (795, 118))
+
+    draw.line([(0, 222), (largeur, 222)], fill="#000000", width=2)
+
+    # 5. Zone Centrale Gauche (Grande Photo + Gros Titre)
     cand_p = donnees_une.get("CANDIDAT_PRINCIPAL", "")
     if cand_p in photos_candidats:
-        fond.paste(photos_candidats[cand_p].resize((560, 440)), (15, 225))
+        fond.paste(photos_candidats[cand_p].resize((580, 480)), (15, 232))
     else:
-        draw.rectangle([(15, 225), (575, 665)], fill="#EEE")
+        draw.rectangle([(15, 232), (595, 712)], fill="#EAEAEA", outline="#CCCCCC")
+        draw.text((180, 450), "PHOTO À LA UNE", fill="#888888", font=font_gros_titre)
 
     titre_p = donnees_une.get("TITRE_PRINCIPAL", "C'EST ENCORE LOUPE !").upper()
-    draw.text((15, 680), titre_p, fill="#000", font=font_gros)
+    draw.text((15, 725), titre_p, fill="#000000", font=font_gros_titre)
 
-    st = textwrap.wrap(donnees_une.get("SOUS_TITRE_PRINCIPAL", ""), width=55)
-    y_st = 740
-    for l in st[:3]:
-        draw.text((15, y_st), l, fill="#333", font=font_st)
+    sous_titre = donnees_une.get("SOUS_TITRE_PRINCIPAL", "")
+    y_st = 785
+    for ligne in textwrap.wrap(sous_titre, width=55)[:4]:
+        draw.text((15, y_st), ligne, fill="#222222", font=font_st)
         y_st += 22
 
-    buf = io.BytesIO()
-    fond.save(buf, format="JPEG", quality=92)
-    buf.seek(0)
-    return buf
+    # 6. Colonne de Droite (Articles secondaires)
+    draw.line([(610, 226), (610, 920)], fill="#DDDDDD", width=1)
 
+    # Article droite 1 (Gastronomie / Ravitaillement)
+    draw.text((625, 232), "GASTRONOMIE", fill="#E30613", font=font_rubrique)
+    y_g = 256
+    for ligne in textwrap.wrap("Le chef du camp a été surpris en train de cacher des rations avant l'épreuve.", width=28):
+        draw.text((625, y_g), ligne, fill="#222222", font=font_texte)
+        y_g += 18
+
+    draw.line([(625, y_g + 12), (885, y_g + 12)], fill="#EEEEEE", width=1)
+
+    # Article droite 2 / Encart 3
+    cat3 = donnees_une.get("ENCART_3_CATEGORIE", "FIN DE SOIRÉE").upper()
+    tit3 = donnees_une.get("ENCART_3_TITRE", "")
+    cand3 = donnees_une.get("ENCART_3_CANDIDAT", "")
+    
+    y_e3 = y_g + 26
+    draw.text((625, y_e3), cat3, fill="#E30613", font=font_rubrique)
+    draw.text((625, y_e3 + 22), f"{cand3} :", fill="#000000", font=font_nom_gras)
+    
+    y_txt3 = y_e3 + 44
+    for ligne in textwrap.wrap(tit3, width=28)[:4]:
+        draw.text((625, y_txt3), ligne, fill="#222222", font=font_texte)
+        y_txt3 += 18
+
+    if cand3 in photos_candidats:
+        fond.paste(photos_candidats[cand3].resize((240, 240)), (625, y_txt3 + 15))
+
+    # 7. Bandeau Inférieur (Staff & Coulisses)
+    draw.line([(0, 930), (largeur, 930)], fill="#000000", width=3)
+    draw.rectangle([(0, 935), (largeur, 965)], fill="#F8F8F8")
+    draw.text((15, 940), "🎙️ DANS LES COULISSES DE L'ORGANISATION", fill="#000000", font=font_rubrique)
+
+    draw.text((15, 980), "Arbitrage & Staff :", fill="#E30613", font=font_nom_gras)
+    draw.text((15, 1005), "« Aucun favoritisme constaté, mais les décisions du jury restent irrévocables. »", fill="#222222", font=font_texte)
+    draw.text((15, 1030), "Les bilans complets et statistiques sont disponibles sur les salons dédiés.", fill="#666666", font=font_petit)
+
+    # 8. Export image en mémoire
+    buffer = io.BytesIO()
+    fond.save(buffer, format="JPEG", quality=95)
+    buffer.seek(0)
+    return buffer
 
 @bot.tree.command(
     name="generer_une_journal",
