@@ -130,6 +130,21 @@ ETAT_COMPOSITION = {
 DERNIER_JOUR_RECAP = None
 DERNIER_JOUR_QUESTIONS = None
 
+# ==========================================
+# TÉLÉCHARGEMENT AUTOMATIQUE DES POLICES
+# ==========================================
+os.makedirs("fonts", exist_ok=True)
+URLS_FONTS = {
+    "fonts/Anton-Regular.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/anton/Anton-Regular.ttf",
+    "fonts/Roboto-Bold.ttf": "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/Roboto-Bold.ttf",
+    "fonts/Roboto-Regular.ttf": "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/Roboto-Regular.ttf"
+}
+for path_font, url_font in URLS_FONTS.items():
+    if not os.path.exists(path_font):
+        try:
+            urllib.request.urlretrieve(url_font, path_font)
+        except Exception as e:
+            print(f"⚠️ Police {path_font} non récupérée: {e}")
 
 # ==========================================
 # 0. FONCTIONS UTILITAIRES & SÉCURITÉ
@@ -5920,129 +5935,60 @@ async def extraire_articles_une_ia(transcriptions: str) -> dict:
 
 
 def creer_image_une(donnees_une: dict, photos_candidats: dict) -> io.BytesIO:
-    """Dessine la maquette de la Une de journal avec Pillow."""
-    largeur, hauteur = 800, 1150
+    largeur, hauteur = 900, 1300
     fond = Image.new("RGB", (largeur, hauteur), color="#FFFFFF")
     draw = ImageDraw.Draw(fond)
 
-    # Chargement polices
     try:
-        font_logo = ImageFont.truetype("impact.ttf", 68)
-        font_titre = ImageFont.truetype("impact.ttf", 44)
-        font_rubrique = ImageFont.truetype("arialbd.ttf", 16)
-        font_texte_gras = ImageFont.truetype("arialbd.ttf", 15)
-        font_texte = ImageFont.truetype("arial.ttf", 14)
-        font_petit = ImageFont.truetype("arial.ttf", 11)
+        font_logo = ImageFont.truetype("fonts/Anton-Regular.ttf", 60)
+        font_gros = ImageFont.truetype("fonts/Anton-Regular.ttf", 46)
+        font_rub = ImageFont.truetype("fonts/Roboto-Bold.ttf", 16)
+        font_txt = ImageFont.truetype("fonts/Roboto-Regular.ttf", 14)
+        font_st = ImageFont.truetype("fonts/Roboto-Bold.ttf", 17)
+        font_mini = ImageFont.truetype("fonts/Roboto-Regular.ttf", 11)
     except Exception:
-        font_logo = font_titre = font_rubrique = font_texte_gras = font_texte = font_petit = ImageFont.load_default()
+        font_logo = font_gros = font_rub = font_txt = font_st = font_mini = ImageFont.load_default()
 
-    # 1. Bandeau supérieur (Date, Prix, En-tête)
-    date_jour = datetime.datetime.now(ZoneInfo("Europe/Paris")).strftime("%A %d %B %Y").upper()
-    draw.rectangle([(0, 0), (largeur, 24)], fill="#EAEAEA")
-    draw.text((15, 6), f"N° 24 566 • 50 KOH • ÉDITION SPÉCIALE", fill="#555555", font=font_petit)
-    draw.text((largeur - 230, 6), date_jour, fill="#555555", font=font_petit)
+    # Bandeau haut
+    draw.rectangle([(0, 0), (largeur, 22)], fill="#F0F0F0")
+    draw.text((15, 4), "N° 24 566 • 50 KOH • ÉDITION OFFICIELLE", fill="#444", font=font_mini)
 
-    # 2. Logo L'ÉQUIPE (Bandeau rouge ou image)
-    draw.rectangle([(20, 35), (280, 105)], fill="#E30613")
-    draw.text((30, 38), "L'ÉQUIPE", fill="#FFFFFF", font=font_logo)
-    draw.text((300, 75), "LE QUOTIDIEN DU SERVEUR ET DE LA STRATÉGIE", fill="#333333", font=font_rubrique)
-    draw.line([(0, 115), (largeur, 115)], fill="#CCCCCC", width=2)
+    # Logo L'ÉQUIPE
+    draw.rectangle([(15, 30), (280, 95)], fill="#E30613")
+    draw.text((25, 26), "L'ÉQUIPE", fill="#FFF", font=font_logo)
+    draw.text((295, 50), "LE QUOTIDIEN DU SERVEUR ET DE LA STRATÉGIE", fill="#222", font=font_rub)
+    draw.line([(0, 105), (largeur, 105)], fill="#000", width=2)
 
-    # 3. Encart 1 (Haut Gauche)
-    cat1 = donnees_une.get("ENCART_1_CATEGORIE", "ACTUALITÉ").upper()
-    tit1 = donnees_une.get("ENCART_1_TITRE", "")
-    cand1 = donnees_une.get("ENCART_1_CANDIDAT", "")
-    draw.text((20, 125), f"🔴 {cat1}", fill="#E30613", font=font_rubrique)
-    draw.text((20, 148), f"{cand1} :", fill="#111111", font=font_texte_gras)
-    # Découpage du texte encart 1
-    mots_e1 = tit1.split()
-    ligne1, ligne2 = " ".join(mots_e1[:6]), " ".join(mots_e1[6:13])
-    draw.text((20, 168), ligne1, fill="#333333", font=font_texte)
-    draw.text((20, 186), ligne2, fill="#333333", font=font_texte)
-
-    # Photo encart 1 si dispo
+    # Encart 1
+    cat1 = donnees_une.get("ENCART_1_CATEGORIE", "ACTU").upper()
+    cand1 = donnees_une.get("ENCART_1_CANDIDAT", "Candidat")
+    draw.text((15, 115), cat1, fill="#E30613", font=font_rub)
+    draw.text((15, 135), f"{cand1} : {donnees_une.get('ENCART_1_TITRE', '')[:50]}", fill="#222", font=font_txt)
     if cand1 in photos_candidats:
-        img_c1 = photos_candidats[cand1].resize((80, 80))
-        fond.paste(img_c1, (270, 125))
+        fond.paste(photos_candidats[cand1].resize((80, 80)), (320, 115))
 
-    draw.line([(365, 120), (365, 220)], fill="#EEEEEE", width=1)
+    draw.line([(0, 210), (largeur, 210)], fill="#000", width=2)
 
-    # 4. Encart 2 (Haut Droite)
-    cat2 = donnees_une.get("ENCART_2_CATEGORIE", "INTERNET").upper()
-    tit2 = donnees_une.get("ENCART_2_TITRE", "")
-    cand2 = donnees_une.get("ENCART_2_CANDIDAT", "")
-    draw.text((385, 125), f"🔴 {cat2}", fill="#E30613", font=font_rubrique)
-    draw.text((385, 148), f"{cand2} :", fill="#111111", font=font_texte_gras)
-    mots_e2 = tit2.split()
-    ligne1_b, ligne2_b = " ".join(mots_e2[:6]), " ".join(mots_e2[6:13])
-    draw.text((385, 168), ligne1_b, fill="#333333", font=font_texte)
-    draw.text((385, 186), ligne2_b, fill="#333333", font=font_texte)
-
-    if cand2 in photos_candidats:
-        img_c2 = photos_candidats[cand2].resize((80, 80))
-        fond.paste(img_c2, (695, 125))
-
-    draw.line([(0, 225), (largeur, 225)], fill="#111111", width=3)
-
-    # 5. Zone Centrale Principale (Gros Titre + Grande Photo)
-    cand_princ = donnees_une.get("CANDIDAT_PRINCIPAL", "")
-    if cand_princ in photos_candidats:
-        img_princ = photos_candidats[cand_princ].resize((520, 420))
-        fond.paste(img_princ, (20, 240))
+    # Photo centrale & Titre
+    cand_p = donnees_une.get("CANDIDAT_PRINCIPAL", "")
+    if cand_p in photos_candidats:
+        fond.paste(photos_candidats[cand_p].resize((560, 440)), (15, 225))
     else:
-        # Cadre gris si pas d'image
-        draw.rectangle([(20, 240), (540, 660)], fill="#F4F4F4", outline="#DDDDDD")
-        draw.text((180, 440), "PHOTO À LA UNE", fill="#999999", font=font_titre)
+        draw.rectangle([(15, 225), (575, 665)], fill="#EEE")
 
-    # Titre principal géant
     titre_p = donnees_une.get("TITRE_PRINCIPAL", "C'EST ENCORE LOUPE !").upper()
-    draw.text((20, 675), titre_p, fill="#111111", font=font_titre)
+    draw.text((15, 680), titre_p, fill="#000", font=font_gros)
 
-    # Sous-titre explicatif
-    sous_titre = donnees_une.get("SOUS_TITRE_PRINCIPAL", "")
-    mots_st = sous_titre.split()
-    st_l1, st_l2, st_l3 = " ".join(mots_st[:10]), " ".join(mots_st[10:20]), " ".join(mots_st[20:30])
-    draw.text((20, 730), st_l1, fill="#333333", font=font_texte)
-    draw.text((20, 750), st_l2, fill="#333333", font=font_texte)
-    draw.text((20, 770), st_l3, fill="#333333", font=font_texte)
+    st = textwrap.wrap(donnees_une.get("SOUS_TITRE_PRINCIPAL", ""), width=55)
+    y_st = 740
+    for l in st[:3]:
+        draw.text((15, y_st), l, fill="#333", font=font_st)
+        y_st += 22
 
-    # 6. Colonne de Droite (Petits Articles / Brèves)
-    draw.line([(560, 235), (560, 820)], fill="#DDDDDD", width=1)
-    
-    # Brève 1
-    draw.text((580, 245), "GASTRONOMIE", fill="#E30613", font=font_rubrique)
-    draw.text((580, 268), "Le chef du camp surpris\nen train de voler des rations.", fill="#333333", font=font_texte)
-    
-    # Brève 2 / Encart 3
-    cat3 = donnees_une.get("ENCART_3_CATEGORIE", "COULISSES").upper()
-    tit3 = donnees_une.get("ENCART_3_TITRE", "")
-    cand3 = donnees_une.get("ENCART_3_CANDIDAT", "")
-    draw.text((580, 360), f"{cat3}", fill="#E30613", font=font_rubrique)
-    draw.text((580, 385), f"{cand3} :", fill="#111111", font=font_texte_gras)
-    
-    mots_e3 = tit3.split()
-    draw.text((580, 405), " ".join(mots_e3[:5]), fill="#333333", font=font_texte)
-    draw.text((580, 425), " ".join(mots_e3[5:10]), fill="#333333", font=font_texte)
-    draw.text((580, 445), " ".join(mots_e3[10:16]), fill="#333333", font=font_texte)
-
-    if cand3 in photos_candidats:
-        img_c3 = photos_candidats[cand3].resize((180, 180))
-        fond.paste(img_c3, (580, 490))
-
-    # 7. Bandeau Inférieur (Animateurs & Coulisses)
-    draw.line([(0, 830), (largeur, 830)], fill="#111111", width=2)
-    draw.rectangle([(0, 835), (largeur, 860)], fill="#F8F8F8")
-    draw.text((20, 840), "🎙️ DANS LES COULISSES DU STAFF & DES ÉPREUVES", fill="#111111", font=font_rubrique)
-
-    draw.text((20, 875), "Arbitrage & Organisation :", fill="#E30613", font=font_texte_gras)
-    draw.text((20, 900), "« Aucun favoritisme constaté, mais certains candidats mériteraient un carton rouge. »", fill="#333333", font=font_texte)
-    draw.text((20, 925), "Les statistiques complètes de la journée sont disponibles sur le serveur.", fill="#555555", font=font_petit)
-
-    # Export en mémoire
-    buffer = io.BytesIO()
-    fond.save(buffer, format="JPEG", quality=92)
-    buffer.seek(0)
-    return buffer
+    buf = io.BytesIO()
+    fond.save(buf, format="JPEG", quality=92)
+    buf.seek(0)
+    return buf
 
 
 @bot.tree.command(
