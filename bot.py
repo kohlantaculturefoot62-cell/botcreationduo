@@ -6489,6 +6489,126 @@ async def desactiver_brouilleur(interaction: discord.Interaction, salon: discord
         await interaction.response.send_message(f"✅ **Brouilleur désactivé** dans {ch.mention}.", ephemeral=True)
     else:
         await interaction.response.send_message(f"ℹ️ Le brouilleur n'était pas actif dans {ch.mention}.", ephemeral=True)
+
+async def generer_fun_facts_candidat_ia(candidat_nom: str, messages_candidat: list[str], messages_tiers: list[str]) -> str:
+    """Génère 3 fun facts satiriques et drôles basés sur les interactions récentes."""
+    texte_perso = "\n".join(messages_candidat) if messages_candidat else "Peu de messages directs."
+    texte_autres = "\n".join(messages_tiers) if messages_tiers else "Peu de mentions externes."
+
+    prompt = (
+        "Tu es le commentateur officiel et biographe satirique d'un jeu de stratégie sur Discord (type Koh-Lanta / Survivor).\n"
+        f"CANDIDAT CIBLÉ : **{candidat_nom}**\n\n"
+        f"CE QU'IL DIT SUR LE SERVEUR :\n{texte_perso[:8000]}\n\n"
+        f"CE QUE LES AUTRES DISENT DE LUI :\n{texte_autres[:6000]}\n\n"
+        "MISSION :\n"
+        "Rédige exactement 3 « FUN FACTS » (anecdotes comiques, statistiques absurdes ou secrets de polichinelle) "
+        "sur ce candidat en te basant sur ses VRAIES interactions récentes.\n\n"
+        "RÈGLES DU JEU :\n"
+        "1. 100% DISCORD & STRATÉGIE : Appuie-toi sur ses hésitations, ses promesses en l'air, ses tics de langage, "
+        "ses temps de réaction, son obsession pour un joueur ou ses théories bancales.\n"
+        "2. HUMOUR & SECOND DEGRÉ : C'est du chambrage amical et bienveillant, pas de méchanceté gratuite.\n"
+        "3. FORMAT D'AFFICHAGE (STRICT) :\n"
+        "- 💡 **[Titre percutant] :** [Explication drôle en 1 ou 2 phrases]\n"
+        "- 📊 **[Titre percutant] :** [Statistique inventée ou habitude comique]\n"
+        "- 🕵️ **[Titre percutant] :** [Contradiction flagrante ou secret bancal]\n\n"
+        "Renvoie UNIQUEMENT les 3 bullet points sans texte introductif."
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"💡 **Le mystère reste entier :** Les serveurs ont surchauffé en tentant d'analyser son jeu ({e})."
+
+@bot.tree.command(
+    name="fun_fact",
+    description="Génère 3 anecdotes absurdes et drôles sur un candidat d'après ses récents messages."
+)
+@app_commands.describe(
+    candidat="Le candidat à passer au crible",
+    public="Afficher publiquement dans le salon ? (Défaut : Vrai)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def fun_fact_cmd(
+    interaction: discord.Interaction,
+    candidat: discord.Member,
+    public: bool = True
+):
+    await interaction.response.defer(ephemeral=not public)
+    guild = interaction.guild
+
+    nom_candidat_clean = nettoyer_texte(candidat.display_name)
+    pseudo_global_clean = nettoyer_texte(candidat.name)
+    mention_id = str(candidat.id)
+
+    messages_candidat = []
+    messages_tiers = []
+
+    # Scan des salons de jeu candidats récents
+    for channel in guild.text_channels:
+        est_salon_log = (channel.name.lower() == "log-deplacements")
+        if not est_categorie_candidate(channel.category) and not est_salon_log:
+            continue
+        if channel.name.startswith("🔒arch-"):
+            continue
+
+        try:
+            # Récupère les vrais récents (oldest_first=False)
+            async for msg in channel.history(limit=60, oldest_first=False):
+                if msg.author.bot and not est_salon_log:
+                    continue
+                contenu = msg.content.strip()
+                if not contenu or contenu.startswith(("/", "!")):
+                    continue
+
+                if msg.author.id == candidat.id:
+                    messages_candidat.append(f"[#{channel.name}] {contenu}")
+                    if len(messages_candidat) >= 30:
+                        break
+                else:
+                    contenu_clean = nettoyer_texte(contenu)
+                    if (nom_candidat_clean in contenu_clean 
+                        or pseudo_global_clean in contenu_clean 
+                        or mention_id in msg.content):
+                        messages_tiers.append(f"[#{channel.name}] {msg.author.display_name}: {contenu}")
+                        if len(messages_tiers) >= 20:
+                            break
+        except Exception:
+            continue
+
+        if len(messages_candidat) >= 30 and len(messages_tiers) >= 20:
+            break
+
+    if not messages_candidat and not messages_tiers:
+        await interaction.followup.send(
+            f"👻 **Fun Fact sur {candidat.mention} :** Il est tellement discret sur le serveur qu'aucun message récent n'a pu être intercepté. Un vrai fantôme !",
+            ephemeral=not public
+        )
+        return
+
+    # Inversion pour remettre dans l'ordre chronologique
+    messages_candidat.reverse()
+    messages_tiers.reverse()
+
+    faits_texte = await generer_fun_facts_candidat_ia(
+        candidat_nom=candidat.display_name,
+        messages_candidat=messages_candidat,
+        messages_tiers=messages_tiers
+    )
+
+    embed = discord.Embed(
+        title=f"🎲 LE SAVIEZ-VOUS ? — {candidat.display_name.upper()}",
+        description=f"Voici les dossiers confidentiels interceptés sur {candidat.mention} :\n\n{faits_texte}",
+        color=discord.Color.nitro_pink()
+    )
+    embed.set_thumbnail(url=candidat.display_avatar.url)
+    embed.set_footer(text=f"Basé sur l'activité récente de #{candidat.display_name} • Observatoire du Serveur")
+
+    await interaction.followup.send(embed=embed, ephemeral=not public)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
