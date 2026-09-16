@@ -1635,21 +1635,32 @@ async def resumer_conv_orga(interaction: discord.Interaction, format: app_comman
     await interaction.response.defer(ephemeral=True)
     channel = interaction.channel
 
-    messages = [msg async for msg in channel.history(limit=limite, oldest_first=True)]
-    user_messages = [msg for msg in messages if not msg.author.bot and msg.content.strip()]
+    # 1. On récupère les VRAIS derniers messages (oldest_first=False)
+    messages_bruts = [msg async for msg in channel.history(limit=limite, oldest_first=False)]
+
+    # 2. Filtrer les bots, messages vides et commandes
+    user_messages = [
+        msg for msg in messages_bruts 
+        if not msg.author.bot 
+        and msg.content.strip() 
+        and not msg.content.startswith(("/", "!"))
+    ]
 
     if len(user_messages) < 3:
-        await interaction.followup.send("⚠️ Pas assez de messages pour générer un compte-rendu pertinent.", ephemeral=True)
+        await interaction.followup.send("⚠️ Pas assez de messages récents pour générer un compte-rendu pertinent.", ephemeral=True)
         return
+
+    # 3. Remettre dans l'ordre chronologique pour que l'IA comprenne le fil de la discussion
+    user_messages.reverse()
 
     transcript = "\n".join([f"{msg.author.display_name}: {msg.content}" for msg in user_messages])
 
     if format.value == "court":
         prompt = (
-            "Tu es l'assistant de direction d'une équipe d'organisation d'un événement / jeu. "
-            f"Voici la transcription de la réunion/discussion de l'équipe dans le salon #{channel.name} :\n\n"
+            "Tu es l'assistant de direction d'une équipe d'organisation d'un jeu.\n"
+            f"Voici les {len(user_messages)} derniers messages échangés dans le salon #{channel.name} :\n\n"
             f"{transcript}\n\n"
-            "Fais un résumé **TRÈS COURT, CONCIS ET DIRECT** en 3 à 5 bullet points maximum :\n"
+            "Fais un résumé TRÈS COURT, CONCIS ET DIRECT en 3 à 5 bullet points maximum :\n"
             "- 🎯 Objectif/Sujet principal de la discussion\n"
             "- 🛠️ Décisions importantes actées\n"
             "- 📋 Actions à faire (Qui fait quoi ?)\n"
@@ -1657,15 +1668,15 @@ async def resumer_conv_orga(interaction: discord.Interaction, format: app_comman
         )
     else:
         prompt = (
-            "Tu es l'assistant de direction d'une équipe d'organisation d'un jeu / événement. "
-            f"Voici la transcription des échanges du staff dans le salon #{channel.name} :\n\n"
+            "Tu es l'assistant de direction d'une équipe d'organisation d'un jeu.\n"
+            f"Voici les {len(user_messages)} derniers messages échangés dans le salon #{channel.name} :\n\n"
             f"{transcript}\n\n"
-            "Rédige un **COMPTE-RENDU DÉTAILLÉ ET PROFESSIONNEL** en français, structuré avec les sections suivantes :\n"
-            "1. 🎯 **Sujets abordés** (Quels ont été les thèmes de la discussion ?)\n"
-            "2. 🛠️ **Décisions prises** (Qu'est-ce qui a été validé ou refusé par l'équipe ?)\n"
-            "3. 📋 **Répartition des tâches** (Qui est en charge de quoi ?)\n"
-            "4. 💡 **Idées & Propositions en attente** (Ce qui doit encore être discuté ou creusé)\n"
-            "5. 📅 **Prochaines étapes & Deadlines** (Ce qu'il reste à faire dans l'immédiat)"
+            "Rédige un COMPTE-RENDU DÉTAILLÉ ET PROFESSIONNEL en français avec ces sections :\n"
+            "1. 🎯 **Sujets abordés**\n"
+            "2. 🛠️ **Décisions prises** (validé / refusé)\n"
+            "3. 📋 **Répartition des tâches** (qui fait quoi)\n"
+            "4. 💡 **Idées & Propositions en attente**\n"
+            "5. 📅 **Prochaines étapes & Deadlines**"
         )
 
     max_tentatives = 3
@@ -1684,7 +1695,7 @@ async def resumer_conv_orga(interaction: discord.Interaction, format: app_comman
                 description=summary_text,
                 color=discord.Color.blue()
             )
-            embed.set_footer(text=f"Analyse basée sur les {len(user_messages)} messages (Tentative {tentative + 1}).")
+            embed.set_footer(text=f"Analyse basée sur les {len(user_messages)} derniers messages.")
 
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
@@ -1693,9 +1704,8 @@ async def resumer_conv_orga(interaction: discord.Interaction, format: app_comman
             if "503" in str(e) and tentative < max_tentatives - 1:
                 await asyncio.sleep(2)
             else:
-                await interaction.followup.send(f"❌ Les serveurs IA sont surchargés après {max_tentatives} tentatives. Réessayez plus tard.", ephemeral=True)
+                await interaction.followup.send(f"❌ Erreur IA : {e}", ephemeral=True)
                 return
-
 
 @bot.tree.command(
     name="questions_confessionnal",
