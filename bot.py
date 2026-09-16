@@ -6538,6 +6538,7 @@ async def fun_fact_cmd(
     candidat: discord.Member,
     public: bool = True
 ):
+    # Répondre immédiatement à Discord dans la première seconde
     await interaction.response.defer(ephemeral=not public)
     guild = interaction.guild
 
@@ -6548,17 +6549,17 @@ async def fun_fact_cmd(
     messages_candidat = []
     messages_tiers = []
 
-    # Scan des salons de jeu candidats récents
-    for channel in guild.text_channels:
-        est_salon_log = (channel.name.lower() == "log-deplacements")
-        if not est_categorie_candidate(channel.category) and not est_salon_log:
-            continue
-        if channel.name.startswith("🔒arch-"):
-            continue
+    # Pré-filtrage strict des salons pour éviter de boucler inutilement
+    salons_cibles = [
+        ch for ch in guild.text_channels
+        if (est_categorie_candidate(ch.category) or ch.name.lower() == "log-deplacements")
+        and not ch.name.startswith("🔒arch-")
+    ]
 
+    for channel in salons_cibles:
+        est_salon_log = (channel.name.lower() == "log-deplacements")
         try:
-            # Récupère les vrais récents (oldest_first=False)
-            async for msg in channel.history(limit=60, oldest_first=False):
+            async for msg in channel.history(limit=40, oldest_first=False):
                 if msg.author.bot and not est_salon_log:
                     continue
                 contenu = msg.content.strip()
@@ -6567,20 +6568,19 @@ async def fun_fact_cmd(
 
                 if msg.author.id == candidat.id:
                     messages_candidat.append(f"[#{channel.name}] {contenu}")
-                    if len(messages_candidat) >= 30:
-                        break
                 else:
                     contenu_clean = nettoyer_texte(contenu)
                     if (nom_candidat_clean in contenu_clean 
                         or pseudo_global_clean in contenu_clean 
                         or mention_id in msg.content):
                         messages_tiers.append(f"[#{channel.name}] {msg.author.display_name}: {contenu}")
-                        if len(messages_tiers) >= 20:
-                            break
+
+                if len(messages_candidat) >= 20 and len(messages_tiers) >= 15:
+                    break
         except Exception:
             continue
 
-        if len(messages_candidat) >= 30 and len(messages_tiers) >= 20:
+        if len(messages_candidat) >= 20 and len(messages_tiers) >= 15:
             break
 
     if not messages_candidat and not messages_tiers:
@@ -6590,7 +6590,6 @@ async def fun_fact_cmd(
         )
         return
 
-    # Inversion pour remettre dans l'ordre chronologique
     messages_candidat.reverse()
     messages_tiers.reverse()
 
@@ -6606,7 +6605,7 @@ async def fun_fact_cmd(
         color=discord.Color.nitro_pink()
     )
     embed.set_thumbnail(url=candidat.display_avatar.url)
-    embed.set_footer(text=f"Basé sur l'activité récente de #{candidat.display_name} • Observatoire du Serveur")
+    embed.set_footer(text=f"Basé sur l'activité récente de {candidat.display_name} • Observatoire du Serveur")
 
     await interaction.followup.send(embed=embed, ephemeral=not public)
 # ==========================================
