@@ -1556,19 +1556,30 @@ async def resumer(interaction: discord.Interaction, format: app_commands.Choice[
     await interaction.response.defer(ephemeral=True)
     channel = interaction.channel
 
-    messages = [msg async for msg in channel.history(limit=limite, oldest_first=True)]
-    user_messages = [msg for msg in messages if not msg.author.bot and msg.content.strip()]
+    # 1. On va chercher les messages les plus récents (oldest_first=False)
+    messages_bruts = [msg async for msg in channel.history(limit=limite, oldest_first=False)]
+    
+    # 2. On filtre les bots, messages vides et commandes
+    user_messages = [
+        msg for msg in messages_bruts 
+        if not msg.author.bot 
+        and msg.content.strip() 
+        and not msg.content.startswith(("/", "!"))
+    ]
 
     if len(user_messages) < 3:
-        await interaction.followup.send("⚠️ Pas assez de messages pour générer un résumé pertinent.", ephemeral=True)
+        await interaction.followup.send("⚠️ Pas assez de messages récents pour générer un résumé pertinent.", ephemeral=True)
         return
+
+    # 3. Remise en ordre chronologique pour l'analyse IA
+    user_messages.reverse()
 
     transcript = "\n".join([f"{msg.author.display_name}: {msg.content}" for msg in user_messages])
 
     if format.value == "court":
         prompt = (
             "Tu es l'arbitre d'un jeu de stratégie. "
-            f"Voici la transcription des messages du salon #{channel.name} :\n\n"
+            f"Voici la transcription des messages récents du salon #{channel.name} :\n\n"
             f"{transcript}\n\n"
             "Fais un résumé **TRÈS COURT, CONCIS ET DIRECT** en 3 à 5 bullet points maximum :\n"
             "- 🎯 Sujet central en 1 phrase\n"
@@ -1578,15 +1589,15 @@ async def resumer(interaction: discord.Interaction, format: app_commands.Choice[
         )
     else:
         prompt = (
-            "Tu es l'analyste stratégique d'un jeu d'aventure/téléréalité (type Koh-Lanta/Survivor/Secret Story). "
-            f"Voici la transcription des messages échangés dans le salon #{channel.name} :\n\n"
+            "Tu es l'analyste stratégique d'un jeu d'aventure/téléréalité. "
+            f"Voici la transcription des messages récents échangés dans le salon #{channel.name} :\n\n"
             f"{transcript}\n\n"
             "Fais un **RÉSUMÉ DÉTAILLÉ ET STRUCTURÉ** en français, avec les sections suivantes :\n"
             "1. 🎯 **Analyse Thématique** (synthèse factuelle des sujets abordés)\n"
-            "2. 🤝 **Accords & Propositions** (qui propose quoi, points de convergence ou de divergence)\n"
-            "3. ⚠️ **Scénarios & Votes évoqués** (noms mentionnés, arguments avancés, alternatives)\n"
-            "4. 🎭 **Dynamique relationnelle** (postures observées, équilibre de la discussion)\n"
-            "5. 💬 **Citations ou Moments Clés** (phrases structurantes de l'échange)"
+            "2. 🤝 **Accords & Propositions** (points de convergence ou de divergence)\n"
+            "3. ⚠️ **Scénarios & Votes évoqués** (noms mentionnés, alternatives)\n"
+            "4. 🎭 **Dynamique relationnelle** (postures observées)\n"
+            "5. 💬 **Citations ou Moments Clés**"
         )
 
     max_tentatives = 3
@@ -1605,7 +1616,7 @@ async def resumer(interaction: discord.Interaction, format: app_commands.Choice[
                 description=summary_text,
                 color=discord.Color.gold() if format.value == "court" else discord.Color.purple()
             )
-            embed.set_footer(text=f"Analyse basée sur les {len(user_messages)} messages (Tentative {tentative + 1}).")
+            embed.set_footer(text=f"Analyse basée sur les {len(user_messages)} derniers messages.")
 
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
@@ -1614,7 +1625,7 @@ async def resumer(interaction: discord.Interaction, format: app_commands.Choice[
             if "503" in str(e) and tentative < max_tentatives - 1:
                 await asyncio.sleep(2)
             else:
-                await interaction.followup.send(f"❌ Les serveurs IA sont surchargés après {max_tentatives} tentatives. Réessayez plus tard.", ephemeral=True)
+                await interaction.followup.send(f"❌ Erreur IA après tentatives : {e}", ephemeral=True)
                 return
 
 
