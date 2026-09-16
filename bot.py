@@ -6533,12 +6533,11 @@ async def generer_fun_facts_candidat_ia(candidat_nom: str, messages_candidat: li
     public="Afficher publiquement dans le salon ? (Défaut : Vrai)"
 )
 @app_commands.check(est_orga_ou_admin)
-async def fun_fact_cmd(
+async def fun_fact(
     interaction: discord.Interaction,
     candidat: discord.Member,
     public: bool = True
 ):
-    # Répondre immédiatement à Discord dans la première seconde
     await interaction.response.defer(ephemeral=not public)
     guild = interaction.guild
 
@@ -6549,7 +6548,6 @@ async def fun_fact_cmd(
     messages_candidat = []
     messages_tiers = []
 
-    # Pré-filtrage strict des salons pour éviter de boucler inutilement
     salons_cibles = [
         ch for ch in guild.text_channels
         if (est_categorie_candidate(ch.category) or ch.name.lower() == "log-deplacements")
@@ -6559,7 +6557,7 @@ async def fun_fact_cmd(
     for channel in salons_cibles:
         est_salon_log = (channel.name.lower() == "log-deplacements")
         try:
-            async for msg in channel.history(limit=40, oldest_first=False):
+            async for msg in channel.history(limit=30, oldest_first=False):
                 if msg.author.bot and not est_salon_log:
                     continue
                 contenu = msg.content.strip()
@@ -6575,12 +6573,12 @@ async def fun_fact_cmd(
                         or mention_id in msg.content):
                         messages_tiers.append(f"[#{channel.name}] {msg.author.display_name}: {contenu}")
 
-                if len(messages_candidat) >= 20 and len(messages_tiers) >= 15:
+                if len(messages_candidat) >= 15 and len(messages_tiers) >= 10:
                     break
         except Exception:
             continue
 
-        if len(messages_candidat) >= 20 and len(messages_tiers) >= 15:
+        if len(messages_candidat) >= 15 and len(messages_tiers) >= 10:
             break
 
     if not messages_candidat and not messages_tiers:
@@ -6602,10 +6600,10 @@ async def fun_fact_cmd(
     embed = discord.Embed(
         title=f"🎲 LE SAVIEZ-VOUS ? — {candidat.display_name.upper()}",
         description=f"Voici les dossiers confidentiels interceptés sur {candidat.mention} :\n\n{faits_texte}",
-        color=discord.Color.nitro_pink()
+        color=discord.Color.from_rgb(244, 127, 255)
     )
     embed.set_thumbnail(url=candidat.display_avatar.url)
-    embed.set_footer(text=f"Basé sur l'activité récente de {candidat.display_name} • Observatoire du Serveur")
+    embed.set_footer(text=f"Basé sur l'activité récente • Observatoire du Serveur")
 
     await interaction.followup.send(embed=embed, ephemeral=not public)
 # ==========================================
