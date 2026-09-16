@@ -819,6 +819,37 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
     # 1. Décodeur / Traducteur humoristique en direct
+    # Interception du brouilleur de salon
+    if message.channel.id in SALONS_BROUILLEUR_ACTIFS and message.content.strip():
+        # Ignorer les commandes commençant par '!' ou '/'
+        if not message.content.startswith(("!", "/")):
+            texte_source = message.content.strip()
+            auteur = message.author
+            channel = message.channel
+
+            try:
+                # 1. Suppression immédiate du message original
+                await message.delete()
+
+                # 2. Génération du charabia
+                texte_brouille = await transformer_en_charabia_ia(texte_source)
+
+                # 3. Récupération ou création d'un webhook pour usurper l'avatar/pseudo
+                webhooks = await channel.webhooks()
+                webhook = next((w for w in webhooks if w.user.id == bot.user.id), None)
+                if not webhook:
+                    webhook = await channel.create_webhook(name="Brouilleur")
+
+                # 4. Envoi du message sous l'identité de l'auteur
+                await webhook.send(
+                    content=texte_brouille,
+                    username=auteur.display_name,
+                    avatar_url=auteur.display_avatar.url
+                )
+                return
+            except Exception as e:
+                print(f"Erreur lors du brouillage du message : {e}")
+                
     if message.channel.id in SESSIONS_DECODEUR:
         cible_data = SESSIONS_DECODEUR[message.channel.id]
         if message.author.id == cible_data["user_id"]:
@@ -6380,6 +6411,32 @@ async def resumer_vocaux(
         )
         for chunk in morceaux[1:]:
             await interaction.followup.send(content=chunk, ephemeral=True)
+
+# Suivi des salons où le brouilleur est actif : ensemble d'IDs de salons
+SALONS_BROUILLEUR_ACTIFS = set()
+
+async def transformer_en_charabia_ia(texte_original: str) -> str:
+    """Transforme un message en une version à peine compréhensible / déformée."""
+    prompt = (
+        "Tu es un déformateur de phrases comique.\n"
+        f"Voici un message : \"{texte_original}\"\n\n"
+        "Consigne :\n"
+        "Réécris ce message pour qu'il soit À PEINE compréhensible : utilise des synonymes bizarres, "
+        "une syntaxe bancale, un argot étrange ou des tournures alambiquées, tout en gardant l'idée de base.\n"
+        "Renvoie UNIQUEMENT la phrase transformée, sans guillemets ni introduction."
+    )
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception:
+        # Fallback si l'IA ne répond pas
+        return "".join(c if random.random() > 0.15 else "..." for c in texte_original)
+
+
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
