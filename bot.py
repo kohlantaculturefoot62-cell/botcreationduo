@@ -6436,7 +6436,38 @@ async def transformer_en_charabia_ia(texte_original: str) -> str:
         # Fallback si l'IA ne répond pas
         return "".join(c if random.random() > 0.15 else "..." for c in texte_original)
 
+@bot.tree.command(
+    name="activer_brouilleur",
+    description="Remplace tous les messages envoyés dans ce salon par une version à peine compréhensible."
+)
+@app_commands.describe(salon="Optionnel : salon à cibler (par défaut : salon actuel)")
+@app_commands.check(est_orga_ou_admin)
+async def activer_brouilleur(interaction: discord.Interaction, salon: discord.TextChannel = None):
+    ch = salon or interaction.channel
+    if not isinstance(ch, discord.TextChannel):
+        await interaction.response.send_message("❌ Cette commande ne fonctionne que dans un salon textuel.", ephemeral=True)
+        return
 
+    SALONS_BROUILLEUR_ACTIFS.add(ch.id)
+    await interaction.response.send_message(
+        f"🌀 **Brouilleur activé dans {ch.mention} !** Tous les messages envoyés seront remplacés.",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="desactiver_brouilleur",
+    description="Désactive le brouillage des messages pour ce salon."
+)
+@app_commands.describe(salon="Optionnel : salon à cibler (par défaut : salon actuel)")
+@app_commands.check(est_orga_ou_admin)
+async def desactiver_brouilleur(interaction: discord.Interaction, salon: discord.TextChannel = None):
+    ch = salon or interaction.channel
+    if ch.id in SALONS_BROUILLEUR_ACTIFS:
+        SALONS_BROUILLEUR_ACTIFS.remove(ch.id)
+        await interaction.response.send_message(f"✅ **Brouilleur désactivé** dans {ch.mention}.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"ℹ️ Le brouilleur n'était pas actif dans {ch.mention}.", ephemeral=True)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
