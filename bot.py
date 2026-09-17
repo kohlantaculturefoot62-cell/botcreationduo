@@ -6699,7 +6699,146 @@ async def buzzer(interaction: discord.Interaction, question: str = "Question en 
     embed.set_footer(text="Système anti-litige instantané")
 
     await interaction.response.send_message(embed=embed, view=vue)
-    
+
+# ========================================================
+# SYSTÈME DE BUZZER VOCAL AVEC ARRÊT / CLÔTURE
+# ========================================================
+
+SESSION_BUZZER_ACTIVE = {}  # {channel_id: BuzzerMultiView}
+
+class BuzzerMultiView(discord.ui.View):
+    def __init__(self, channel_id: int, numero_question: int = 1):
+        super().__init__(timeout=None)
+        self.channel_id = channel_id
+        self.numero_question = numero_question
+        self.actif = True
+        self.gagnant = None
+
+    @discord.ui.button(label="🚨 BUZZER !", style=discord.ButtonStyle.danger, custom_id="btn_buzz_action")
+    async def buzzer_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.actif:
+            await interaction.response.send_message("⛔ Trop tard, quelqu'un a déjà buzzé !", ephemeral=True)
+            return
+
+        self.actif = False
+        self.gagnant = interaction.user
+
+        button.disabled = True
+        button.label = f"🔒 BUZZÉ PAR {interaction.user.display_name.upper()}"
+        button.style = discord.ButtonStyle.secondary
+
+        # 1. Bouton Question Suivante (Orgas)
+        bouton_next = discord.ui.Button(
+            label="🔄 Question suivante", 
+            style=discord.ButtonStyle.primary, 
+            custom_id="btn_buzz_next"
+        )
+
+        # 2. Bouton Clôturer l'épreuve (Orgas)
+        bouton_stop = discord.ui.Button(
+            label="🛑 Clôturer l'épreuve", 
+            style=discord.ButtonStyle.danger, 
+            custom_id="btn_buzz_stop"
+        )
+
+        async def next_callback(next_inter: discord.Interaction):
+            if not est_orga_ou_admin(next_inter):
+                await next_inter.response.send_message("⛔ Réservé aux Orgas.", ephemeral=True)
+                return
+
+            bouton_next.disabled = True
+            bouton_stop.disabled = True
+            await next_inter.response.edit_message(view=self)
+
+            nouvelle_vue = BuzzerMultiView(channel_id=self.channel_id, numero_question=self.numero_question + 1)
+            SESSION_BUZZER_ACTIVE[self.channel_id] = nouvelle_vue
+
+            embed_relance = discord.Embed(
+                title=f"⚡ BUZZER — QUESTION #{nouvelle_vue.numero_question}",
+                description="👉 *Micro ouvert ! Cliquez dès que vous avez la réponse.*",
+                color=discord.Color.gold()
+            )
+            embed_relance.set_footer(text="Buzzer réarmé")
+            await next_inter.channel.send(embed=embed_relance, view=nouvelle_vue)
+
+        async def stop_callback(stop_inter: discord.Interaction):
+            if not est_orga_ou_admin(stop_inter):
+                await stop_inter.response.send_message("⛔ Réservé aux Orgas.", ephemeral=True)
+                return
+
+            self.clear_items()
+            await stop_inter.response.edit_message(view=self)
+
+            SESSION_BUZZER_ACTIVE.pop(self.channel_id, None)
+
+            embed_fin = discord.Embed(
+                title="🛑 ÉPREUVE BUZZER TERMINÉE",
+                description=f"La session de buzzer s'arrête ici après **{self.numero_question} question(s)**.",
+                color=discord.Color.dark_grey()
+            )
+            await stop_inter.channel.send(embed=embed_fin)
+
+        bouton_next.callback = next_callback
+        bouton_stop.callback = stop_callback
+
+        self.add_item(bouton_next)
+        self.add_item(bouton_stop)
+
+        await interaction.response.edit_message(view=self)
+
+        embed_win = discord.Embed(
+            title=f"🔔 BUZZ VALIDÉ — QUESTION #{self.numero_question}",
+            description=(
+                f"🥇 **{interaction.user.mention}** a buzzé en premier !\n\n"
+                f"🎙️ À toi de répondre dans le vocal."
+            ),
+            color=discord.Color.green()
+        )
+        embed_win.set_thumbnail(url=interaction.user.display_avatar.url)
+        await interaction.channel.send(embed=embed_win)
+
+
+@bot.tree.command(
+    name="buzzer",
+    description="Lance la session de buzzer vocal."
+)
+@app_commands.describe(question="Optionnel : texte de la question")
+@app_commands.check(est_orga_ou_admin)
+async def buzzer(interaction: discord.Interaction, question: str = "Question en cours..."):
+    vue = BuzzerMultiView(channel_id=interaction.channel_id, numero_question=1)
+    SESSION_BUZZER_ACTIVE[interaction.channel_id] = vue
+
+    embed = discord.Embed(
+        title="⚡ BUZZER — QUESTION #1",
+        description=f"**{question}**\n\n👉 *Le premier qui clique ci-dessous prend la parole en vocal !*",
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="Système de rapidité vocal")
+
+    await interaction.response.send_message(embed=embed, view=vue)
+
+
+@bot.tree.command(
+    name="arreter_buzzer",
+    description="Force l'arrêt du buzzer en cours dans le salon."
+)
+@app_commands.check(est_orga_ou_admin)
+async def arreter_buzzer(interaction: discord.Interaction):
+    ch_id = interaction.channel_id
+
+    if ch_id in SESSION_BUZZER_ACTIVE:
+        vue = SESSION_BUZZER_ACTIVE.pop(ch_id)
+        vue.actif = False
+        vue.stop()
+
+        embed_fin = discord.Embed(
+            title="🛑 BUZZER CLÔTURÉ",
+            description="L'épreuve est terminée, tous les buzzers de ce salon sont désactivés.",
+            color=discord.Color.dark_grey()
+        )
+        await interaction.response.send_message(embed=embed_fin)
+    else:
+        await interaction.response.send_message("ℹ️ Aucun buzzer n'est actif dans ce salon.", ephemeral=True)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
