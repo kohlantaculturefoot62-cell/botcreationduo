@@ -39,7 +39,7 @@ SALON_BILAN_ORGAS_ID = 1549193526007435345        # 🛠️ Fiches Bilans Organi
 # Salons Spectateurs
 SALON_CHAT_SPECTATEURS_ID = 1544355721024635061
 SALON_RECAP_SPECTATEURS_ID = 1546598600555888670
-
+CATEGORY_EPREUVE_ID = 1547679122099277944  # ⚔️ Catégorie Épreuves
 # Salons Annonces & Présentations Orgas
 SALON_ANNONCES_TRAVAIL_ID = 1545823720676003890
 SALON_ANNONCES_CANDIDATS_ID = 1537439670340681828
@@ -4327,12 +4327,10 @@ async def creer_vocaux_individuels(
 
 @bot.tree.command(
     name="creer_epreuve_groupe",
-    description="Crée rapidement un salon d'épreuve privé (textuel ou vocal) pour un groupe de candidats."
+    description="Crée automatiquement un salon textuel ET un salon vocal privés dans la catégorie épreuves."
 )
 @app_commands.describe(
-    nom_salon="Nom du salon d'épreuve (ex: epreuve-orientation, finale-poteaux...)",
-    nom_categorie="Catégorie où ranger le salon",
-    type_salon="Textuel ou Vocal",
+    nom_salon="Nom de base de l'épreuve (ex: epreuve-orientation, mort-subite...)",
     candidat_1="1er candidat",
     candidat_2="2ème candidat",
     candidat_3="3ème candidat (optionnel)",
@@ -4344,16 +4342,10 @@ async def creer_vocaux_individuels(
     candidat_9="9ème candidat (optionnel)",
     candidat_10="10ème candidat (optionnel)"
 )
-@app_commands.choices(type_salon=[
-    app_commands.Choice(name="💬 Salon Textuel", value="text"),
-    app_commands.Choice(name="🔊 Salon Vocal", value="voice")
-])
 @app_commands.check(est_orga_ou_admin)
 async def creer_epreuve_groupe(
     interaction: discord.Interaction,
     nom_salon: str,
-    nom_categorie: str,
-    type_salon: app_commands.Choice[str],
     candidat_1: discord.Member,
     candidat_2: discord.Member,
     candidat_3: discord.Member = None,
@@ -4368,10 +4360,10 @@ async def creer_epreuve_groupe(
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    clean_cat_name = nettoyer_texte(nom_categorie)
-    categorie = discord.utils.find(lambda c: nettoyer_texte(c.name) == clean_cat_name, guild.categories)
-    if not categorie:
-        categorie = await guild.create_category(nom_categorie)
+    categorie = guild.get_channel(CATEGORY_EPREUVE_ID)
+    if not categorie or not isinstance(categorie, discord.CategoryChannel):
+        await interaction.followup.send(f"❌ Catégorie Épreuves introuvable (ID: `{CATEGORY_EPREUVE_ID}`).", ephemeral=True)
+        return
 
     participants = [c for c in [candidat_1, candidat_2, candidat_3, candidat_4, candidat_5, candidat_6, candidat_7, candidat_8, candidat_9, candidat_10] if c is not None]
     participants = list(set(participants))
@@ -4379,58 +4371,68 @@ async def creer_epreuve_groupe(
     role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
     role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
 
-    est_vocal = (type_salon.value == "voice")
-
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False, read_messages=False),
-        guild.me: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True, read_messages=True, send_messages=True)
+    # 1. Overwrites Textuel
+    overwrites_text = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False, read_messages=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True)
+    }
+    # 2. Overwrites Vocal
+    overwrites_voice = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True, mute_members=True)
     }
 
     for p in participants:
         r_perso = trouver_role_personnel(p)
         cible_perm = r_perso if r_perso else p
 
-        if est_vocal:
-            overwrites[cible_perm] = discord.PermissionOverwrite(
-                view_channel=True, connect=True, speak=True, stream=True, use_voice_activation=True
-            )
-        else:
-            overwrites[cible_perm] = discord.PermissionOverwrite(
-                view_channel=True, read_messages=True, read_message_history=True, send_messages=True
-            )
+        overwrites_text[cible_perm] = discord.PermissionOverwrite(
+            view_channel=True, read_messages=True, read_message_history=True, send_messages=True
+        )
+        overwrites_voice[cible_perm] = discord.PermissionOverwrite(
+            view_channel=True, connect=True, speak=True, stream=True, use_voice_activation=True
+        )
 
-    if est_vocal:
-        if role_spectateurs:
-            overwrites[role_spectateurs] = get_spectateur_voice_overwrites()
-        if role_orgas:
-            overwrites[role_orgas] = discord.PermissionOverwrite(
-                view_channel=True, connect=True, speak=True, mute_members=True, deafen_members=True, move_members=True
-            )
-        salon_cree = await guild.create_voice_channel(
-            name=f"🔊・{formater_nom_salon(nom_salon)}",
-            category=categorie,
-            overwrites=overwrites
+    if role_spectateurs:
+        overwrites_text[role_spectateurs] = get_spectateur_overwrites()
+        overwrites_voice[role_spectateurs] = get_spectateur_voice_overwrites()
+
+    if role_orgas:
+        overwrites_text[role_orgas] = discord.PermissionOverwrite(
+            view_channel=True, read_messages=True, read_message_history=True, send_messages=True
         )
-    else:
-        if role_spectateurs:
-            overwrites[role_spectateurs] = get_spectateur_overwrites()
-        if role_orgas:
-            overwrites[role_orgas] = discord.PermissionOverwrite(
-                view_channel=True, read_messages=True, read_message_history=True, send_messages=True
-            )
-        salon_cree = await guild.create_text_channel(
-            name=f"⚔️・{formater_nom_salon(nom_salon)}",
-            category=categorie,
-            overwrites=overwrites
+        overwrites_voice[role_orgas] = discord.PermissionOverwrite(
+            view_channel=True, connect=True, speak=True, mute_members=True, deafen_members=True, move_members=True
         )
+
+    nom_clean = formater_nom_salon(nom_salon)
+
+    # Création simultanée des deux salons
+    salon_texte = await guild.create_text_channel(
+        name=f"⚔️・{nom_clean}",
+        category=categorie,
+        overwrites=overwrites_text
+    )
+    salon_vocal = await guild.create_voice_channel(
+        name=f"🔊・{nom_clean}",
+        category=categorie,
+        overwrites=overwrites_voice
+    )
 
     mentions = ", ".join([p.mention for p in participants])
+    await salon_texte.send(
+        f"⚔️ **SALON D'ÉPREUVE GROUPÉE**\n"
+        f"Bienvenue {mentions}.\n"
+        f"🔊 Le salon vocal associé est disponible : {salon_vocal.mention}"
+    )
+
     await interaction.followup.send(
-        f"✅ **Salon d'épreuve créé :** {salon_cree.mention} dans **{categorie.name}**\n"
+        f"✅ **Duo Écrit + Vocal créé dans {categorie.name} !**\n"
+        f"- 💬 **Textuel :** {salon_texte.mention}\n"
+        f"- 🔊 **Vocal :** {salon_vocal.mention}\n"
         f"👥 **Candidats autorisés ({len(participants)}) :** {mentions}",
         ephemeral=True
     )
-
 
 @bot.tree.command(
     name="supprimer_epreuve_groupe",
