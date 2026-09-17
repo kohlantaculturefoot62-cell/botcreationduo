@@ -6747,46 +6747,66 @@ async def arreter_buzzer(interaction: discord.Interaction):
         await interaction.response.send_message("ℹ️ Aucun buzzer n'est actif dans ce salon.", ephemeral=True)
 
 # ========================================================
-# CONFRONTATIONS 1v1 PAR MESSAGE (DUELS ROUGE VS JAUNE)
+# CONFRONTATIONS 1v1 (ACCEPTE RÔLE OU MEMBRE DIRECTEMENT)
 # ========================================================
 
 def extraire_duels_depuis_texte(texte: str) -> tuple[dict[int, int], dict[int, int]]:
-    """Extrait les IDs des rouges et des jaunes ordonnés de 1 à N depuis un texte."""
+    """Extrait les IDs des rouges et des jaunes ordonnés de 1 à N (rôles ou membres)."""
     lignes = texte.split("\n")
     rouges = {}
     jaunes = {}
     equipe_actuelle = None
 
     for ligne in lignes:
-        ligne_nettoyee = nettoyer_texte(ligne)
-        if "rouge" in ligne_nettoyee:
+        ligne_clean = nettoyer_texte(ligne)
+        if "rouge" in ligne_clean:
             equipe_actuelle = "rouge"
             continue
-        elif "jaune" in ligne_nettoyee:
+        elif "jaune" in ligne_clean:
             equipe_actuelle = "jaune"
             continue
 
         if not equipe_actuelle:
             continue
 
-        # Détection du numéro (1 à 10) et de la mention Discord (<@123...> ou <@!123...>)
+        # Détecte le numéro du duel (1 à 10...)
         match_num = re.search(r"^[^\d]*(\d+)", ligne.strip())
-        match_user = re.search(r"<@!?(\d+)>", ligne)
+        # Détecte n'importe quelle mention Discord : membre (<@123>, <@!123>) ou rôle (<@&123>)
+        match_target = re.search(r"<@&?!?(\d+)>", ligne)
 
-        if match_num and match_user:
+        if match_num and match_target:
             numero = int(match_num.group(1))
-            user_id = int(match_user.group(1))
+            cible_id = int(match_target.group(1))
             if equipe_actuelle == "rouge":
-                rouges[numero] = user_id
+                rouges[numero] = cible_id
             else:
-                jaunes[numero] = user_id
+                jaunes[numero] = cible_id
 
     return rouges, jaunes
 
 
+def resoudre_cible_discord(guild: discord.Guild, cible_id: int):
+    """Résout l'ID en Rôle ou Membre (et privilégie le rôle perso si c'est un membre)."""
+    # 1. Si c'est directement un rôle mentionné
+    role = guild.get_role(cible_id)
+    if role:
+        return role, formater_nom_salon(role.name), role.mention
+
+    # 2. Si c'est un membre mentionné
+    membre = guild.get_member(cible_id)
+    if membre:
+        # On cherche son rôle personnel s'il existe
+        r_perso = trouver_role_personnel(membre)
+        cible_perm = r_perso if r_perso else membre
+        nom_salon = formater_nom_salon(membre.display_name)
+        return cible_perm, nom_salon, membre.mention
+
+    return None, None, None
+
+
 @bot.tree.command(
     name="creer_duels_message",
-    description="Crée les salons 1v1 (écrit + vocal) pour chaque duel Rouge vs Jaune défini dans un message."
+    description="Crée les salons 1v1 (écrit + vocal) depuis un message (gère rôles ou candidats)."
 )
 @app_commands.describe(message_id_ou_lien="L'ID ou le lien du message listant les duels de 1 à 10")
 @app_commands.check(est_orga_ou_admin)
@@ -6799,7 +6819,6 @@ async def creer_duels_message(interaction: discord.Interaction, message_id_ou_li
         await interaction.followup.send(f"❌ Catégorie Épreuves introuvable (ID: `{CATEGORY_EPREUVE_ID}`).", ephemeral=True)
         return
 
-    # Récupération du message cible
     msg_id = message_id_ou_lien.strip().split("/")[-1]
     try:
         msg_id_int = int(msg_id)
@@ -6828,13 +6847,11 @@ async def creer_duels_message(interaction: discord.Interaction, message_id_ou_li
         texte_brut += "\n" + source_msg.embeds[0].description
 
     rouges_dict, jaunes_dict = extraire_duels_depuis_texte(texte_brut)
-
-    # Récupération des numéros communs (ex: duel 1, duel 2...)
     numeros_communs = sorted(list(set(rouges_dict.keys()) & set(jaunes_dict.keys())))
 
     if not numeros_communs:
         await interaction.followup.send(
-            "❌ Aucun duel apparié trouvé. Vérifie que ton message contient bien une section 'Rouges' et une 'Jaunes' avec des listes numérotées et des mentions (ex: `1. @Joueur`).",
+            "❌ Aucun duel apparié trouvé. Vérifie la présence des numéros et des mentions (membres ou rôles).",
             ephemeral=True
         )
         return
@@ -6850,19 +6867,13 @@ async def creer_duels_message(interaction: discord.Interaction, message_id_ou_li
     duels_crees = []
 
     for num in numeros_communs:
-        membre_r = guild.get_member(rouges_dict[num])
-        membre_j = guild.get_member(jaunes_dict[num])
+        cible_r, nom_r, mention_r = resoudre_cible_discord(guild, rouges_dict[num])
+        cible_j, nom_j, mention_j = resoudre_cible_discord(guild, jaunes_dict[num])
 
-        if not membre_r or not membre_j:
+        if not cible_r or not cible_j:
             continue
 
-        role_perso_r = trouver_role_personnel(membre_r)
-        role_perso_j = trouver_role_personnel(membre_j)
-
-        cible_r = role_perso_r if role_perso_r else membre_r
-        cible_j = role_perso_j if role_perso_j else membre_j
-
-        # Overwrites Textuel
+        # Overwrites Salon Textuel
         overwrites_text = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False, read_messages=False),
             guild.me: discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True),
@@ -6870,7 +6881,7 @@ async def creer_duels_message(interaction: discord.Interaction, message_id_ou_li
             cible_j: discord.PermissionOverwrite(view_channel=True, read_messages=True, read_message_history=True, send_messages=True)
         }
 
-        # Overwrites Vocal
+        # Overwrites Salon Vocal
         overwrites_voice = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False),
             guild.me: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True, mute_members=True),
@@ -6886,7 +6897,7 @@ async def creer_duels_message(interaction: discord.Interaction, message_id_ou_li
             overwrites_text[role_orgas] = discord.PermissionOverwrite(view_channel=True, read_messages=True, read_message_history=True, send_messages=True)
             overwrites_voice[role_orgas] = discord.PermissionOverwrite(view_channel=True, connect=True, speak=True, mute_members=True, deafen_members=True, move_members=True)
 
-        nom_base = f"duel-{num}-{formater_nom_salon(membre_r.display_name)}-vs-{formater_nom_salon(membre_j.display_name)}"
+        nom_base = f"duel-{num}-{nom_r}-vs-{nom_j}"
 
         # 1. Salon Textuel
         salon_txt = await guild.create_text_channel(
@@ -6903,9 +6914,9 @@ async def creer_duels_message(interaction: discord.Interaction, message_id_ou_li
         )
 
         await salon_txt.send(
-            f"⚔️ **DUEL #{num} : {membre_r.mention} (Rouge) 🆚 {membre_j.mention} (Jaune)**\n\n"
-            f"🔊 Salon vocal du duel : {salon_voc.mention}\n"
-            f"*(Seuls vous deux, les orgas et les spectateurs en lecture/écoute seule ont accès)*"
+            f"⚔️ **DUEL #{num} : {mention_r} (Rouge) 🆚 {mention_j} (Jaune)**\n\n"
+            f"🔊 Salon vocal associé : {salon_voc.mention}\n"
+            f"*(Accès réservé aux deux adversaires, au staff et aux spectateurs)*"
         )
 
         duels_crees.append(f"**Duel #{num} :** {salon_txt.mention} & {salon_voc.mention}")
