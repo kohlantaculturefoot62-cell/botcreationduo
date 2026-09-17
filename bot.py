@@ -759,16 +759,12 @@ async def traiter_suggestion_orga(channel_src, salon_dest, candidat, joueur_myst
 
 
 # ==========================================
-# 4. HORLOGE AUTOMATIQUE (PARIS 23H30 & 09H00)
-# ==========================================
-
-# ==========================================
-# 4. HORLOGE AUTOMATIQUE (PARIS 23H30)
+# 4. HORLOGE AUTOMATIQUE (TOUT À 23H30 PARIS)
 # ==========================================
 
 @tasks.loop(minutes=1)
 async def horloge_serveur():
-    """Horloge robuste calée sur l'heure de Paris."""
+    """Horloge robuste calée sur l'heure de Paris (Déclenchement groupé à 23h30)."""
     global DERNIER_JOUR_RECAP
 
     try:
@@ -776,26 +772,28 @@ async def horloge_serveur():
         maintenant = datetime.datetime.now(paris_tz)
         jour_actuel = maintenant.strftime("%Y-%m-%d")
 
-        # Déclenchement à partir de 23h30 (ne rate pas l'heure en cas de décalage de quelques secondes)
+        # Déclenchement unique par jour à 23h30
         if maintenant.hour == 23 and maintenant.minute >= 30 and DERNIER_JOUR_RECAP != jour_actuel:
             DERNIER_JOUR_RECAP = jour_actuel
-            print(f"⏰ [23h30+ Paris] Lancement automatique des résumés du {jour_actuel}...")
+            print(f"⏰ [23:30 Paris] Lancement automatique de la session du {jour_actuel}...")
 
             for guild in bot.guilds:
-                # 1. Récap Quotidien Global
-                target_channel = bot.get_channel(RECAP_CHANNEL_ID)
-                if target_channel:
+                salon_recap = bot.get_channel(RECAP_CHANNEL_ID)
+                salon_questions = bot.get_channel(SALON_QUESTIONS_RECAP_ID)
+
+                # 1. 📰 Journal Stratégique Global
+                if salon_recap:
                     try:
                         print("📰 Génération du Journal Stratégique Global...")
-                        await generer_et_envoyer_recap_quotidien(guild, target_channel)
+                        await generer_et_envoyer_recap_quotidien(guild, salon_recap)
                     except Exception as e_recap:
                         print(f"❌ Erreur lors du journal quotidien : {e_recap}")
                 else:
                     print(f"❌ Salon RECAP_CHANNEL_ID ({RECAP_CHANNEL_ID}) introuvable !")
 
-                await asyncio.sleep(5)
+                await asyncio.sleep(4)
 
-                # 2. Récap Chat Spectateurs (isolé pour s'exécuter même si le 1er a échoué)
+                # 2. 🍿 Récapitulatif Spectateurs
                 try:
                     print("🍿 Génération du Récapitulatif Spectateurs...")
                     succes_spec, msg_spec = await traiter_resume_spectateurs(guild)
@@ -806,14 +804,37 @@ async def horloge_serveur():
                 except Exception as e_spec:
                     print(f"❌ Erreur lors du récap spectateurs : {e_spec}")
 
+                await asyncio.sleep(4)
+
+                # 3. 🎙️ Questions Confessionnal / Conseil
+                if salon_recap and salon_questions:
+                    try:
+                        print("🎙️ Génération des questions du confessionnal...")
+                        questions_texte = await generer_questions_confessionnal(salon_recap)
+                        date_str = maintenant.strftime("%d/%m/%Y")
+
+                        embed_q = discord.Embed(
+                            title=f"🎙️ SUGGESTIONS D'INTERVIEWS DISCORD — {date_str}",
+                            description=questions_texte,
+                            color=discord.Color.red()
+                        )
+                        embed_q.set_footer(text="Généré d'après le journal du jour • Réservé aux Orgas")
+
+                        await salon_questions.send(embed=embed_q)
+                        print("✅ Questions publiées !")
+                    except Exception as e_q:
+                        print(f"❌ Erreur lors de la génération des questions : {e_q}")
+                else:
+                    print("⚠️ Salon questions ou récap manquant pour les questions confessionnal.")
+
     except Exception as e_globale:
         print(f"❌ Erreur inattendue dans la boucle horloge_serveur : {e_globale}")
 
 
 @horloge_serveur.error
 async def horloge_serveur_error(error):
-    """Empêche la tâche de s'éteindre définitivement en cas de crash."""
-    print(f"⚠️ Alerte : la tâche horloge s'est arrêtée avec l'erreur : {error}")
+    """Filet de sécurité : Relance la tâche si elle plante de manière inattendue."""
+    print(f"⚠️ Alerte : la tâche horloge s'est arrêtée : {error}")
     await asyncio.sleep(5)
     if not horloge_serveur.is_running():
         horloge_serveur.start()
