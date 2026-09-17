@@ -5226,11 +5226,10 @@ async def bilan_orga(
 
 @bot.tree.command(
     name="creer_salon_annonces_groupe",
-    description="Crée un salon textuel privé où tous les candidats choisis sont en lecture seule."
+    description="Crée un salon textuel privé d'épreuve où les candidats choisis sont en lecture seule."
 )
 @app_commands.describe(
     nom_salon="Nom du salon (ex: annonces-epreuve-1, briefing-orientation)",
-    nom_categorie="Catégorie où créer le salon",
     candidat_1="1er candidat",
     candidat_2="2ème candidat",
     candidat_3="3ème candidat (optionnel)",
@@ -5246,7 +5245,6 @@ async def bilan_orga(
 async def creer_salon_annonces_groupe(
     interaction: discord.Interaction,
     nom_salon: str,
-    nom_categorie: str,
     candidat_1: discord.Member,
     candidat_2: discord.Member,
     candidat_3: discord.Member = None,
@@ -5261,10 +5259,10 @@ async def creer_salon_annonces_groupe(
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    clean_cat_name = nettoyer_texte(nom_categorie)
-    categorie = discord.utils.find(lambda c: nettoyer_texte(c.name) == clean_cat_name, guild.categories)
-    if not categorie:
-        categorie = await guild.create_category(nom_categorie)
+    categorie = guild.get_channel(CATEGORY_EPREUVE_ID)
+    if not categorie or not isinstance(categorie, discord.CategoryChannel):
+        await interaction.followup.send(f"❌ Catégorie Épreuves introuvable (ID: `{CATEGORY_EPREUVE_ID}`).", ephemeral=True)
+        return
 
     participants = [c for c in [candidat_1, candidat_2, candidat_3, candidat_4, candidat_5, candidat_6, candidat_7, candidat_8, candidat_9, candidat_10] if c is not None]
     participants = list(set(participants))
@@ -5277,7 +5275,6 @@ async def creer_salon_annonces_groupe(
         guild.me: discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True)
     }
 
-    # Permissions lecture seule stricte pour tous les candidats
     perms_lecture_seule = discord.PermissionOverwrite(
         view_channel=True,
         read_messages=True,
@@ -5325,11 +5322,10 @@ async def creer_salon_annonces_groupe(
 
 @bot.tree.command(
     name="creer_salon_focus_candidat",
-    description="Crée un salon où 1 candidat écrit et les autres sont en lecture seule."
+    description="Crée un salon d'épreuve où 1 candidat écrit et les autres sont en lecture seule."
 )
 @app_commands.describe(
     nom_salon="Nom du salon (ex: passage-lucas, epreuve-sarah)",
-    nom_categorie="Catégorie où créer le salon",
     candidat_actif="Le candidat qui A LE DROIT D'ÉCRIRE",
     observateur_1="1er candidat observateur (lecture seule)",
     observateur_2="2ème candidat observateur (optionnel)",
@@ -5345,7 +5341,6 @@ async def creer_salon_annonces_groupe(
 async def creer_salon_focus_candidat(
     interaction: discord.Interaction,
     nom_salon: str,
-    nom_categorie: str,
     candidat_actif: discord.Member,
     observateur_1: discord.Member,
     observateur_2: discord.Member = None,
@@ -5360,10 +5355,10 @@ async def creer_salon_focus_candidat(
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    clean_cat_name = nettoyer_texte(nom_categorie)
-    categorie = discord.utils.find(lambda c: nettoyer_texte(c.name) == clean_cat_name, guild.categories)
-    if not categorie:
-        categorie = await guild.create_category(nom_categorie)
+    categorie = guild.get_channel(CATEGORY_EPREUVE_ID)
+    if not categorie or not isinstance(categorie, discord.CategoryChannel):
+        await interaction.followup.send(f"❌ Catégorie Épreuves introuvable (ID: `{CATEGORY_EPREUVE_ID}`).", ephemeral=True)
+        return
 
     observateurs = [c for c in [observateur_1, observateur_2, observateur_3, observateur_4, observateur_5, observateur_6, observateur_7, observateur_8, observateur_9] if c is not None and c.id != candidat_actif.id]
     observateurs = list(set(observateurs))
@@ -5376,7 +5371,7 @@ async def creer_salon_focus_candidat(
         guild.me: discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True)
     }
 
-    # 1. Candidat actif : Plein accès écriture
+    # Candidat actif
     r_actif = trouver_role_personnel(candidat_actif)
     cible_actif = r_actif if r_actif else candidat_actif
     overwrites[cible_actif] = discord.PermissionOverwrite(
@@ -5386,7 +5381,7 @@ async def creer_salon_focus_candidat(
         send_messages=True
     )
 
-    # 2. Candidats observateurs : Lecture seule
+    # Observateurs
     perms_lecture_seule = discord.PermissionOverwrite(
         view_channel=True,
         read_messages=True,
