@@ -762,31 +762,62 @@ async def traiter_suggestion_orga(channel_src, salon_dest, candidat, joueur_myst
 # 4. HORLOGE AUTOMATIQUE (PARIS 23H30 & 09H00)
 # ==========================================
 
+# ==========================================
+# 4. HORLOGE AUTOMATIQUE (PARIS 23H30)
+# ==========================================
+
 @tasks.loop(minutes=1)
 async def horloge_serveur():
     """Horloge robuste calée sur l'heure de Paris."""
-    global DERNIER_JOUR_RECAP, DERNIER_JOUR_QUESTIONS
+    global DERNIER_JOUR_RECAP
 
-    paris_tz = ZoneInfo("Europe/Paris")
-    maintenant = datetime.datetime.now(paris_tz)
-    jour_actuel = maintenant.strftime("%Y-%m-%d")
+    try:
+        paris_tz = ZoneInfo("Europe/Paris")
+        maintenant = datetime.datetime.now(paris_tz)
+        jour_actuel = maintenant.strftime("%Y-%m-%d")
 
-    # 1. Déclenchement automatique du Récapitulatif à 23h30 Paris
-    if maintenant.hour == 23 and maintenant.minute == 30 and DERNIER_JOUR_RECAP != jour_actuel:
-        DERNIER_JOUR_RECAP = jour_actuel
-        print(f"⏰ [23:30 Paris] Lancement automatique des résumés du {jour_actuel}...")
-        for guild in bot.guilds:
-            try:
+        # Déclenchement à partir de 23h30 (ne rate pas l'heure en cas de décalage de quelques secondes)
+        if maintenant.hour == 23 and maintenant.minute >= 30 and DERNIER_JOUR_RECAP != jour_actuel:
+            DERNIER_JOUR_RECAP = jour_actuel
+            print(f"⏰ [23h30+ Paris] Lancement automatique des résumés du {jour_actuel}...")
+
+            for guild in bot.guilds:
+                # 1. Récap Quotidien Global
                 target_channel = bot.get_channel(RECAP_CHANNEL_ID)
                 if target_channel:
-                    await generer_et_envoyer_recap_quotidien(guild, target_channel)
+                    try:
+                        print("📰 Génération du Journal Stratégique Global...")
+                        await generer_et_envoyer_recap_quotidien(guild, target_channel)
+                    except Exception as e_recap:
+                        print(f"❌ Erreur lors du journal quotidien : {e_recap}")
                 else:
-                    print(f"❌ [ERREUR] Salon RECAP_CHANNEL_ID ({RECAP_CHANNEL_ID}) introuvable !")
-                
+                    print(f"❌ Salon RECAP_CHANNEL_ID ({RECAP_CHANNEL_ID}) introuvable !")
+
                 await asyncio.sleep(5)
-                await traiter_resume_spectateurs(guild)
-            except Exception as e:
-                print(f"❌ Erreur lors de la tâche automatique de 23h30 : {e}")
+
+                # 2. Récap Chat Spectateurs (isolé pour s'exécuter même si le 1er a échoué)
+                try:
+                    print("🍿 Génération du Récapitulatif Spectateurs...")
+                    succes_spec, msg_spec = await traiter_resume_spectateurs(guild)
+                    if succes_spec:
+                        print(f"✅ {msg_spec}")
+                    else:
+                        print(f"⚠️ Récap spectateurs : {msg_spec}")
+                except Exception as e_spec:
+                    print(f"❌ Erreur lors du récap spectateurs : {e_spec}")
+
+    except Exception as e_globale:
+        print(f"❌ Erreur inattendue dans la boucle horloge_serveur : {e_globale}")
+
+
+@horloge_serveur.error
+async def horloge_serveur_error(error):
+    """Empêche la tâche de s'éteindre définitivement en cas de crash."""
+    print(f"⚠️ Alerte : la tâche horloge s'est arrêtée avec l'erreur : {error}")
+    await asyncio.sleep(5)
+    if not horloge_serveur.is_running():
+        horloge_serveur.start()
+        print("🔄 Tâche horloge redémarrée automatiquement.")
                 
 @bot.event
 async def on_ready():
