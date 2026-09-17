@@ -6811,6 +6811,7 @@ def resoudre_cible_discord(guild: discord.Guild, cible_id: int):
 @app_commands.describe(message_id_ou_lien="L'ID ou le lien du message listant les duels de 1 à 10")
 @app_commands.check(est_orga_ou_admin)
 async def creer_duels_message(interaction: discord.Interaction, message_id_ou_lien: str):
+    # Accusé de réception immédiat dès la première ligne
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
@@ -6819,27 +6820,32 @@ async def creer_duels_message(interaction: discord.Interaction, message_id_ou_li
         await interaction.followup.send(f"❌ Catégorie Épreuves introuvable (ID: `{CATEGORY_EPREUVE_ID}`).", ephemeral=True)
         return
 
-    msg_id = message_id_ou_lien.strip().split("/")[-1]
-    try:
-        msg_id_int = int(msg_id)
-    except ValueError:
-        await interaction.followup.send("❌ Lien ou ID de message invalide.", ephemeral=True)
-        return
-
+    # 1. Extraction ciblée du salon et de l'ID sans balayer tout le serveur
     source_msg = None
-    try:
-        source_msg = await interaction.channel.fetch_message(msg_id_int)
-    except Exception:
-        for ch in guild.text_channels:
-            try:
-                source_msg = await ch.fetch_message(msg_id_int)
-                if source_msg:
-                    break
-            except Exception:
-                continue
+    lien_propre = message_id_ou_lien.strip()
+
+    if "discord.com/channels/" in lien_propre:
+        parties = lien_propre.split("/")
+        try:
+            channel_id = int(parties[-2])
+            msg_id = int(parties[-1])
+            ch = guild.get_channel(channel_id)
+            if ch:
+                source_msg = await ch.fetch_message(msg_id)
+        except Exception:
+            pass
+    else:
+        try:
+            msg_id = int(lien_propre)
+            source_msg = await interaction.channel.fetch_message(msg_id)
+        except Exception:
+            pass
 
     if not source_msg:
-        await interaction.followup.send("❌ Message introuvable sur le serveur.", ephemeral=True)
+        await interaction.followup.send(
+            "❌ Message introuvable. Si le message est dans un autre salon, colle son **lien direct** (Clic droit > Copier le lien du message).",
+            ephemeral=True
+        )
         return
 
     texte_brut = source_msg.content
@@ -6851,18 +6857,13 @@ async def creer_duels_message(interaction: discord.Interaction, message_id_ou_li
 
     if not numeros_communs:
         await interaction.followup.send(
-            "❌ Aucun duel apparié trouvé. Vérifie la présence des numéros et des mentions (membres ou rôles).",
+            "❌ Aucun duel apparié trouvé. Vérifie la présence des numéros et des mentions (ex: `1. @Lucas`).",
             ephemeral=True
         )
         return
 
     role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
     role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
-
-    await interaction.followup.send(
-        f"⏳ Création de **{len(numeros_communs)} confrontations 1v1** (Salons Écrits + Vocaux) dans **{categorie.name}**...",
-        ephemeral=True
-    )
 
     duels_crees = []
 
@@ -6873,7 +6874,6 @@ async def creer_duels_message(interaction: discord.Interaction, message_id_ou_li
         if not cible_r or not cible_j:
             continue
 
-        # Overwrites Salon Textuel
         overwrites_text = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False, read_messages=False),
             guild.me: discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True),
@@ -6881,7 +6881,6 @@ async def creer_duels_message(interaction: discord.Interaction, message_id_ou_li
             cible_j: discord.PermissionOverwrite(view_channel=True, read_messages=True, read_message_history=True, send_messages=True)
         }
 
-        # Overwrites Salon Vocal
         overwrites_voice = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False),
             guild.me: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True, mute_members=True),
@@ -6915,18 +6914,18 @@ async def creer_duels_message(interaction: discord.Interaction, message_id_ou_li
 
         await salon_txt.send(
             f"⚔️ **DUEL #{num} : {mention_r} (Rouge) 🆚 {mention_j} (Jaune)**\n\n"
-            f"🔊 Salon vocal associé : {salon_voc.mention}\n"
-            f"*(Accès réservé aux deux adversaires, au staff et aux spectateurs)*"
+            f"🔊 Salon vocal : {salon_voc.mention}\n"
+            f"*(Seuls les deux duellistes, le staff et les spectateurs ont accès)*"
         )
 
         duels_crees.append(f"**Duel #{num} :** {salon_txt.mention} & {salon_voc.mention}")
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.4)
 
+    # Réponse finale
     await interaction.followup.send(
-        f"✅ **{len(duels_crees)} duels (Écrit + Vocal) créés avec succès !**\n\n" + "\n".join(duels_crees),
+        f"✅ **{len(duels_crees)} duels (Écrit + Vocal) créés dans {categorie.name} !**\n\n" + "\n".join(duels_crees),
         ephemeral=True
     )
-    
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
