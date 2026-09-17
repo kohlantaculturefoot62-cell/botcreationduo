@@ -1403,7 +1403,7 @@ async def effacer_salon(interaction: discord.Interaction, salon: discord.TextCha
 
 @bot.tree.command(
     name="vider_categorie",
-    description="Supprime tous les salons d'une catégorie tout en conservant la catégorie vide."
+    description="Supprime tous les salons (textuels et vocaux) d'une catégorie tout en conservant la catégorie vide."
 )
 @app_commands.describe(nom_categorie="Nom de la catégorie dont vous souhaitez supprimer les salons")
 @app_commands.check(est_orga_ou_admin)
@@ -1418,25 +1418,27 @@ async def vider_categorie(interaction: discord.Interaction, nom_categorie: str):
         await interaction.followup.send(f"❌ Catégorie **{nom_categorie}** introuvable.", ephemeral=True)
         return
 
-    salons_a_supprimer = [ch for ch in category.channels if isinstance(ch, discord.TextChannel)]
+    # Récupère tous les salons enfants (textuels, vocaux, stage, forum)
+    salons_a_supprimer = list(category.channels)
     total_salons = len(salons_a_supprimer)
 
     if total_salons == 0:
-        await interaction.followup.send(f"ℹ️ La catégorie **{category.name}** ne contient aucun salon textuel.", ephemeral=True)
+        await interaction.followup.send(f"ℹ️ La catégorie **{category.name}** est déjà vide.", ephemeral=True)
         return
 
+    nb_supprimes = 0
     for channel in salons_a_supprimer:
         try:
-            await channel.delete(reason=f"Nettoyage de catégorie par {interaction.user.display_name}")
+            await channel.delete(reason=f"Vidage de catégorie par {interaction.user.display_name}")
+            nb_supprimes += 1
             await asyncio.sleep(0.4)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Erreur lors de la suppression de {channel.name} : {e}")
 
     await interaction.followup.send(
-        f"🧹 **{total_salons} salon(s)** supprimé(s) dans la catégorie **{category.name}** (la catégorie a été conservée).",
+        f"🧹 **{nb_supprimes}/{total_salons} salon(s)** (textuels & vocaux) supprimé(s) dans la catégorie **{category.name}** (la catégorie a été conservée).",
         ephemeral=True
     )
-
 
 # ========================================================
 # 8. PERMISSIONS SPECTATEURS (SÉCURISÉES ANTI-RATE LIMIT)
