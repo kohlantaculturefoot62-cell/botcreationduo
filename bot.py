@@ -9,7 +9,7 @@ import datetime
 import random
 import unicodedata
 from zoneinfo import ZoneInfo
-
+import uuid
 import aiohttp
 import discord
 from discord import app_commands
