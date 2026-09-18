@@ -7202,6 +7202,42 @@ async def roulette(interaction: discord.Interaction):
     asyncio.create_task(lancer_cycle_roulette(msg, vue))
 
 # ========================================================
+# UTILITAIRES DE CARTES POUR LE BLACKJACK
+# ========================================================
+
+SYMBOLES_CARTES = ["♠️", "♥️", "♦️", "♣️"]
+VALEURS_CARTES = {
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+    "J": 10, "Q": 10, "K": 10, "A": 11
+}
+
+def creer_paquet() -> list[str]:
+    """Génère un paquet de 52 cartes mélangées."""
+    paquet = []
+    for sym in SYMBOLES_CARTES:
+        for val in VALEURS_CARTES.keys():
+            paquet.append(f"{val}{sym}")
+    random.shuffle(paquet)
+    return paquet
+
+def calculer_score(main: list[str]) -> int:
+    """Calcule le score d'une main en gérant les As (1 ou 11)."""
+    score = 0
+    as_count = 0
+    for carte in main:
+        # Extrait la valeur de la carte en retirant le symbole emoji
+        val = carte[:-2] if carte.endswith(("♠️", "♥️", "♦️", "♣️")) else carte[:-1]
+        score += VALEURS_CARTES.get(val, 0)
+        if val == "A":
+            as_count += 1
+
+    # Ajustement des As de 11 à 1 si le joueur dépasse 21
+    while score > 21 and as_count > 0:
+        score -= 10
+        as_count -= 1
+    return score
+
+# ========================================================
 # BLACKJACK MULTIJOUEUR AVEC MISES & REJOUABILITÉ
 # ========================================================
 
