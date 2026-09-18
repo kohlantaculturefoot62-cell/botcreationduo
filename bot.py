@@ -17,7 +17,7 @@ from discord.ext import commands, tasks
 from google import genai
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
-
+import json
 # ==========================================
 # CONFIGURATION & ENVIRONNEMENT
 # ==========================================
