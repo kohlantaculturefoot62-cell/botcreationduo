@@ -7833,13 +7833,6 @@ async def battle_culture(
 
     asyncio.create_task(lancer_partie_battle_culture(interaction.channel, uniques, theme, difficulte.value))
 
-# ========================================================
-# ONLY CONNECT — VERSION EXPERTE (5 MIN & HARDCORE)
-# ========================================================
-
-import uuid
-
-# Pool de secours diversifié au cas où l'API échoue
 GRILLES_SECOURS = [
     {
         "groupes": [
@@ -7851,62 +7844,61 @@ GRILLES_SECOURS = [
     },
     {
         "groupes": [
-            {"lien": "Mots qui sont des anagrammes de pays", "indices": ["IRAN", "CHINE", "MALI", "OMAN"]}, # ex: NOIR/IRAN, NICHE/CHINE, LIMA/MALI
-            {"lien": "Acteurs ayant incarné James Bond", "indices": ["MOORE", "CONNERY", "CRAIG", "BROSNAN"]},
-            {"lien": "Termes avec un double sens monétaire", "indices": ["BALLE", "BRIQUE", "SAC", "BATON"]},
-            {"lien": "Titres d'albums des Beatles", "indices": ["HELP", "REVOLVER", "ABBEY", "LET IT BE"]}
+            {"lien": "Pays frontaliers de l'Allemagne", "indices": ["POLOGNE", "DANEMARK", "SUISSE", "AUTRICHE"]},
+            {"lien": "Acteurs ayant incarné James Bond au cinéma", "indices": ["MOORE", "CONNERY", "CRAIG", "BROSNAN"]},
+            {"lien": "Termes avec un double sens monétaire (argot)", "indices": ["BALLE", "BRIQUE", "SAC", "BATON"]},
+            {"lien": "Titres d'albums cultes des Beatles", "indices": ["HELP", "REVOLVER", "ABBEY", "LET IT BE"]}
         ]
     },
     {
         "groupes": [
             {"lien": "Capitales européennes situées sur le Danube", "indices": ["VIENNE", "BRATISLAVA", "BUDAPEST", "BELGRADE"]},
-            {"lien": "Prénoms qui sont aussi des marques automobiles", "indices": ["MERCEDES", "ALFA", "LOTUS", "ZOE"]},
-            {"lien": "Mots finissant phonétiquement par le son [O] mais sans la lettre O", "indices": ["CHAPEAU", "DRAIX", "ASSAUT", "HERAUT"]},
-            {"lien": "Villes ayant accueilli les JO d'hiver", "indices": ["CHAMONIX", "SOCHI", "TURIN", "CALGARY"]}
+            {"lien": "Prénoms féminins qui sont aussi des marques automobiles", "indices": ["MERCEDES", "ALFA", "LOTUS", "ZOE"]},
+            {"lien": "Mots finissant par le son [O] sans la lettre O", "indices": ["CHAPEAU", "ASSAUT", "HERAUT", "FLAMBEAU"]},
+            {"lien": "Villes ayant accueilli les Jeux Olympiques d'hiver", "indices": ["CHAMONIX", "SOCHI", "TURIN", "CALGARY"]}
         ]
     },
     {
         "groupes": [
             {"lien": "Termes de tennis pouvant désigner un vêtement ou accessoire", "indices": ["FILET", "MANCHE", "JUPE", "BANDEAU"]},
-            {"lien": "Présidents américains assassinés", "indices": ["LINCOLN", "GARFIELD", "MCKINLEY", "KENNEDY"]},
+            {"lien": "Présidents américains assassinés en fonction", "indices": ["LINCOLN", "GARFIELD", "MCKINLEY", "KENNEDY"]},
             {"lien": "Satellites naturels de Jupiter", "indices": ["EUROPE", "IO", "GANYMEDE", "CALLISTO"]},
-            {"lien": "Mots qui prennent un X au pluriel", "indices": ["BIJOU", "CAILLOU", "CHOU", "GENOU"]}
+            {"lien": "Mots français prenant un X au pluriel", "indices": ["BIJOU", "CAILLOU", "CHOU", "GENOU"]}
         ]
     }
 ]
 
 async def generer_mur_only_connect_ia(theme: str = "culture générale", difficulte: str = "difficile") -> dict:
-    """Génère un mur de connexions 100% inédit via Gemini ou pioche un secours varié."""
-    
-    banque_angles = [
-        ["homophones", "anagrammes", "patronymes célèbres", "termes sportifs"],
-        ["cinéma culte", "capitales méconnues", "titres de musique", "éléments chimiques"],
-        ["mythologie grecque", "jeux de mots étymologiques", "villes fluviales", "argot ancien"],
-        ["séries TV", "prix Nobel français", "animaux emblématiques", "termes d'échecs"],
-        ["marques disparues", "instruments de musique", "présidents historiques", "acronymes"]
+    """Génère un mur Only Connect cohérent, vérifiable et sans faux liens."""
+    banque_types = [
+        "Cinéma & Séries (titres avec un chiffre, rôles d'un même acteur, oscars)",
+        "Géographie & Villes (capitales insulaires, villes fluviales, états limitrophes)",
+        "Histoire & Mythologie (batailles célèbres, souverains, traités historiques)",
+        "Sport & Jeux (vainqueurs de grand chelem, clubs avec un animal sur le logo, pièces d'échecs)",
+        "Langue française (mots avec une particularité orthographique réelle, expressions avec une couleur)",
+        "Musique & Art (peintres célèbres, instruments à cordes, mouvements artistiques)",
+        "Sciences & Nature (éléments chimiques, constellations, félins, satellites naturels)"
     ]
-    angles_selectionnes = random.choice(banque_angles)
-    graine_aleatoire = uuid.uuid4().hex[:8]
+    types_suggeres = random.sample(banque_types, 3)
+    graine = uuid.uuid4().hex[:6]
 
     prompt = (
-        "Tu es le créateur en chef de l'émission britannique 'Only Connect'.\n"
-        f"Génère un Connecting Wall (Mur de Connexions) en français TOTALEMENT INÉDIT.\n"
-        f"Graine d'aléatoire : {graine_aleatoire}\n"
-        f"Thème global : {theme}\n"
-        f"Difficulté imposée : {difficulte.upper()}\n"
-        f"Pour garantir la variété, utilise des catégories inspirées de : {', '.join(angles_selectionnes)}.\n\n"
-        "DIRECTIVES STRICTES :\n"
-        "1. Exactement 4 groupes distincts de 4 éléments.\n"
-        "2. Exactement 4 indices courts (1 ou 2 mots max) par groupe.\n"
-        "3. Pas de catégories basiques (pas de 'couleurs', 'capitales' sans spécificité, 'fruits').\n"
-        "4. Fais en sorte qu'au moins 2 ou 3 mots semblent pouvoir aller dans plusieurs groupes (faux amis/pièges croisés).\n\n"
-        "RENVOIE UNIQUEMENT CE FORMAT JSON SANS AUCUN AUTRE TEXTE :\n"
+        "Tu es le concepteur en chef de l'émission télévisée 'Only Connect'.\n"
+        "Génère un Connecting Wall (Mur de 16 indices en 4 groupes de 4) en français.\n"
+        f"Graine d'aléa : {graine} | Thème global : {theme} | Difficulté : {difficulte.upper()}\n\n"
+        "RÈGLES ABSOLUES DE COHÉRENCE :\n"
+        "1. Tout lien doit être FACTUEL, VRAI et VÉRIFIABLE (aucun anagramme inventé ou faux lien phonétique).\n"
+        "2. Pas de catégories trop simples ('Couleurs', 'Animaux', 'Fruits').\n"
+        "3. Chaque case contient 1 ou 2 mots max.\n"
+        "4. Inclus des pièges croisés légitimes (des mots pouvant a priori convenir à plusieurs catégories).\n\n"
+        f"Domaines inspirants : {', '.join(types_suggeres)}.\n\n"
+        "FORMAT STRICT (JSON BRUT UNIQUEMENT) :\n"
         "{\n"
         '  "groupes": [\n'
-        '    {"lien": "Description du lien 1", "indices": ["Mot1", "Mot2", "Mot3", "Mot4"]},\n'
-        '    {"lien": "Description du lien 2", "indices": ["Mot5", "Mot6", "Mot7", "Mot8"]},\n'
-        '    {"lien": "Description du lien 3", "indices": ["Mot9", "Mot10", "Mot11", "Mot12"]},\n'
-        '    {"lien": "Description du lien 4", "indices": ["Mot13", "Mot14", "Mot15", "Mot16"]}\n'
+        '    {"lien": "Description indiscutable du lien 1", "indices": ["Mot1", "Mot2", "Mot3", "Mot4"]},\n'
+        '    {"lien": "Description indiscutable du lien 2", "indices": ["Mot5", "Mot6", "Mot7", "Mot8"]},\n'
+        '    {"lien": "Description indiscutable du lien 3", "indices": ["Mot9", "Mot10", "Mot11", "Mot12"]},\n'
+        '    {"lien": "Description indiscutable du lien 4", "indices": ["Mot13", "Mot14", "Mot15", "Mot16"]}\n'
         "  ]\n"
         "}"
     )
@@ -7918,37 +7910,31 @@ async def generer_mur_only_connect_ia(theme: str = "culture générale", difficu
             contents=prompt,
             config={
                 "response_mime_type": "application/json",
-                "temperature": 1.0
+                "temperature": 0.7
             }
         )
         data = json.loads(response.text.strip())
         groupes = data.get("groupes", [])
-        
-        # Validation du format
         if len(groupes) == 4 and all(len(g.get("indices", [])) == 4 for g in groupes):
             return data
-        else:
-            print("⚠️ Réponse Gemini malformée, bascule sur une grille aléatoire de secours.")
     except Exception as e:
-        print(f"❌ Erreur lors de la génération Only Connect Gemini : {e}")
+        print(f"❌ Erreur parsing Only Connect : {e}")
 
-    # Si l'API échoue, on pioche aléatoirement dans les grilles de secours pour éviter les doublons
     return random.choice(GRILLES_SECOURS)
 
 
 async def arbitrer_lien_only_connect_ia(lien_attendu: str, explication_joueur: str) -> tuple[bool, str]:
-    """Arbitre l'explication fournie avec exigence."""
+    """Arbitre l'explication donnée par le joueur par rapport au lien attendu."""
     prompt = (
-        "Tu es l'arbitre officiel et impitoyable de l'émission 'Only Connect'.\n"
-        f"LIEN LOGIQUE EXACT : \"{lien_attendu}\"\n"
-        f"EXPLICATION SOUMISE PAR LE JOUEUR : \"{explication_joueur}\"\n\n"
+        "Tu es l'arbitre officiel de l'émission 'Only Connect'.\n"
+        f"LIEN LOGIQUE ATTENDU : \"{lien_attendu}\"\n"
+        f"EXPLICATION DONNÉE PAR LE JOUEUR : \"{explication_joueur}\"\n\n"
         "RÈGLES D'ARBITRAGE :\n"
-        "1. L'explication doit cerner la spécificité exacte du lien logique.\n"
-        "2. Rejette toute réponse trop large ou évasive (ex: 'des choses françaises', 'des mots').\n"
-        "3. Tolère les approximations de formulation si l'idée centrale exacte est formulée.\n\n"
-        "FORMAT DE RÉPONSE STRICT (OBLIGATOIRE) :\n"
+        "1. L'explication doit cerner la particularité du lien (rejette 'des choses connues', 'des mots').\n"
+        "2. Accepte si le cœur de l'idée est exact, même formulé différemment.\n\n"
+        "FORMAT STRICT (OBLIGATOIRE) :\n"
         "VALIDE: <OUI ou NON>\n"
-        "COMMENTAIRE: <Bref commentaire d'arbitrage en 1 phrase>"
+        "COMMENTAIRE: <Bref commentaire justificatif en 1 phrase>"
     )
     try:
         response = await asyncio.to_thread(
@@ -7968,13 +7954,13 @@ async def arbitrer_lien_only_connect_ia(lien_attendu: str, explication_joueur: s
 
 class ExplicationLienModal(discord.ui.Modal):
     def __init__(self, vue_mur, groupe_identifie: dict):
-        super().__init__(title="DÉDUCTION DU THÈME / LIEN COMMUN")
+        super().__init__(title="QUEL EST LE POINT COMMUN ?")
         self.vue_mur = vue_mur
         self.groupe_identifie = groupe_identifie
 
         self.explication_input = discord.ui.TextInput(
             label="Quel lien unit ces 4 indices ?",
-            placeholder="Ex: Anagrammes de pays, villes traversées par...",
+            placeholder="Ex: Capitales sur le Danube, acteurs de James Bond...",
             min_length=3,
             max_length=150,
             required=True
@@ -7985,47 +7971,38 @@ class ExplicationLienModal(discord.ui.Modal):
         await interaction.response.defer()
         proposition = self.explication_input.value.strip()
 
+        # Le groupe de 4 est valide : on le valide définitivement sur la grille (+1 pt de groupe)
+        self.vue_mur.groupes_restants.remove(self.groupe_identifie)
+        self.vue_mur.groupes_trouves.append(self.groupe_identifie)
+        self.vue_mur.points += 1  # 1 point acquis pour avoir trouvé les 4 bons éléments
+        self.vue_mur.selection_actuelle.clear()
+
+        # Verrouillage en vert des boutons du groupe
+        for child in self.vue_mur.children:
+            if isinstance(child, OnlyConnectBouton) and child.indice in self.groupe_identifie["indices"]:
+                child.style = discord.ButtonStyle.success
+                child.disabled = True
+
+        # Arbitrage de l'explication pour le bonus de points
         valide, avis = await arbitrer_lien_only_connect_ia(self.groupe_identifie["lien"], proposition)
 
         if valide:
-            self.vue_mur.groupes_restants.remove(self.groupe_identifie)
-            self.vue_mur.groupes_trouves.append(self.groupe_identifie)
-            self.vue_mur.points += 3  # 1 pt d'assemblage + 2 pts pour l'explication
-            self.vue_mur.selection_actuelle.clear()
-
-            # Verrouillage en vert des 4 boutons
-            for child in self.vue_mur.children:
-                if isinstance(child, OnlyConnectBouton) and child.indice in self.groupe_identifie["indices"]:
-                    child.style = discord.ButtonStyle.success
-                    child.disabled = True
-
+            self.vue_mur.points += 2  # +2 points supplémentaires pour le thème
             await interaction.channel.send(
-                f"🎯 **CONNEXION VALIDÉE (+3 pts) !**\n"
-                f"🔗 **Thème :** {self.groupe_identifie['lien']}\n"
+                f"🎯 **GROUPE ET THÈME PARFAITS (+3 pts au total) !**\n"
+                f"🔗 **Thème validé :** {self.groupe_identifie['lien']}\n"
                 f"💬 *Explication acceptée : « {proposition} »*"
             )
-            await self.vue_mur.actualiser_affichage()
-            await self.vue_mur.verifier_fin_de_partie()
         else:
-            self.vue_mur.vies -= 1
-            mauvais = list(self.vue_mur.selection_actuelle)
-            self.vue_mur.selection_actuelle.clear()
-
-            for child in self.vue_mur.children:
-                if isinstance(child, OnlyConnectBouton) and child.indice in mauvais:
-                    child.style = discord.ButtonStyle.secondary
-
             await interaction.channel.send(
-                f"❌ **EXPLICATION REFUSÉE !**\n"
-                f"L'assemblage est peut-être bon, mais ton explication n'était pas la bonne ({avis}).\n"
-                f"💔 Vies restantes : {'❤️' * self.vue_mur.vies if self.vue_mur.vies > 0 else '💀'}"
+                f"🟡 **GROUPE CORRECT (+1 pt), MAIS THÈME REFUSÉ !**\n"
+                f"Tu marques **1 point** pour avoir identifié les 4 éléments ensemble.\n"
+                f"🔗 **Le vrai lien était :** **{self.groupe_identifie['lien']}**\n"
+                f"*(Ton explication « {proposition} » n'était pas assez précise)*"
             )
 
-            if self.vue_mur.vies <= 0:
-                await interaction.channel.send("💥 **Plus aucune vie ! Le mur se verrouille définitivement.**")
-                await self.vue_mur.reveler_solutions()
-            else:
-                await self.vue_mur.actualiser_affichage()
+        await self.vue_mur.actualiser_affichage()
+        await self.vue_mur.verifier_fin_de_partie()
 
 
 class OnlyConnectBouton(discord.ui.Button):
@@ -8045,12 +8022,12 @@ class OnlyConnectBouton(discord.ui.Button):
             self.style = discord.ButtonStyle.secondary
         else:
             if len(vue.selection_actuelle) >= 4:
-                await interaction.response.send_message("⚠️ Tu as déjà 4 indices en cours !", ephemeral=True)
+                await interaction.response.send_message("⚠️ Tu as déjà 4 indices sélectionnés !", ephemeral=True)
                 return
             vue.selection_actuelle.append(self.indice)
             self.style = discord.ButtonStyle.primary
 
-        # Quand 4 indices sont sélectionnés
+        # 4 indices sélectionnés : vérification
         if len(vue.selection_actuelle) == 4:
             groupe_valide = None
             selection_set = set(vue.selection_actuelle)
@@ -8061,10 +8038,11 @@ class OnlyConnectBouton(discord.ui.Button):
                     break
 
             if groupe_valide:
-                # Ouvre directement le modal pour obliger à deviner le lien
+                # Ouvre le modal pour tenter de trouver le thème
                 await interaction.response.send_modal(ExplicationLienModal(vue, groupe_valide))
                 return
             else:
+                # Mauvais groupe de 4 : perte d'une vie
                 vue.vies -= 1
                 mauvais = list(vue.selection_actuelle)
                 vue.selection_actuelle.clear()
@@ -8075,13 +8053,13 @@ class OnlyConnectBouton(discord.ui.Button):
 
                 if vue.vies <= 0:
                     await interaction.response.edit_message(embed=vue.generer_embed(), view=vue)
-                    await interaction.channel.send("💥 **Plus de vies ! Le mur se bloque.**")
+                    await interaction.channel.send("💥 **Plus aucune vie ! Le mur se verrouille.**")
                     await vue.reveler_solutions()
                     return
                 else:
                     await interaction.response.edit_message(embed=vue.generer_embed(), view=vue)
                     await interaction.followup.send(
-                        f"❌ Ces 4 éléments ne forment aucun groupe valide ! Vies restantes : {'❤️' * vue.vies}",
+                        f"❌ Ces 4 éléments ne forment aucun groupe ! Vies restantes : {'❤️' * vue.vies}",
                         ephemeral=True
                     )
                     return
@@ -8091,7 +8069,7 @@ class OnlyConnectBouton(discord.ui.Button):
 
 class OnlyConnectMurView(discord.ui.View):
     def __init__(self, data_mur: dict, joueur_actif: discord.Member, difficulte: str, fin_timestamp: int):
-        super().__init__(timeout=300)  # 5 minutes exactes
+        super().__init__(timeout=300)  # 5 minutes
         self.data_mur = data_mur
         self.joueur_actif = joueur_actif
         self.difficulte = difficulte
@@ -8099,7 +8077,7 @@ class OnlyConnectMurView(discord.ui.View):
         self.groupes_restants = list(data_mur["groupes"])
         self.groupes_trouves = []
         self.selection_actuelle = []
-        self.vies = 3
+        self.vies = 5  # 5 Vies
         self.points = 0
         self.message = None
 
@@ -8109,13 +8087,13 @@ class OnlyConnectMurView(discord.ui.View):
         random.shuffle(tous_indices)
 
         for idx, mot in enumerate(tous_indices):
-            self.add_item(OnlyConnectBouton(indice=mot, custom_id=f"oc_btn_{idx}", row=idx // 4))
+            self.add_item(OnlyConnectBouton(indice=mot, custom_id=f"oc_{idx}", row=idx // 4))
 
     def generer_embed(self) -> discord.Embed:
         badge_diff = {
             "moyen": "🟡 Moyen",
             "difficile": "🔴 Difficile",
-            "diabolique": "🟣 Diabolique (Only Connect Pur)"
+            "diabolique": "🟣 Diabolique"
         }.get(self.difficulte.lower(), "🔴 Difficile")
 
         embed = discord.Embed(
@@ -8123,17 +8101,18 @@ class OnlyConnectMurView(discord.ui.View):
             description=(
                 f"👤 **Candidat :** {self.joueur_actif.mention}\n"
                 f"⚙️ **Difficulté :** `{badge_diff}`\n"
-                f"⏳ **Temps restant :** <t:{self.fin_timestamp}:R> *(5 minutes au total)*\n"
+                f"⏳ **Temps restant :** <t:{self.fin_timestamp}:R> *(5 minutes)*\n"
                 f"❤️ **Vies :** {'❤️' * self.vies if self.vies > 0 else '💀'}\n"
                 f"🏆 **Score actuel :** `{self.points} / 12 points`\n\n"
-                "👉 Sélectionne 4 indices et donne leur point commun précis dans le formulaire.\n"
+                "👉 Sélectionne 4 indices formant un groupe.\n"
+                "*(+1 pt pour le groupe de 4 trouvé + 2 pts bonus si le thème est deviné)*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=discord.Color.dark_purple()
         )
         if self.groupes_trouves:
             lignes = [f"🟢 **{g['lien']} :** {', '.join(g['indices'])}" for g in self.groupes_trouves]
-            embed.add_field(name="✅ Groupes & Thèmes Résolus", value="\n".join(lignes), inline=False)
+            embed.add_field(name="✅ Groupes Résolus", value="\n".join(lignes), inline=False)
         return embed
 
     async def actualiser_affichage(self):
@@ -8148,7 +8127,7 @@ class OnlyConnectMurView(discord.ui.View):
         await self.reveler_solutions()
 
     async def verifier_fin_de_partie(self):
-        # Résolution automatique du 4e groupe si 3 ont été trouvés
+        # Si 3 groupes ont été trouvés, le 4ème se résout par déduction (+1 pt pour les 4 éléments)
         if len(self.groupes_restants) == 1:
             dernier = self.groupes_restants.pop(0)
             self.groupes_trouves.append(dernier)
@@ -8161,9 +8140,9 @@ class OnlyConnectMurView(discord.ui.View):
 
             await self.actualiser_affichage()
             await self.message.channel.send(
-                f"🔓 **Dernier groupe résolu par déduction !**\n"
+                f"🔓 **Dernier groupe résolu par déduction (+1 pt) !**\n"
                 f"Indices : `{', '.join(dernier['indices'])}`\n"
-                f"🔗 Thème attendu : **{dernier['lien']}**"
+                f"🔗 Thème associé : **{dernier['lien']}**"
             )
 
         if len(self.groupes_restants) == 0:
@@ -8171,14 +8150,15 @@ class OnlyConnectMurView(discord.ui.View):
                 child.disabled = True
             await self.actualiser_affichage()
 
+            # Bonus de grand chelem si le score est de 10 ou plus
             bonus = 2 if self.points >= 10 else 0
             self.points += bonus
 
             desc_fin = (
-                f"👑 **Mur complété par {self.joueur_actif.mention} !**\n\n"
-                f"🏆 **Score final : {self.points} / 12 points** " + ("*(Bonus parfait de +2 pts !)*" if bonus else "")
+                f"👑 **Mur résolu par {self.joueur_actif.mention} !**\n\n"
+                f"🏆 **Score final : {self.points} / 12 points** " + ("*(Bonus parfait de +2 pts inclus !)*" if bonus else "")
             )
-            embed_fin = discord.Embed(title="🎉 FIN DU CONNECTING WALL", description=desc_fin, color=discord.Color.gold())
+            embed_fin = discord.Embed(title="🎉 FIN DU MUR ONLY CONNECT", description=desc_fin, color=discord.Color.gold())
             await self.message.channel.send(embed=embed_fin)
             self.stop()
 
@@ -8193,7 +8173,7 @@ class OnlyConnectMurView(discord.ui.View):
         solutions = [f"▫️ **{g['lien']} :** {', '.join(g['indices'])}" for g in self.data_mur["groupes"]]
         embed_sol = discord.Embed(
             title="📖 SOLUTIONS OFFICIELLES DU MUR",
-            description="Voici les liaisons logiques qu'il fallait démasquer :\n\n" + "\n".join(solutions) + f"\n\nScore final : **{self.points} points**.",
+            description="Voici l'ensemble des connexions qu'il fallait déduire :\n\n" + "\n".join(solutions) + f"\n\nScore final : **{self.points} points**.",
             color=discord.Color.red()
         )
         await self.message.channel.send(embed=embed_sol)
@@ -8206,17 +8186,17 @@ class OnlyConnectMurView(discord.ui.View):
 
 @bot.tree.command(
     name="only_connect",
-    description="Lance un mur Only Connect (16 indices, 4 thèmes à deviner, 5 minutes de réflexion)."
+    description="Lance un mur Only Connect (16 indices, 4 groupes, 5 vies, 5 minutes de jeu)."
 )
 @app_commands.describe(
     joueur="Le candidat au pupitre",
-    difficulte="Niveau de complexité des connexions",
-    theme="Thème global (ex: Culture générale, Sport, Cinéma, Littérature, Absurde...)"
+    difficulte="Complexité des connexions",
+    theme="Thème global (ex: Culture générale, Sport, Cinéma, Géographie...)"
 )
 @app_commands.choices(difficulte=[
-    app_commands.Choice(name="🟡 Moyen (Accessible avec pièges légers)", value="moyen"),
-    app_commands.Choice(name="🔴 Difficile (Style émission télé, liens indirects)", value="difficile"),
-    app_commands.Choice(name="🟣 Diabolique (Liens obscurs, pièges croisés omniprésents)", value="diabolique")
+    app_commands.Choice(name="🟡 Moyen (Accessible, pièges légers)", value="moyen"),
+    app_commands.Choice(name="🔴 Difficile (Style émission, pièges croisés)", value="difficile"),
+    app_commands.Choice(name="🟣 Diabolique (Liens obscurs, très pointu)", value="diabolique")
 ])
 @app_commands.check(est_orga_ou_admin)
 async def only_connect(
