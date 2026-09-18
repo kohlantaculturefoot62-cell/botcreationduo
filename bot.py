@@ -8104,6 +8104,39 @@ class OnlyConnectMurView(discord.ui.View):
         )
         await self.message.channel.send(embed=embed_sol)
         self.stop()
+
+# ========================================================
+# COMMANDE SLASH ONLY CONNECT
+# ========================================================
+
+@bot.tree.command(
+    name="only_connect",
+    description="Génère un Connecting Wall (grille de 16 indices à relier en 4 groupes de 4)."
+)
+@app_commands.describe(
+    joueur="Le candidat qui résout le mur",
+    theme="Thème de la grille (ex: Cinéma, Football, Géographie, Histoire, Pop Culture...)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def only_connect(interaction: discord.Interaction, joueur: discord.Member, theme: str = "culture générale"):
+    await interaction.response.defer()
+
+    if joueur.bot:
+        await interaction.followup.send("❌ Un bot ne peut pas jouer.", ephemeral=True)
+        return
+
+    data_mur = await generer_mur_only_connect_ia(theme)
+    if not data_mur:
+        await interaction.followup.send("❌ Impossible de générer la grille.", ephemeral=True)
+        return
+
+    vue_mur = OnlyConnectMurView(data_mur=data_mur, joueur_actif=joueur)
+    msg = await interaction.followup.send(
+        content=f"🧩 **Mur Only Connect préparé pour {joueur.mention} !** (Thème : `{theme}`)",
+        embed=vue_mur.generer_embed(),
+        view=vue_mur
+    )
+    vue_mur.message = msg
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
