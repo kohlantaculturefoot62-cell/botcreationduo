@@ -8256,29 +8256,6 @@ async def only_connect(
 # COMMANDE SLASH TROLL : /collier (BLOC COMPLET)
 # ========================================================
 
-COLLIERS_ECLATES = [
-    {
-        "nom": "Le Collier de Nouilles de Maternelle",
-        "image": "https://i.imgur.com/w1b6sB2.png",
-        "description": "Fait main en 2004 avec de la colle blanche périmée et des penne rigate."
-    },
-    {
-        "nom": "La Cordelette de Sac Poubelle 50L",
-        "image": "https://i.imgur.com/T0b7LgE.png",
-        "description": "Un lien en plastique bleu trouvé près du campement. Zéro protection, 100% honte."
-    },
-    {
-        "nom": "Le Trombone Rouillé et son Bout de Ficelle",
-        "image": "https://i.imgur.com/X2Wj5r1.png",
-        "description": "Même pas de quoi attacher deux feuilles, encore moins te sauver au conseil."
-    },
-    {
-        "nom": "La Guirlande de Bouchons en Liège",
-        "image": "https://i.imgur.com/6U8YvLq.png",
-        "description": "Flotte sur l'eau, mais coule instantanément ta crédibilité sur l'île."
-    }
-]
-
 async def generer_trash_collier_ia(pseudo: str, objet_nom: str) -> str:
     """Génère un taunt satirique et cinglant pour le joueur qui a tenté /collier."""
     prompt = (
