@@ -8258,24 +8258,19 @@ async def only_connect(
 
 COLLIERS_ECLATES = [
     {
-        "nom": "Le Collier de Nouilles de Maternelle",
-        "image": "https://images.unsplash.com/photo-1596461404969-9ae70f2830c1?w=800",
-        "description": "Fait main en 2004 avec de la colle blanche périmée et des penne rigate."
+        "nom": "Le Trombone Tordu et sa Ficelle",
+        "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/66/One_red_paperclip.jpg/515px-One_red_paperclip.jpg",
+        "description": "Même pas de quoi attacher deux feuilles de vote."
     },
     {
-        "nom": "La Cordelette de Sac Poubelle 50L",
-        "image": "https://images.unsplash.com/photo-1530587191325-3db32d826c18?w=800",
-        "description": "Un lien en plastique bleu trouvé près du campement. Zéro protection, 100% honte."
+        "nom": "Le Sac Poubelle Déchiré",
+        "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/52/Black_bin_bag.jpg/640px-Black_bin_bag.jpg",
+        "description": "Idéal pour ramasser ta dignité après le conseil."
     },
     {
-        "nom": "Le Trombone Rouillé et son Bout de Ficelle",
-        "image": "https://images.unsplash.com/photo-1586075010923-2dd4570fb338?w=800",
-        "description": "Même pas de quoi attacher deux feuilles, encore moins te sauver au prochain conseil."
-    },
-    {
-        "nom": "La Guirlande de Bouchons en Liège",
-        "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=800",
-        "description": "Flotte sur l'eau, mais coule instantanément ta crédibilité sur l'île."
+        "nom": "Les Pâtes Crues Ficelées",
+        "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Penne_rigate_pasta.jpg/640px-Penne_rigate_pasta.jpg",
+        "description": "Fait main en maternelle, zéro pouvoir au dépouillement."
     }
 ]
 
