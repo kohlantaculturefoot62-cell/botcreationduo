@@ -8302,7 +8302,7 @@ async def collier(interaction: discord.Interaction):
         return
 
     # Si autorisé, affichage public dans le chat
-    await interaction.response.defer(ephemeral=False)
+    await interaction.response.defer(ephemeral=True)
 
     objet = random.choice(COLLIERS_ECLATES)
     pseudo = interaction.user.display_name
