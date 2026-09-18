@@ -6980,336 +6980,476 @@ async def creer_duels_message(interaction: discord.Interaction, message_id_ou_li
     )
 
 # ========================================================
-# JEU DE LA ROULETTE MULTIJOUEURS
+# ROULETTE INTERACTIVE & REJOUABLE
 # ========================================================
 
 NUMEROS_ROUGES = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
 NUMEROS_NOIRS = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35}
 
-class RouletteView(discord.ui.View):
-    def __init__(self, mise_points: int = 10):
-        super().__init__(timeout=30)
-        self.mise_points = mise_points
-        # {user_id: {"membre": Member, "paris": set()}}
-        self.paris = {}
+class MiseRouletteModal(discord.ui.Modal):
+    def __init__(self, vue_roulette, type_pari: str):
+        super().__init__(title=f"Miser sur : {type_pari.upper()}")
+        self.vue_roulette = vue_roulette
+        self.type_pari = type_pari
 
-    def ajouter_pari(self, user: discord.Member, choix: str):
-        if user.id not in self.paris:
-            self.paris[user.id] = {"membre": user, "choix": set()}
-        self.paris[user.id]["choix"].add(choix)
+        self.mise_input = discord.ui.TextInput(
+            label="Montant de votre mise (jetons)",
+            placeholder="Ex: 50, 100, 250...",
+            min_length=1,
+            max_length=6,
+            required=True
+        )
+        self.add_item(self.mise_input)
 
-    @discord.ui.button(label="🔴 Rouge (x2)", style=discord.ButtonStyle.danger)
-    async def pari_rouge(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.ajouter_pari(interaction.user, "rouge")
-        await interaction.response.send_message("✅ Pari enregistré sur **🔴 Rouge** !", ephemeral=True)
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            valeur = int(self.mise_input.value.strip())
+            if valeur <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("❌ Saisis un nombre entier positif valide.", ephemeral=True)
+            return
 
-    @discord.ui.button(label="⚫ Noir (x2)", style=discord.ButtonStyle.secondary)
-    async def pari_noir(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.ajouter_pari(interaction.user, "noir")
-        await interaction.response.send_message("✅ Pari enregistré sur **⚫ Noir** !", ephemeral=True)
-
-    @discord.ui.button(label="🟢 Zéro (x36)", style=discord.ButtonStyle.success)
-    async def pari_vert(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.ajouter_pari(interaction.user, "vert")
-        await interaction.response.send_message("✅ Pari enregistré sur **🟢 Zéro (0)** !", ephemeral=True)
-
-    @discord.ui.button(label="Pair (x2)", style=discord.ButtonStyle.primary)
-    async def pari_pair(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.ajouter_pari(interaction.user, "pair")
-        await interaction.response.send_message("✅ Pari enregistré sur **Pair** !", ephemeral=True)
-
-    @discord.ui.button(label="Impair (x2)", style=discord.ButtonStyle.primary)
-    async def pari_impair(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.ajouter_pari(interaction.user, "impair")
-        await interaction.response.send_message("✅ Pari enregistré sur **Impair** !", ephemeral=True)
+        self.vue_roulette.enregistrer_pari(interaction.user, self.type_pari, valeur)
+        await interaction.response.send_message(
+            f"✅ Pari validé : **{valeur} jetons** sur **{self.type_pari.upper()}** !", 
+            ephemeral=True
+        )
+        await self.vue_roulette.actualiser_panneau()
 
 
-@bot.tree.command(
-    name="roulette",
-    description="Lance un tour de Roulette au Casino où tous les joueurs peuvent parier pendant 30s."
-)
-@app_commands.describe(mise="Valeur de mise symbolique affichée (par défaut: 10)")
-@app_commands.check(est_orga_ou_admin)
-async def roulette(interaction: discord.Interaction, mise: int = 10):
-    vue = RouletteView(mise_points=mise)
+class RouletteInteractiveView(discord.ui.View):
+    def __init__(self, message_origine=None):
+        super().__init__(timeout=40)
+        self.message = message_origine
+        self.paris = {}  # {user_id: {"membre": Member, "mises": {type_pari: montant}}}
+        self.phase_terminee = False
 
-    embed_debut = discord.Embed(
-        title="🎰 FAITES VOS JEUX — LA ROULETTE DU CASINO",
-        description=(
-            f"💰 **Mise standard :** `{mise} jetons / points`\n\n"
-            "👉 Cliquez sur les boutons ci-dessous pour miser sur votre couleur ou option !\n"
-            "⏳ **Fin des paris dans 30 secondes...**"
-        ),
-        color=discord.Color.gold()
-    )
-    embed_debut.set_footer(text="Règles Européennes (0 à 36) • Multijoueur")
+    def enregistrer_pari(self, membre: discord.Member, type_pari: str, montant: int):
+        if membre.id not in self.paris:
+            self.paris[membre.id] = {"membre": membre, "mises": {}}
+        self.paris[membre.id]["mises"][type_pari] = self.paris[membre.id]["mises"].get(type_pari, 0) + montant
 
-    await interaction.response.send_message(embed=embed_debut, view=vue)
-    message = await interaction.original_response()
+    def generer_embed_attente(self, temps_restant: int) -> discord.Embed:
+        embed = discord.Embed(
+            title="🎰 CASINO — TABLE DE LA ROULETTE",
+            description=(
+                "👉 **Cliquez sur une option pour choisir votre mise sur-mesure !**\n\n"
+                f"⏳ **Tirage de la bille dans :** `{temps_restant}s`\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.gold()
+        )
+        
+        if not self.paris:
+            embed.add_field(name="👥 Joueurs en lice", value="*Aucune mise pour l'instant...*", inline=False)
+        else:
+            recap_joueurs = []
+            for data in self.paris.values():
+                details = ", ".join([f"{k.upper()}: {v}j" for k, v in data["mises"].items()])
+                recap_joueurs.append(f"▫️ **{data['membre'].display_name}** ➔ `{details}`")
+            embed.add_field(name=f"👥 Paris actifs ({len(self.paris)})", value="\n".join(recap_joueurs), inline=False)
 
-    # Attente de la fin des paris
-    await asyncio.sleep(30)
+        embed.set_footer(text="Gains : Vert x36 • Rouge/Noir/Pair/Impair x2")
+        return embed
 
-    # Verrouillage des boutons
+    async def actualiser_panneau(self):
+        if self.message and not self.phase_terminee:
+            try:
+                await self.message.edit(embed=self.generer_embed_attente(temps_restant=20), view=self)
+            except Exception:
+                pass
+
+    @discord.ui.button(label="🔴 Rouge (x2)", style=discord.ButtonStyle.danger, row=0)
+    async def btn_rouge(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(MiseRouletteModal(self, "rouge"))
+
+    @discord.ui.button(label="⚫ Noir (x2)", style=discord.ButtonStyle.secondary, row=0)
+    async def btn_noir(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(MiseRouletteModal(self, "noir"))
+
+    @discord.ui.button(label="🟢 Zéro (x36)", style=discord.ButtonStyle.success, row=0)
+    async def btn_vert(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(MiseRouletteModal(self, "vert"))
+
+    @discord.ui.button(label="Pair (x2)", style=discord.ButtonStyle.primary, row=1)
+    async def btn_pair(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(MiseRouletteModal(self, "pair"))
+
+    @discord.ui.button(label="Impair (x2)", style=discord.ButtonStyle.primary, row=1)
+    async def btn_impair(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(MiseRouletteModal(self, "impair"))
+
+
+class RejouerRouletteView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="🔄 Relancer la Roulette", style=discord.ButtonStyle.green)
+    async def rejouer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        
+        nouvelle_vue = RouletteInteractiveView()
+        msg = await interaction.channel.send(embed=nouvelle_vue.generer_embed_attente(30), view=nouvelle_vue)
+        nouvelle_vue.message = msg
+        asyncio.create_task(lancer_cycle_roulette(msg, nouvelle_vue))
+
+    @discord.ui.button(label="🚪 Quitter le Casino", style=discord.ButtonStyle.grey)
+    async def quitter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await interaction.channel.send("🚪 **La table de roulette est désormais fermée.** Merci pour vos jeux !")
+
+
+async def lancer_cycle_roulette(message: discord.Message, vue: RouletteInteractiveView):
+    # Compte à rebours avant tirage
+    for t in range(25, 0, -5):
+        await asyncio.sleep(5)
+        if vue.phase_terminee:
+            return
+        try:
+            await message.edit(embed=vue.generer_embed_attente(temps_restant=t), view=vue)
+        except Exception:
+            pass
+
+    vue.phase_terminee = True
     for child in vue.children:
         child.disabled = True
-    await message.edit(view=vue)
+    try:
+        await message.edit(view=vue)
+    except Exception:
+        pass
 
-    # Tirage aléatoire (0 à 36)
+    # Tirage
     numero = random.randint(0, 36)
     if numero == 0:
         couleur = "vert"
-        emoji_couleur = "🟢"
+        emoji = "🟢"
     elif numero in NUMEROS_ROUGES:
         couleur = "rouge"
-        emoji_couleur = "🔴"
+        emoji = "🔴"
     else:
         couleur = "noir"
-        emoji_couleur = "⚫"
+        emoji = "⚫"
 
     est_pair = (numero % 2 == 0) and (numero != 0)
     est_impair = (numero % 2 != 0)
 
-    # Calcul des vainqueurs
-    gagnants = []
-    perdants = []
+    # Bilan
+    gains_total = []
+    pertes_total = []
 
     for user_id, data in vue.paris.items():
-        membre = data["membre"]
-        paris = data["choix"]
-        gagne = False
-        details = []
+        joueur = data["membre"]
+        profit = 0
+        total_mise = sum(data["mises"].values())
 
-        if "rouge" in paris and couleur == "rouge":
-            gagne = True
-            details.append("Rouge (x2)")
-        if "noir" in paris and couleur == "noir":
-            gagne = True
-            details.append("Noir (x2)")
-        if "vert" in paris and couleur == "vert":
-            gagne = True
-            details.append("Zéro (x36)")
-        if "pair" in paris and est_pair:
-            gagne = True
-            details.append("Pair (x2)")
-        if "impair" in paris and est_impair:
-            gagne = True
-            details.append("Impair (x2)")
+        for choix, mise in data["mises"].items():
+            if choix == "rouge" and couleur == "rouge":
+                profit += mise * 2
+            elif choix == "noir" and couleur == "noir":
+                profit += mise * 2
+            elif choix == "vert" and couleur == "vert":
+                profit += mise * 36
+            elif choix == "pair" and est_pair:
+                profit += mise * 2
+            elif choix == "impair" and est_impair:
+                profit += mise * 2
 
-        if gagne:
-            gagnants.append(f"🏆 {membre.mention} a gagné avec : `{', '.join(details)}`")
+        if profit > 0:
+            net = profit - total_mise
+            signe = f"+{net}" if net > 0 else str(net)
+            gains_total.append(f"🏆 {joueur.mention} : **{profit} jetons** remportés *(Bilan: `{signe}j`)*")
         else:
-            perdants.append(f"❌ {membre.display_name}")
+            pertes_total.append(f"💀 {joueur.display_name} : -{total_mise} jetons")
 
-    description_resultat = (
-        f"🎡 La bille tourne... et s'arrête sur le :\n\n"
-        f"# {emoji_couleur} {numero} ({couleur.upper()})\n\n"
+    desc_res = (
+        f"🎡 La bille s'est arrêtée sur :\n\n"
+        f"# {emoji} {numero} ({couleur.upper()})\n"
         f"Propriétés : `{'PAIR' if est_pair else ('IMPAIR' if est_impair else 'ZÉRO')}`\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     )
 
-    if gagnants:
-        description_resultat += "\n**🎉 GAGNANTS :**\n" + "\n".join(gagnants) + "\n"
+    if gains_total:
+        desc_res += "**🎉 JOUEURS GAGNANTS :**\n" + "\n".join(gains_total) + "\n\n"
     else:
-        description_resultat += "\n💀 **Aucun joueur n'a trouvé le bon résultat ! La banque gagne tout.**\n"
+        desc_res += "💀 **Aucun joueur gagnant sur ce tour ! La banque ramasse tout.**\n\n"
 
-    if perdants:
-        description_resultat += f"\n*(Mises perdues pour : {', '.join(perdants)})*"
+    if pertes_total:
+        desc_res += f"*(Mises perdues : {', '.join(pertes_total)})*"
 
-    embed_resultat = discord.Embed(
-        title="🎰 RÉSULTAT DU TIRAGE DE LA ROULETTE",
-        description=description_resultat,
-        color=discord.Color.green() if gagnants else discord.Color.red()
+    embed_fin = discord.Embed(
+        title="🎰 RÉSULTAT OFFICIEL DE LA ROULETTE",
+        description=desc_res,
+        color=discord.Color.green() if gains_total else discord.Color.red()
     )
-    await interaction.channel.send(embed=embed_resultat)
+
+    vue_rejouer = RejouerRouletteView()
+    await message.channel.send(embed=embed_fin, view=vue_rejouer)
+
+
+@bot.tree.command(name="roulette", description="Lance la table de Roulette interactive avec mises personnalisées.")
+@app_commands.check(est_orga_ou_admin)
+async def roulette(interaction: discord.Interaction):
+    vue = RouletteInteractiveView()
+    embed = vue.generer_embed_attente(temps_restant=30)
+    await interaction.response.send_message(embed=embed, view=vue)
+    msg = await interaction.original_response()
+    vue.message = msg
+    asyncio.create_task(lancer_cycle_roulette(msg, vue))
 
 # ========================================================
-# JEU DU BLACKJACK MULTIJOUEURS (JUSQU'À 7 JOUEURS VS BANQUE)
+# BLACKJACK MULTIJOUEUR AVEC MISES & REJOUABILITÉ
 # ========================================================
 
-SYMBOLES_CARTES = ["♠️", "♥️", "♦️", "♣️"]
-VALEURS_CARTES = {
-    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
-    "J": 10, "Q": 10, "K": 10, "A": 11
-}
+class MiseBlackjackModal(discord.ui.Modal):
+    def __init__(self, vue_table):
+        super().__init__(title="Rejoindre la table de Blackjack")
+        self.vue_table = vue_table
 
-def creer_paquet():
-    paquet = []
-    for sym in SYMBOLES_CARTES:
-        for val in VALEURS_CARTES.keys():
-            paquet.append(f"{val}{sym}")
-    random.shuffle(paquet)
-    return paquet
+        self.mise_input = discord.ui.TextInput(
+            label="Votre mise pour cette main",
+            placeholder="Ex: 50, 100, 500...",
+            min_length=1,
+            max_length=6,
+            required=True
+        )
+        self.add_item(self.mise_input)
 
-def calculer_score(main: list[str]) -> int:
-    score = 0
-    as_count = 0
-    for carte in main:
-        val = carte[:-2] if carte.endswith(("♠️", "♥️", "♦️", "♣️")) else carte[:-1]
-        score += VALEURS_CARTES[val]
-        if val == "A":
-            as_count += 1
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            valeur = int(self.mise_input.value.strip())
+            if valeur <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("❌ Saisis un nombre positif valide.", ephemeral=True)
+            return
 
-    while score > 21 and as_count > 0:
-        score -= 10
-        as_count -= 1
-    return score
-
-
-class InscriptionBlackjackView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=20)
-        self.joueurs = []
-
-    @discord.ui.button(label="🪑 Rejoindre la table", style=discord.ButtonStyle.green)
-    async def rejoindre(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user in self.joueurs:
+        if any(j["membre"].id == interaction.user.id for j in self.vue_table.joueurs):
             await interaction.response.send_message("⚠️ Tu es déjà assis à la table !", ephemeral=True)
             return
 
-        if len(self.joueurs) >= 7:
-            await interaction.response.send_message("⛔ La table est complète (7 joueurs max).", ephemeral=True)
+        if len(self.vue_table.joueurs) >= 6:
+            await interaction.response.send_message("⛔ Table pleine (6 joueurs maximum).", ephemeral=True)
             return
 
-        self.joueurs.append(interaction.user)
-        await interaction.response.send_message(f"✅ Tu as rejoint la table de Blackjack ({len(self.joueurs)}/7) !", ephemeral=True)
+        self.vue_table.joueurs.append({
+            "membre": interaction.user,
+            "mise": valeur,
+            "cartes": [],
+            "statut": "en_jeu"
+        })
+
+        await interaction.response.send_message(f"✅ Installé à la table avec une mise de **{valeur} jetons** !", ephemeral=True)
+        await self.vue_table.actualiser_panneau()
 
 
-class TourJoueurBlackjackView(discord.ui.View):
-    def __init__(self, joueur: discord.Member):
+class InscriptionBlackjackView(discord.ui.View):
+    def __init__(self, message=None):
         super().__init__(timeout=30)
-        self.joueur = joueur
-        self.action = None  # "hit" ou "stand"
+        self.message = message
+        self.joueurs = []  # [{"membre": m, "mise": int, "cartes": [], "statut": str}]
 
-    @discord.ui.button(label="🃏 Tirer une carte (Hit)", style=discord.ButtonStyle.primary)
+    def generer_embed(self, temps: int) -> discord.Embed:
+        embed = discord.Embed(
+            title="♠️ TABLE DE BLACKJACK — OUVERTURE DES MISES",
+            description=(
+                "👉 Cliquez sur **« 🪑 Rejoindre & Miser »** pour poser vos jetons !\n\n"
+                f"⏳ **Distribution dans :** `{temps}s`\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.dark_blue()
+        )
+        if not self.joueurs:
+            embed.add_field(name="🪑 Sièges occupés (0/6)", value="*La table est vide...*", inline=False)
+        else:
+            lignes = [f"▫️ **{j['membre'].display_name}** : mise `{j['mise']} jetons`" for j in self.joueurs]
+            embed.add_field(name=f"🪑 Sièges occupés ({len(self.joueurs)}/6)", value="\n".join(lignes), inline=False)
+        return embed
+
+    async def actualiser_panneau(self):
+        if self.message:
+            try:
+                await self.message.edit(embed=self.generer_embed(temps=15), view=self)
+            except Exception:
+                pass
+
+    @discord.ui.button(label="🪑 Rejoindre & Miser", style=discord.ButtonStyle.green)
+    async def btn_rejoindre(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(MiseBlackjackModal(self))
+
+
+class TourBlackjackView(discord.ui.View):
+    def __init__(self, joueur_actuel: discord.Member):
+        super().__init__(timeout=25)
+        self.joueur_actuel = joueur_actuel
+        self.decision = None
+
+    @discord.ui.button(label="🃏 Tirer (Hit)", style=discord.ButtonStyle.primary)
     async def tirer(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.joueur.id:
-            await interaction.response.send_message("⛔ Ce n'est pas ton tour de jouer !", ephemeral=True)
+        if interaction.user.id != self.joueur_actuel.id:
+            await interaction.response.send_message("⛔ Ce n'est pas votre tour !", ephemeral=True)
             return
-        self.action = "hit"
+        self.decision = "hit"
         self.stop()
         await interaction.response.defer()
 
     @discord.ui.button(label="🛑 Rester (Stand)", style=discord.ButtonStyle.secondary)
     async def rester(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.joueur.id:
-            await interaction.response.send_message("⛔ Ce n'est pas ton tour de jouer !", ephemeral=True)
+        if interaction.user.id != self.joueur_actuel.id:
+            await interaction.response.send_message("⛔ Ce n'est pas votre tour !", ephemeral=True)
             return
-        self.action = "stand"
+        self.decision = "stand"
         self.stop()
         await interaction.response.defer()
 
 
-@bot.tree.command(
-    name="blackjack_table",
-    description="Ouvre une table de Blackjack multijoueur contre la Banque."
-)
-@app_commands.check(est_orga_ou_admin)
-async def blackjack_table(interaction: discord.Interaction):
-    vue_inscriptions = InscriptionBlackjackView()
+class RejouerBlackjackView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
 
-    embed_open = discord.Embed(
-        title="♠️ TABLE DE BLACKJACK — OUVERTURE DES PLACES",
-        description=(
-            "La table de Blackjack ouvre ses portes !\n\n"
-            "👉 Cliquez ci-dessous sur **« 🪑 Rejoindre la table »** pour participer (2 à 7 joueurs).\n"
-            "⏳ **Début de la donne dans 20 secondes...**"
-        ),
-        color=discord.Color.dark_blue()
-    )
-    await interaction.response.send_message(embed=embed_open, view=vue_inscriptions)
+    @discord.ui.button(label="🔄 Relancer une donne", style=discord.ButtonStyle.green)
+    async def rejouer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
 
-    # Attente des joueurs
-    await asyncio.sleep(20)
+        nouvelle_vue = InscriptionBlackjackView()
+        msg = await interaction.channel.send(embed=nouvelle_vue.generer_embed(20), view=nouvelle_vue)
+        nouvelle_vue.message = msg
+        asyncio.create_task(lancer_partie_blackjack(msg, nouvelle_vue))
 
-    joueurs = vue_inscriptions.joueurs
+    @discord.ui.button(label="🚪 Quitter la table", style=discord.ButtonStyle.grey)
+    async def quitter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await interaction.channel.send("🚪 **La table de Blackjack est fermée.** Merci aux joueurs !")
+
+
+async def lancer_partie_blackjack(message: discord.Message, vue_inscr: InscriptionBlackjackView):
+    # Compte à rebours
+    for s in range(20, 0, -5):
+        await asyncio.sleep(5)
+        try:
+            await message.edit(embed=vue_inscr.generer_embed(s), view=vue_inscr)
+        except Exception:
+            pass
+
+    for item in vue_inscr.children:
+        item.disabled = True
+    try:
+        await message.edit(view=vue_inscr)
+    except Exception:
+        pass
+
+    joueurs = vue_inscr.joueurs
     if not joueurs:
-        await interaction.channel.send("❌ Aucun joueur n'a rejoint la table. Partie annulée.")
+        await message.channel.send("❌ Aucun joueur n'a rejoint la table. Partie annulée.")
         return
 
     paquet = creer_paquet()
-    mains_joueurs = {j.id: [paquet.pop(), paquet.pop()] for j in joueurs}
-    main_banque = [paquet.pop(), paquet.pop()]
-
-    channel = interaction.channel
-
-    # Tour individuel de chaque joueur
     for j in joueurs:
-        en_jeu = True
-        while en_jeu:
-            score = calculer_score(mains_joueurs[j.id])
-            cartes_str = " ".join(mains_joueurs[j.id])
+        j["cartes"] = [paquet.pop(), paquet.pop()]
+    carte_visible_banque = paquet.pop()
+    cartes_banque = [carte_visible_banque, paquet.pop()]
 
+    channel = message.channel
+
+    # Tours des joueurs
+    for j in joueurs:
+        while True:
+            score = calculer_score(j["cartes"])
             if score >= 21:
                 break
 
+            cartes_texte = " ".join(j["cartes"])
             embed_tour = discord.Embed(
-                title=f"🎲 TOUR DE : {j.display_name.upper()}",
+                title=f"🎲 TOUR DE : {j['membre'].display_name.upper()} (Mise: {j['mise']}j)",
                 description=(
-                    f"🏦 **Banque :** `{main_banque[0]}` 🎴 *(Score visible: {VALEURS_CARTES[main_banque[0][:-2] if main_banque[0].endswith(('♠️','♥️','♦️','♣️')) else main_banque[0][:-1]]})*\n\n"
-                    f"👤 **Tes cartes :** {cartes_str} *(Total : **{score}**)*\n\n"
-                    f"👉 Veux-tu tirer une carte ou rester ?"
+                    f"🏦 **Carte visible Banque :** `{carte_visible_banque}`\n"
+                    f"👤 **Vos cartes :** {cartes_texte} *(Score : **{score}**)*\n\n"
+                    f"👉 {j['membre'].mention}, faites votre choix :"
                 ),
                 color=discord.Color.gold()
             )
-            vue_tour = TourJoueurBlackjackView(joueur=j)
-            msg_tour = await channel.send(content=j.mention, embed=embed_tour, view=vue_tour)
+            vue_tour = TourBlackjackView(joueur_actuel=j["membre"])
+            msg_tour = await channel.send(embed=embed_tour, view=vue_tour)
 
             await vue_tour.wait()
-
-            if vue_tour.action == "hit":
-                carte_tiree = paquet.pop()
-                mains_joueurs[j.id].append(carte_tiree)
-                score_maj = calculer_score(mains_joueurs[j.id])
-                if score_maj > 21:
-                    await channel.send(f"💥 **BUST !** {j.mention} a tiré `{carte_tiree}` et dépasse 21 (Score : **{score_maj}**).")
-                    en_jeu = False
-            else:
-                await channel.send(f"🛑 **{j.display_name}** décide de rester à **{score}**.")
-                en_jeu = False
 
             try:
                 await msg_tour.delete()
             except Exception:
                 pass
 
+            if vue_tour.decision == "hit":
+                nouvelle_carte = paquet.pop()
+                j["cartes"].append(nouvelle_carte)
+                score_maj = calculer_score(j["cartes"])
+                if score_maj > 21:
+                    await channel.send(f"💥 **BUST !** {j['membre'].mention} tire `{nouvelle_carte}` et saute (**{score_maj}**).")
+                    break
+            else:
+                await channel.send(f"🛑 **{j['membre'].display_name}** reste à **{score}**.")
+                break
+
     # Tour de la Banque
-    score_banque = calculer_score(main_banque)
+    score_banque = calculer_score(cartes_banque)
     while score_banque < 17:
-        main_banque.append(paquet.pop())
-        score_banque = calculer_score(main_banque)
+        cartes_banque.append(paquet.pop())
+        score_banque = calculer_score(cartes_banque)
 
-    banque_cartes_str = " ".join(main_banque)
+    banque_str = " ".join(cartes_banque)
+    banque_bust = score_banque > 21
 
-    # Bilan & Comparaison des résultats
-    lignes_recap = [
-        f"🏦 **BANQUE :** {banque_cartes_str} ➔ **Total : {score_banque}** " + ("*(BUST !)*" if score_banque > 21 else ""),
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    # Bilan & Gains
+    lignes_bilan = [
+        f"🏦 **BANQUE :** {banque_str} ➔ **Total : {score_banque}** " + ("*(BUST !)*" if banque_bust else ""),
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     ]
 
     for j in joueurs:
-        score_j = calculer_score(mains_joueurs[j.id])
-        cartes_j = " ".join(mains_joueurs[j.id])
+        score_j = calculer_score(j["cartes"])
+        cartes_j = " ".join(j["cartes"])
+        mise = j["mise"]
 
         if score_j > 21:
-            verdict = "🔴 **DÉFAITE** *(A dépassé 21)*"
-        elif score_banque > 21:
-            verdict = "🟢 **VICTOIRE !** *(La banque a bust)*"
+            bilan = f"🔴 **DÉFAITE** `(-{mise}j)`"
+        elif banque_bust:
+            bilan = f"🟢 **VICTOIRE !** `(+{mise}j)`"
         elif score_j > score_banque:
-            verdict = f"🟢 **VICTOIRE !** *({score_j} vs {score_banque})*"
+            bilan = f"🟢 **VICTOIRE !** `(+{mise}j)` *({score_j} vs {score_banque})*"
         elif score_j == score_banque:
-            verdict = f"🟡 **ÉGALITÉ (Push)** *({score_j} partout)*"
+            bilan = "🟡 **ÉGALITÉ (Push)** `(Mise remboursée)`"
         else:
-            verdict = f"🔴 **DÉFAITE** *({score_j} vs {score_banque})*"
+            bilan = f"🔴 **DÉFAITE** `(-{mise}j)` *({score_j} vs {score_banque})*"
 
-        lignes_recap.append(f"👤 **{j.display_name}** ({cartes_j}) : {verdict}")
+        lignes_bilan.append(f"▫️ **{j['membre'].display_name}** ({cartes_j} | Total **{score_j}**) : {bilan}")
 
-    embed_final = discord.Embed(
+    embed_resultats = discord.Embed(
         title="♠️ RÉSULTATS DE LA TABLE DE BLACKJACK",
-        description="\n".join(lignes_recap),
+        description="\n".join(lignes_bilan),
         color=discord.Color.gold()
     )
-    await channel.send(embed=embed_final)
+
+    vue_rejouer = RejouerBlackjackView()
+    await channel.send(embed=embed_resultats, view=vue_rejouer)
+
+
+@bot.tree.command(name="blackjack_table", description="Ouvre une table de Blackjack multijoueur avec mises personnalisées.")
+@app_commands.check(est_orga_ou_admin)
+async def blackjack_table(interaction: discord.Interaction):
+    vue = InscriptionBlackjackView()
+    embed = vue.generer_embed(temps=25)
+    await interaction.response.send_message(embed=embed, view=vue)
+    msg = await interaction.original_response()
+    vue.message = msg
+    asyncio.create_task(lancer_partie_blackjack(msg, vue))
+    
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
