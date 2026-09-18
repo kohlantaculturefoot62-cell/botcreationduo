@@ -7485,7 +7485,261 @@ async def blackjack_table(interaction: discord.Interaction):
     msg = await interaction.original_response()
     vue.message = msg
     asyncio.create_task(lancer_partie_blackjack(msg, vue))
-    
+# ========================================================
+# BATTLE ROYALE CULTURE G — CODE COMPLET ET AUTONOME
+# ========================================================
+
+async def generer_question_culture_g_ia(theme: str = "général") -> str:
+    """Génère une question de culture générale directe, fermée et courte."""
+    prompt = (
+        "Tu es le présentateur d'un jeu télévisé de culture générale rapide.\n"
+        f"Génère UNE SEULE question de culture générale (thème : {theme}).\n"
+        "RÈGLES STRICTES :\n"
+        "1. Question courte, directe et précise (1 phrase max).\n"
+        "2. La réponse doit être un fait précis (un nom propre, un pays, un mot simple, une date, un chiffre).\n"
+        "3. Pas de QCM ni de propositions A/B/C/D.\n"
+        "4. Renvoie UNIQUEMENT la question brute, sans guillemets ni introduction."
+    )
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception:
+        return "Quelle est la capitale de l'Australie ?"
+
+
+async def arbitrer_reponse_culture_g_ia(question: str, reponse_joueur: str) -> tuple[bool, str]:
+    """Vérifie si la réponse du joueur est correcte et donne la bonne réponse."""
+    prompt = (
+        "Tu es l'arbitre officiel d'un jeu de culture générale.\n"
+        f"QUESTION : \"{question}\"\n"
+        f"RÉPONSE DU CANDIDAT : \"{reponse_joueur}\"\n\n"
+        "DIRECTIVES D'ARBITRAGE :\n"
+        "1. Accepte les fautes d'orthographe légères, les fautes de frappe ou les noms sans prénom si évidents.\n"
+        "2. Sois factuel et impartial.\n\n"
+        "FORMAT DE RÉPONSE STRICT (OBLIGATOIRE) :\n"
+        "VALIDE: <OUI ou NON>\n"
+        "REPONSE_ATTENDUE: <La bonne réponse exacte en 3-4 mots max>"
+    )
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        texte = response.text.strip()
+        valide = "VALIDE: OUI" in texte.upper()
+        
+        bonne_rep = ""
+        if "REPONSE_ATTENDUE:" in texte:
+            bonne_rep = texte.split("REPONSE_ATTENDUE:", 1)[1].strip()
+        else:
+            bonne_rep = "Information non disponible"
+
+        return valide, bonne_rep
+    except Exception as e:
+        return False, f"Erreur arbitrage : {e}"
+
+
+class RejouerBattleCultureView(discord.ui.View):
+    def __init__(self, joueurs_initiaux: list[discord.Member], theme: str):
+        super().__init__(timeout=60)
+        self.joueurs_initiaux = joueurs_initiaux
+        self.theme = theme
+
+    @discord.ui.button(label="🔄 Revanche (Mêmes joueurs)", style=discord.ButtonStyle.green)
+    async def rejouer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await interaction.channel.send(f"⚔️ **Revanche lancée pour les {len(self.joueurs_initiaux)} joueurs !**")
+        asyncio.create_task(lancer_partie_battle_culture(interaction.channel, self.joueurs_initiaux, self.theme))
+
+    @discord.ui.button(label="🚪 Quitter le jeu", style=discord.ButtonStyle.grey)
+    async def quitter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await interaction.channel.send("🏁 **Fin de la partie.** Merci aux participants !")
+
+
+async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: list[discord.Member], theme: str):
+    vies = {j.id: 2 for j in joueurs}
+    ordre_joueurs = list(joueurs)
+    random.shuffle(ordre_joueurs)
+    numero_tour = 1
+
+    recap_participants = "\n".join([f"▫️ {j.mention} : ❤️❤️" for j in ordre_joueurs])
+    embed_intro = discord.Embed(
+        title="⚔️ BATTLE ROYALE DE CULTURE G !",
+        description=(
+            f"👥 **{len(ordre_joueurs)} joueurs en lice :**\n{recap_participants}\n\n"
+            f"📚 **Thème :** `{theme.capitalize()}`\n"
+            "⏱️ **15 secondes** par question pour le joueur désigné.\n"
+            "💀 **2 vies chacun** : la dernière personne debout gagne !\n\n"
+            f"👉 Première question pour **{ordre_joueurs[0].display_name}** dans 3 secondes..."
+        ),
+        color=discord.Color.gold()
+    )
+    await channel.send(embed=embed_intro)
+    await asyncio.sleep(3)
+
+    index = 0
+
+    # Tourne jusqu'à ce qu'il ne reste qu'un seul survivant
+    while sum(1 for v in vies.values() if v > 0) > 1:
+        joueur_actif = ordre_joueurs[index % len(ordre_joueurs)]
+        if vies[joueur_actif.id] <= 0:
+            index += 1
+            continue
+
+        # 1. Question IA
+        question = await generer_question_culture_g_ia(theme)
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        fin_ts = int((now + datetime.timedelta(seconds=15)).timestamp())
+
+        lignes_scores = []
+        for j in ordre_joueurs:
+            if vies[j.id] > 0:
+                curseur = "👉 " if j.id == joueur_actif.id else ""
+                lignes_scores.append(f"{curseur}**{j.display_name}** : {'❤️' * vies[j.id]}")
+            else:
+                lignes_scores.append(f"~~{j.display_name}~~ : 💀")
+
+        embed_q = discord.Embed(
+            title=f"📋 TOUR #{numero_tour} — AU TOUR DE : {joueur_actif.display_name.upper()}",
+            description=(
+                f"# {question}\n\n"
+                f"📊 **État des joueurs :**\n" + "\n".join(lignes_scores) + "\n\n"
+                f"⏳ **Fin du chrono :** <t:{fin_ts}:R> *(15s)*\n"
+                f"*(Seul {joueur_actif.mention} doit répondre ici)*"
+            ),
+            color=discord.Color.blue()
+        )
+        msg_q = await channel.send(content=joueur_actif.mention, embed=embed_q)
+
+        def check_msg(m: discord.Message):
+            return m.channel.id == channel.id and m.author.id == joueur_actif.id and not m.content.startswith(("/", "!"))
+
+        reponse_donnee = None
+        temps_ecoule = False
+
+        try:
+            reponse_msg = await bot.wait_for("message", timeout=15.0, check=check_msg)
+            reponse_donnee = reponse_msg.content.strip()
+        except asyncio.TimeoutError:
+            temps_ecoule = True
+
+        # 2. Arbitrage IA
+        if temps_ecoule or not reponse_donnee:
+            vies[joueur_actif.id] -= 1
+            if vies[joueur_actif.id] <= 0:
+                desc = f"🛑 **Temps écoulé !** {joueur_actif.mention} n'a plus de cœur et est **ÉLIMINÉ** 💀 !"
+            else:
+                desc = f"🛑 **Temps écoulé !** {joueur_actif.mention} perd 1 cœur ({'❤️' * vies[joueur_actif.id]})."
+            
+            await channel.send(embed=discord.Embed(title="⏰ HORS DÉLAI !", description=desc, color=discord.Color.red()))
+        else:
+            valide, bonne_rep = await arbitrer_reponse_culture_g_ia(question, reponse_donnee)
+
+            if valide:
+                embed_rep = discord.Embed(
+                    title="✅ BONNE RÉPONSE !",
+                    description=f"💬 **Réponse :** `{reponse_donnee}`\n\nBien joué {joueur_actif.mention}, tes cœurs sont préservés !",
+                    color=discord.Color.green()
+                )
+                await channel.send(embed=embed_rep)
+            else:
+                vies[joueur_actif.id] -= 1
+                if vies[joueur_actif.id] <= 0:
+                    desc_echec = (
+                        f"💬 **Ta réponse :** `{reponse_donnee}`\n"
+                        f"📖 **Bonne réponse :** **{bonne_rep}**\n\n"
+                        f"💀 {joueur_actif.mention} perd son dernier cœur et est **ÉLIMINÉ DU JEU** !"
+                    )
+                else:
+                    desc_echec = (
+                        f"💬 **Ta réponse :** `{reponse_donnee}`\n"
+                        f"📖 **Bonne réponse :** **{bonne_rep}**\n\n"
+                        f"❌ {joueur_actif.mention} perd 1 cœur ({'❤️' * vies[joueur_actif.id]})."
+                    )
+                
+                await channel.send(embed=embed_discord := discord.Embed(title="❌ ERREUR !", description=desc_echec, color=discord.Color.red()))
+
+        index += 1
+        numero_tour += 1
+        await asyncio.sleep(3)
+
+    # 3. Vainqueur final
+    gagnant_id = next(uid for uid, vie in vies.items() if vie > 0)
+    gagnant = next(j for j in ordre_joueurs if j.id == gagnant_id)
+
+    embed_victoire = discord.Embed(
+        title="👑 VICTOIRE DE LA BATTLE ROYALE !",
+        description=(
+            f"🏆 **{gagnant.mention} est le dernier survivant et remporte la partie !**\n\n"
+            f"❤️ Vies restantes : `{'❤️' * vies[gagnant.id]}`\n"
+            f"🎯 Nombre de questions jouées : `{numero_tour - 1}`"
+        ),
+        color=discord.Color.gold()
+    )
+    embed_victoire.set_thumbnail(url=gagnant.display_avatar.url)
+
+    vue_fin = RejouerBattleCultureView(joueurs, theme)
+    await channel.send(embed=embed_victoire, view=vue_fin)
+
+
+@bot.tree.command(
+    name="battle_culture",
+    description="Lance une Battle Royale de culture G multijoueur (2 à 8 joueurs, tour par tour, 2 vies)."
+)
+@app_commands.describe(
+    theme="Thème des questions (ex: Histoire, Football, Cinéma, Géographie, Général...)",
+    joueur_1="1er joueur (obligatoire)",
+    joueur_2="2ème joueur (obligatoire)",
+    joueur_3="3ème joueur (optionnel)",
+    joueur_4="4ème joueur (optionnel)",
+    joueur_5="5ème joueur (optionnel)",
+    joueur_6="6ème joueur (optionnel)",
+    joueur_7="7ème joueur (optionnel)",
+    joueur_8="8ème joueur (optionnel)"
+)
+@app_commands.check(est_orga_ou_admin)
+async def battle_culture(
+    interaction: discord.Interaction,
+    theme: str,
+    joueur_1: discord.Member,
+    joueur_2: discord.Member,
+    joueur_3: discord.Member = None,
+    joueur_4: discord.Member = None,
+    joueur_5: discord.Member = None,
+    joueur_6: discord.Member = None,
+    joueur_7: discord.Member = None,
+    joueur_8: discord.Member = None
+):
+    candidats = [j for j in [joueur_1, joueur_2, joueur_3, joueur_4, joueur_5, joueur_6, joueur_7, joueur_8] if j is not None]
+    uniques = list({j.id: j for j in candidats}.values())
+
+    if any(j.bot for j in uniques):
+        await interaction.response.send_message("❌ Impossible d'inclure des bots dans la partie.", ephemeral=True)
+        return
+
+    if len(uniques) < 2:
+        await interaction.response.send_message("❌ Il faut au minimum 2 joueurs distincts pour lancer la partie.", ephemeral=True)
+        return
+
+    mentions = ", ".join([j.mention for j in uniques])
+    await interaction.response.send_message(
+        f"⚔️ **Battle Royale lancée avec {len(uniques)} joueurs :** {mentions}\n"
+        f"📚 Thème choisi : `{theme}`",
+        ephemeral=True
+    )
+
+    asyncio.create_task(lancer_partie_battle_culture(interaction.channel, uniques, theme))
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
