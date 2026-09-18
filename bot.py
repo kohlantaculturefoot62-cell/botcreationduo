@@ -7832,6 +7832,278 @@ async def battle_culture(
     )
 
     asyncio.create_task(lancer_partie_battle_culture(interaction.channel, uniques, theme, difficulte.value))
+
+# ========================================================
+# ONLY CONNECT — LOGIQUE IA (GEMINI)
+# ========================================================
+
+async def generer_mur_only_connect_ia(theme: str = "culture générale") -> dict | None:
+    """Génère un mur de 16 indices divisé en 4 groupes de 4 avec leurs liens logiques."""
+    prompt = (
+        "Tu es le concepteur en chef de l'émission télévisée britannique 'Only Connect'.\n"
+        f"Génère un Connecting Wall (Mur de Connexions) en français sur le thème : {theme}.\n"
+        "CONTRAINTES STRICTES :\n"
+        "1. Exactement 4 catégories distinctes.\n"
+        "2. Exactement 4 indices courts (1 à 3 mots max) par catégorie.\n"
+        "3. Inclure si possible des pièges (des indices qui pourraient sembler appartenir à une autre catégorie).\n"
+        "4. Les liens doivent être intelligents et précis (ex: 'Films avec une couleur dans le titre', 'Capivales commençant par B', 'Anciens présidents américains').\n\n"
+        "FORMAT DE RÉPONSE OBLIGATOIRE (JSON BRUT UNIQUEMENT) :\n"
+        "{\n"
+        '  "groupes": [\n'
+        '    {"lien": "Description du lien 1", "indices": ["Mot1", "Mot2", "Mot3", "Mot4"]},\n'
+        '    {"lien": "Description du lien 2", "indices": ["Mot5", "Mot6", "Mot7", "Mot8"]},\n'
+        '    {"lien": "Description du lien 3", "indices": ["Mot9", "Mot10", "Mot11", "Mot12"]},\n'
+        '    {"lien": "Description du lien 4", "indices": ["Mot13", "Mot14", "Mot15", "Mot16"]}\n'
+        "  ]\n"
+        "}"
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt,
+            config={"response_mime_type": "application/json"}
+        )
+        data = json.loads(response.text.strip())
+        if len(data.get("groupes", [])) == 4:
+            return data
+    except Exception as e:
+        print(f"Erreur génération Only Connect : {e}")
+
+    # Grille de secours
+    return {
+        "groupes": [
+            {"lien": "Pays frontaliers de la France", "indices": ["Espagne", "Belgique", "Italie", "Allemagne"]},
+            {"lien": "Métaux précieux", "indices": ["Or", "Argent", "Platine", "Palladium"]},
+            {"lien": "Personnages de Friends", "indices": ["Ross", "Chandler", "Joey", "Monica"]},
+            {"lien": "Marques de voitures françaises", "indices": ["Renault", "Peugeot", "Citroën", "Alpine"]}
+        ]
+    }
+
+
+async def arbitrer_lien_only_connect_ia(lien_attendu: str, explication_joueur: str) -> bool:
+    """Valide si l'explication donnée par le joueur correspond au lien logique du groupe."""
+    prompt = (
+        "Tu es l'arbitre intraitable de l'émission 'Only Connect'.\n"
+        f"LIEN LOGIQUE ATTENDU : \"{lien_attendu}\"\n"
+        f"EXPLICATION DU JOUEUR : \"{explication_joueur}\"\n\n"
+        "Est-ce que l'explication du joueur capte l'essence exacte du lien logique ?\n"
+        "Sois strict : une explication trop vague (ex: 'ce sont des mots', 'des choses connues') doit être refusée.\n"
+        "Réponds STRICTEMENT par 'OUI' ou 'NON'."
+    )
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        return "OUI" in response.text.strip().upper()
+    except Exception:
+        return True
+
+# ========================================================
+# ONLY CONNECT — COMPOSANTS UI & INTERACTION
+# ========================================================
+
+class ExplicationLienModal(discord.ui.Modal):
+    def __init__(self, vue_mur, groupe_resolu: dict):
+        super().__init__(title="Quel est le lien commun ?")
+        self.vue_mur = vue_mur
+        self.groupe_resolu = groupe_resolu
+
+        self.explication_input = discord.ui.TextInput(
+            label=f"Lien unissant : {', '.join(groupe_resolu['indices'])}",
+            placeholder="Ex: Titres de films de Tarantino, capitales insulaires...",
+            min_length=3,
+            max_length=150,
+            required=True
+        )
+        self.add_item(self.explication_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        rep = self.explication_input.value.strip()
+        valide = await arbitrer_lien_only_connect_ia(self.groupe_resolu["lien"], rep)
+
+        if valide:
+            self.vue_mur.points += 2
+            await interaction.channel.send(
+                f"🎯 **Lien validé (+2 pts) !**\n"
+                f"Lien : **{self.groupe_resolu['lien']}** *(Explication : « {rep} »)*"
+            )
+        else:
+            await interaction.channel.send(
+                f"❌ **Lien refusé !** L'explication attendue était : **{self.groupe_resolu['lien']}** *(Proposé : « {rep} »)*"
+            )
+
+        await self.vue_mur.verifier_fin_de_partie()
+
+
+class OnlyConnectBouton(discord.ui.Button):
+    def __init__(self, indice: str, custom_id: str):
+        super().__init__(label=indice, style=discord.ButtonStyle.secondary, custom_id=custom_id)
+        self.indice = indice
+
+    async def callback(self, interaction: discord.Interaction):
+        vue: OnlyConnectMurView = self.view
+        
+        # Vérification joueur actif
+        if interaction.user.id != vue.joueur_actif.id:
+            await interaction.response.send_message("⛔ Seul le candidat en charge peut manipuler le mur !", ephemeral=True)
+            return
+
+        if self.indice in vue.selection_actuelle:
+            vue.selection_actuelle.remove(self.indice)
+            self.style = discord.ButtonStyle.secondary
+        else:
+            if len(vue.selection_actuelle) >= 4:
+                await interaction.response.send_message("⚠️ Vous avez déjà 4 éléments sélectionnés !", ephemeral=True)
+                return
+            vue.selection_actuelle.append(self.indice)
+            self.style = discord.ButtonStyle.primary
+
+        # 4 indices sélectionnés : vérification du groupe
+        if len(vue.selection_actuelle) == 4:
+            groupe_trouve = None
+            selection_set = set(vue.selection_actuelle)
+
+            for g in vue.groupes_restants:
+                if set(g["indices"]) == selection_set:
+                    groupe_trouve = g
+                    break
+
+            if groupe_trouve:
+                vue.groupes_restants.remove(groupe_trouve)
+                vue.groupes_trouves.append(groupe_trouve)
+                vue.points += 1
+                vue.selection_actuelle.clear()
+
+                # Désactiver et colorer les 4 boutons trouvés
+                for child in vue.children:
+                    if isinstance(child, OnlyConnectBouton) and child.indice in groupe_trouve["indices"]:
+                        child.style = discord.ButtonStyle.success
+                        child.disabled = True
+
+                await interaction.response.edit_message(embed=vue.generer_embed(), view=vue)
+                # Ouvre le modal pour deviner le lien
+                await interaction.followup.send_modal(ExplicationLienModal(vue, groupe_trouve))
+                return
+            else:
+                vue.vies -= 1
+                mauvais = list(vue.selection_actuelle)
+                vue.selection_actuelle.clear()
+
+                for child in vue.children:
+                    if isinstance(child, OnlyConnectBouton) and child.indice in mauvais:
+                        child.style = discord.ButtonStyle.secondary
+
+                if vue.vies <= 0:
+                    await interaction.response.edit_message(embed=vue.generer_embed(), view=vue)
+                    await interaction.channel.send("💥 **Plus aucune vie ! Le mur se verrouille.**")
+                    await vue.reveler_solutions()
+                    return
+                else:
+                    await interaction.response.edit_message(embed=vue.generer_embed(), view=vue)
+                    await interaction.followup.send(
+                        f"❌ Aucun lien entre ces 4 éléments ! Vies restantes : {'❤️' * vue.vies}",
+                        ephemeral=True
+                    )
+                    return
+
+        await interaction.response.edit_message(view=vue)
+
+
+class OnlyConnectMurView(discord.ui.View):
+    def __init__(self, data_mur: dict, joueur_actif: discord.Member):
+        super().__init__(timeout=150)
+        self.data_mur = data_mur
+        self.joueur_actif = joueur_actif
+        self.groupes_restants = list(data_mur["groupes"])
+        self.groupes_trouves = []
+        self.selection_actuelle = []
+        self.vies = 3
+        self.points = 0
+        self.message = None
+
+        # Mélange des 16 indices
+        tous_indices = []
+        for g in data_mur["groupes"]:
+            tous_indices.extend(g["indices"])
+        random.shuffle(tous_indices)
+
+        for idx, mot in enumerate(tous_indices):
+            self.add_item(OnlyConnectBouton(indice=mot, custom_id=f"btn_{idx}"))
+
+    def generer_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="🧩 ONLY CONNECT — CONNECTING WALL",
+            description=(
+                f"👤 **Candidat :** {self.joueur_actif.mention}\n"
+                f"❤️ **Vies :** {'❤️' * self.vies if self.vies > 0 else '💀'}\n"
+                f"🏆 **Points :** `{self.points} pts`\n\n"
+                "👉 Sélectionnez **4 indices** partageant un lien logique commun.\n"
+                "*(1 pt par groupe formé + 2 pts si l'explication du lien est validée)*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.dark_purple()
+        )
+        if self.groupes_trouves:
+            lignes = [f"🟢 **{g['lien']} :** {', '.join(g['indices'])}" for g in self.groupes_trouves]
+            embed.add_field(name="✅ Groupes Résolus", value="\n".join(lignes), inline=False)
+        return embed
+
+    async def verifier_fin_de_partie(self):
+        # S'il ne reste qu'un seul groupe non résolu, il est validé automatiquement
+        if len(self.groupes_restants) == 1:
+            dernier = self.groupes_restants.pop(0)
+            self.groupes_trouves.append(dernier)
+            self.points += 1
+
+            for child in self.children:
+                if isinstance(child, OnlyConnectBouton) and child.indice in dernier["indices"]:
+                    child.style = discord.ButtonStyle.success
+                    child.disabled = True
+
+            await self.message.edit(embed=self.generer_embed(), view=self)
+            await self.message.channel.send(
+                f"🔓 **Dernier groupe résolu par déduction !**\n"
+                f"Indices : `{', '.join(dernier['indices'])}`\n"
+                f"Lien : **{dernier['lien']}**"
+            )
+
+        if len(self.groupes_restants) == 0:
+            for child in self.children:
+                child.disabled = True
+            await self.message.edit(embed=self.generer_embed(), view=self)
+
+            bonus = 2 if self.points >= 10 else 0
+            self.points += bonus
+
+            desc_fin = (
+                f"👑 **Mur complété par {self.joueur_actif.mention} !**\n\n"
+                f"Score final : **{self.points} / 12 points** " + ("*(Bonus parfait de 2 pts inclus !)*" if bonus else "")
+            )
+            embed_fin = discord.Embed(title="🎉 FIN DU CONNECTING WALL", description=desc_fin, color=discord.Color.gold())
+            await self.message.channel.send(embed=embed_fin)
+            self.stop()
+
+    async def reveler_solutions(self):
+        for child in self.children:
+            child.disabled = True
+        await self.message.edit(view=self)
+
+        solutions = []
+        for g in self.data_mur["groupes"]:
+            solutions.append(f"▫️ **{g['lien']} :** {', '.join(g['indices'])}")
+
+        embed_sol = discord.Embed(
+            title="📖 SOLUTIONS DU MUR",
+            description="Voici l'ensemble des connexions qu'il fallait trouver :\n\n" + "\n".join(solutions) + f"\n\nScore obtenu : **{self.points} points**.",
+            color=discord.Color.red()
+        )
+        await self.message.channel.send(embed=embed_sol)
+        self.stop()
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
