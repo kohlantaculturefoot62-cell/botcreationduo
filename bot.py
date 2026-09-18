@@ -7490,9 +7490,21 @@ async def blackjack_table(interaction: discord.Interaction):
 # BATTLE ROYALE CULTURE G — CODE INTÉGRAL & CORRIGÉ
 # ========================================================
 
-async def generer_question_culture_g_ia(theme: str = "général", questions_deja_posees: list[str] = None) -> str:
-    """Génère une question fermée inédite en excluant l'historique de la partie."""
+async def generer_question_culture_g_ia(
+    theme: str = "général", 
+    difficulte: str = "moyen", 
+    questions_deja_posees: list[str] = None
+) -> str:
+    """Génère une question fermée inédite selon le thème, la difficulté et l'historique."""
     questions_deja_posees = questions_deja_posees or []
+
+    consignes_difficulte = {
+        "facile": "Question très accessible au grand public, évidente pour quelqu'un qui a des bases scolaires ou de culture pop. Évite les pièges ou les détails obscurs.",
+        "moyen": "Question équilibrée nécessitant une bonne culture générale, ni triviale ni ultra-pointue.",
+        "difficile": "Question exigeante, pointue, portant sur des faits précis, des records méconnus, des dates clés ou des détails historiques/scientifiques/artistiques poussés.",
+        "expert": "Niveau d'érudition extrême, pièges techniques, détails oubliés ou faits très pointus réservés aux passionnés absolus."
+    }
+    guide_niveau = consignes_difficulte.get(difficulte.lower(), consignes_difficulte["moyen"])
 
     angles = [
         "insolite", "date ou record précis", "nom propre / personnage",
@@ -7512,6 +7524,7 @@ async def generer_question_culture_g_ia(theme: str = "général", questions_deja
         "Tu es l'arbitre d'un jeu télévisé de culture générale rapide.\n"
         f"Génère UNE SEULE question inédite et originale.\n"
         f"Thème principal : {theme}\n"
+        f"Niveau de difficulté imposé : {difficulte.upper()} ({guide_niveau})\n"
         f"Angle spécifique du tour : {angle_choisi}\n"
         f"{contexte_exclusion}\n"
         "RÈGLES STRICTES :\n"
@@ -7531,15 +7544,35 @@ async def generer_question_culture_g_ia(theme: str = "général", questions_deja
         texte = response.text.strip().replace('"', '')
         return texte
     except Exception:
-        secours = [
-            "Quel est le plus grand océan du monde en superficie ?",
-            "En quelle année a eu lieu le premier pas sur la Lune ?",
-            "Quel métal a pour symbole chimique Fe ?",
-            "Quelle est la capitale du Canada ?",
-            "Quel fleuve traverse l'Égypte ?"
-        ]
-        restantes = [q for q in secours if q not in questions_deja_posees]
-        return random.choice(restantes) if restantes else random.choice(secours)
+        secours = {
+            "facile": [
+                "Quelle est la capitale de l'Italie ?",
+                "Quel animal est le roi de la savane dans le dessin animé de Disney ?",
+                "Combien de jours compte une année bissextile ?",
+                "Quel est le plus grand océan de la planète ?"
+            ],
+            "moyen": [
+                "Quel peintre a réalisé Les Nymphéas ?",
+                "En quelle année le mur de Berlin est-il tombé ?",
+                "Quel élément chimique a pour symbole Na ?",
+                "Quel pays a remporté la Coupe du Monde de football en 1998 ?"
+            ],
+            "difficile": [
+                "Quel traité a mis fin à la guerre de Trente Ans en 1648 ?",
+                "Quelle est la capitale administrative de l'Afrique du Sud ?",
+                "Quel gaz noble a pour numéro atomique 18 ?",
+                "Qui a écrit le roman Le Guépard ?"
+            ],
+            "expert": [
+                "Quel empereur byzantin a fait compiler le Corpus Juris Civilis au VIe siècle ?",
+                "Quelle est la deuxième plus haute montagne d'Afrique après le Kilimandjaro ?",
+                "Quel physicien a formulé le principe d'exclusion en mécanique quantique en 1925 ?",
+                "En quelle année s'est déroulée la bataille navale de Lépante ?"
+            ]
+        }
+        pool = secours.get(difficulte.lower(), secours["moyen"])
+        restantes = [q for q in pool if q not in questions_deja_posees]
+        return random.choice(restantes) if restantes else random.choice(pool)
 
 
 async def arbitrer_reponse_culture_g_ia(question: str, reponse_joueur: str) -> tuple[bool, str]:
@@ -7576,10 +7609,11 @@ async def arbitrer_reponse_culture_g_ia(question: str, reponse_joueur: str) -> t
 
 
 class RejouerBattleCultureView(discord.ui.View):
-    def __init__(self, joueurs_initiaux: list[discord.Member], theme: str):
+    def __init__(self, joueurs_initiaux: list[discord.Member], theme: str, difficulte: str):
         super().__init__(timeout=60)
         self.joueurs_initiaux = joueurs_initiaux
         self.theme = theme
+        self.difficulte = difficulte
 
     @discord.ui.button(label="🔄 Revanche (Mêmes joueurs)", style=discord.ButtonStyle.green)
     async def rejouer(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -7587,7 +7621,9 @@ class RejouerBattleCultureView(discord.ui.View):
             item.disabled = True
         await interaction.response.edit_message(view=self)
         await interaction.channel.send(f"⚔️ **Revanche lancée pour les {len(self.joueurs_initiaux)} joueurs !**")
-        asyncio.create_task(lancer_partie_battle_culture(interaction.channel, self.joueurs_initiaux, self.theme))
+        asyncio.create_task(
+            lancer_partie_battle_culture(interaction.channel, self.joueurs_initiaux, self.theme, self.difficulte)
+        )
 
     @discord.ui.button(label="🚪 Quitter le jeu", style=discord.ButtonStyle.grey)
     async def quitter(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -7597,12 +7633,24 @@ class RejouerBattleCultureView(discord.ui.View):
         await interaction.channel.send("🏁 **Fin de la partie.** Merci aux participants !")
 
 
-async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: list[discord.Member], theme: str):
+async def lancer_partie_battle_culture(
+    channel: discord.TextChannel, 
+    joueurs: list[discord.Member], 
+    theme: str, 
+    difficulte: str
+):
     vies = {j.id: 2 for j in joueurs}
     ordre_joueurs = list(joueurs)
     random.shuffle(ordre_joueurs)
     numero_tour = 1
     questions_posees = []
+
+    badge_diff = {
+        "facile": "🟢 Facile",
+        "moyen": "🟡 Moyen",
+        "difficile": "🔴 Difficile",
+        "expert": "🟣 Expert"
+    }.get(difficulte.lower(), f"⚪ {difficulte.capitalize()}")
 
     recap_participants = "\n".join([f"▫️ {j.mention} : ❤️❤️" for j in ordre_joueurs])
     embed_intro = discord.Embed(
@@ -7610,7 +7658,8 @@ async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: li
         description=(
             f"👥 **{len(ordre_joueurs)} joueurs en lice :**\n{recap_participants}\n\n"
             f"📚 **Thème :** `{theme.capitalize()}`\n"
-            "⏱️ **15 secondes** par question pour le joueur désigné.\n"
+            f"⚙️ **Difficulté :** `{badge_diff}`\n"
+            "⏱️ **20 secondes** par question pour le joueur désigné.\n"
             "💀 **2 vies chacun** : la dernière personne debout gagne !\n\n"
             f"👉 Première question pour **{ordre_joueurs[0].display_name}** dans 3 secondes..."
         ),
@@ -7627,12 +7676,12 @@ async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: li
             index += 1
             continue
 
-        # 1. Génération de la question IA sans doublon
-        question = await generer_question_culture_g_ia(theme, questions_posees)
+        # 1. Génération de la question avec prise en compte de la difficulté
+        question = await generer_question_culture_g_ia(theme, difficulte, questions_posees)
         questions_posees.append(question)
 
         now = datetime.datetime.now(datetime.timezone.utc)
-        fin_ts = int((now + datetime.timedelta(seconds=15)).timestamp())
+        fin_ts = int((now + datetime.timedelta(seconds=20)).timestamp())
 
         lignes_scores = []
         for j in ordre_joueurs:
@@ -7646,8 +7695,9 @@ async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: li
             title=f"📋 TOUR #{numero_tour} — AU TOUR DE : {joueur_actif.display_name.upper()}",
             description=(
                 f"# {question}\n\n"
+                f"⚙️ Niveau : `{badge_diff}`\n\n"
                 f"📊 **État des joueurs :**\n" + "\n".join(lignes_scores) + "\n\n"
-                f"⏳ **Fin du chrono :** <t:{fin_ts}:R> *(15s)*\n"
+                f"⏳ **Fin du chrono :** <t:{fin_ts}:R> *(20s)*\n"
                 f"*(Seul {joueur_actif.mention} doit répondre ici)*"
             ),
             color=discord.Color.blue()
@@ -7661,7 +7711,7 @@ async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: li
         temps_ecoule = False
 
         try:
-            reponse_msg = await bot.wait_for("message", timeout=15.0, check=check_msg)
+            reponse_msg = await bot.wait_for("message", timeout=20.0, check=check_msg)
             reponse_donnee = reponse_msg.content.strip()
         except asyncio.TimeoutError:
             temps_ecoule = True
@@ -7715,14 +7765,15 @@ async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: li
         title="👑 VICTOIRE DE LA BATTLE ROYALE !",
         description=(
             f"🏆 **{gagnant.mention} est le dernier survivant et remporte la partie !**\n\n"
+            f"⚙️ Difficulté jouée : `{badge_diff}`\n"
             f"❤️ Vies restantes : `{'❤️' * vies[gagnant.id]}`\n"
-            f"🎯 Nombre de questions jouées : `{numero_tour - 1}`"
+            f"🎯 Nombre de questions disputées : `{numero_tour - 1}`"
         ),
         color=discord.Color.gold()
     )
     embed_victoire.set_thumbnail(url=gagnant.display_avatar.url)
 
-    vue_fin = RejouerBattleCultureView(joueurs, theme)
+    vue_fin = RejouerBattleCultureView(joueurs, theme, difficulte)
     await channel.send(embed=embed_victoire, view=vue_fin)
 
 
@@ -7731,7 +7782,8 @@ async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: li
     description="Lance une Battle Royale de culture G multijoueur (2 à 8 joueurs, tour par tour, 2 vies)."
 )
 @app_commands.describe(
-    theme="Thème des questions (ex: Histoire, Football, Cinéma, Géographie, Général...)",
+    theme="Thème des questions (ex: Football, Cinéma, Histoire, Géographie, Général...)",
+    difficulte="Niveau de difficulté des questions posées",
     joueur_1="1er joueur (obligatoire)",
     joueur_2="2ème joueur (obligatoire)",
     joueur_3="3ème joueur (optionnel)",
@@ -7741,10 +7793,17 @@ async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: li
     joueur_7="7ème joueur (optionnel)",
     joueur_8="8ème joueur (optionnel)"
 )
+@app_commands.choices(difficulte=[
+    app_commands.Choice(name="🟢 Facile (Accessible à tous)", value="facile"),
+    app_commands.Choice(name="🟡 Moyen (Équilibré)", value="moyen"),
+    app_commands.Choice(name="🔴 Difficile (Pointu)", value="difficile"),
+    app_commands.Choice(name="🟣 Expert (Pour les spécialistes)", value="expert")
+])
 @app_commands.check(est_orga_ou_admin)
 async def battle_culture(
     interaction: discord.Interaction,
     theme: str,
+    difficulte: app_commands.Choice[str],
     joueur_1: discord.Member,
     joueur_2: discord.Member,
     joueur_3: discord.Member = None,
@@ -7768,11 +7827,11 @@ async def battle_culture(
     mentions = ", ".join([j.mention for j in uniques])
     await interaction.response.send_message(
         f"⚔️ **Battle Royale lancée avec {len(uniques)} joueurs :** {mentions}\n"
-        f"📚 Thème choisi : `{theme}`",
+        f"📚 Thème : `{theme}` | ⚙️ Difficulté : `{difficulte.name}`",
         ephemeral=True
     )
 
-    asyncio.create_task(lancer_partie_battle_culture(interaction.channel, uniques, theme))
+    asyncio.create_task(lancer_partie_battle_culture(interaction.channel, uniques, theme, difficulte.value))
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
