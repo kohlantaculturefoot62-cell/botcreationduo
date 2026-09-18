@@ -8251,6 +8251,89 @@ async def only_connect(
         view=vue_mur
     )
     vue_mur.message = msg
+
+# ========================================================
+# COMMANDE SLASH TROLL : /collier
+# ========================================================
+
+COLLIERS_ECLATES = [
+    {
+        "nom": "Le Collier de Nouilles de Maternelle",
+        "image": "https://images.unsplash.com/photo-1596461404969-9ae70f2830c1?w=800",
+        "description": "Fait main en 2004 avec de la colle blanche périmée et des penne rigate."
+    },
+    {
+        "nom": "La Cordelette de Sac Poubelle 50L",
+        "image": "https://images.unsplash.com/photo-1530587191325-3db32d826c18?w=800",
+        "description": "Un lien en plastique bleu trouvé près du campement. Zéro protection, 100% honte."
+    },
+    {
+        "nom": "Le Trombone Rouillé et son Bout de Ficelle",
+        "image": "https://images.unsplash.com/photo-1586075010923-2dd4570fb338?w=800",
+        "description": "Même pas de quoi attacher deux feuilles, encore moins te sauver au prochain conseil."
+    },
+    {
+        "nom": "La Guirlande de Bouchons en Liège",
+        "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=800",
+        "description": "Flotte sur l'eau, mais coule instantanément ta crédibilité sur l'île."
+    }
+]
+
+async def generer_trash_collier_ia(pseudo: str, objet_nom: str) -> str:
+    """Génère un taunt satirique et cinglant pour le joueur qui a tenté /collier."""
+    prompt = (
+        "Tu es l'animateur impitoyable et moqueur d'un jeu de survie type Koh-Lanta.\n"
+        f"Le candidat nommé '{pseudo}' vient de taper la commande '/collier' en espérant trouver une immunité secrète.\n"
+        f"À la place, il tombe sur un déchet ridicule : '{objet_nom}'.\n\n"
+        "RÈGLES STRICTES :\n"
+        "1. Taille violemment et avec humour sa naïveté : il pensait vraiment qu'un collier d'immunité se trouvait en spammant une commande Discord ?\n"
+        "2. Reste piquant, satirique et moqueur (ton télé-réalité / orga condescendant mais drôle).\n"
+        "3. Longueur : 2 à 3 phrases percutantes maximum.\n"
+        "4. Pas de guillemets autour du texte."
+    )
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt,
+            config={"temperature": 1.1}
+        )
+        return response.text.strip().replace('"', '')
+    except Exception:
+        return (
+            f"Tu croyais vraiment qu'un collier d'immunité allait tomber du ciel en tapant une commande slash, {pseudo} ? "
+            f"Garde précieusement ce déchet autour du cou, ça t'évitera de chercher des excuses quand ton nom sortira de l'urne."
+        )
+
+
+@bot.tree.command(
+    name="collier",
+    description="Fouille les buissons pour tenter de trouver un collier d'immunité..."
+)
+async def collier(interaction: discord.Interaction):
+    # Visible par tout le monde dans le salon pour afficher la honte en public
+    await interaction.response.defer(ephemeral=False)
+    
+    objet = random.choice(COLLIERS_ECLATES)
+    pseudo = interaction.user.display_name
+
+    texte_trash = await generer_trash_collier_ia(pseudo, objet["nom"])
+
+    embed = discord.Embed(
+        title=f"📿 INCROYABLE TROUVAILLE POUR {pseudo.upper()} !",
+        description=(
+            f"# {objet['nom']}\n"
+            f"*{objet['description']}*\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{texte_trash}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=discord.Color.from_rgb(139, 69, 19)  # Couleur marron/boue
+    )
+    embed.set_image(url=objet["image"])
+    embed.set_footer(text="Effet : Annule 0 vote • Augmente de 200% les chances de te faire tej au conseil")
+
+    await interaction.followup.send(content=f"👀 {interaction.user.mention} a fouillé le camp...", embed=embed)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
