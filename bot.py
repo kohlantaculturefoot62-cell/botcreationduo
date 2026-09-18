@@ -7668,7 +7668,8 @@ async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: li
                         f"❌ {joueur_actif.mention} perd 1 cœur ({'❤️' * vies[joueur_actif.id]})."
                     )
                 
-                await channel.send(embed=embed_discord := discord.Embed(title="❌ ERREUR !", description=desc_echec, color=discord.Color.red()))
+                embed_echec = discord.Embed(title="❌ ERREUR !", description=desc_echec, color=discord.Color.red())
+                await channel.send(embed=embed_echec)
 
         index += 1
         numero_tour += 1
