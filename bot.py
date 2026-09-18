@@ -7837,42 +7837,76 @@ async def battle_culture(
 # ONLY CONNECT — VERSION EXPERTE (5 MIN & HARDCORE)
 # ========================================================
 
-async def generer_mur_only_connect_ia(theme: str = "culture générale", difficulte: str = "difficile") -> dict | None:
-    """Génère un mur de connexions complexe avec pièges croisés selon la difficulté."""
-    consignes_diff = {
-        "moyen": (
-            "Niveau intermédiaire. Liens indirects mais accessibles (ex: films avec un nom de ville, "
-            "pays avec une seule voyelle, anagrammes simples). 1 ou 2 pièges croisés."
-        ),
-        "difficile": (
-            "Style authentique de l'émission britannique Only Connect. Liens cryptiques, pop culture pointue, "
-            "double sens linguistique, histoire, sciences. Au moins 3 indices doivent être de gros pièges "
-            "capables d'aller dans plusieurs catégories pour forcer la réflexion logique."
-        ),
-        "diabolique": (
-            "Niveau hardcore absolu pour passionnés d'énigmes. Liens extrêmement tordus "
-            "(ex: 'Mots auxquels on retire une lettre pour obtenir un pays', 'Villes traversées par le 45e parallèle', "
-            "'Termes contenant une note de musique cachée'). Pièges croisés omniprésents, aucun lien direct ou évident."
-        )
+import uuid
+
+# Pool de secours diversifié au cas où l'API échoue
+GRILLES_SECOURS = [
+    {
+        "groupes": [
+            {"lien": "Mots contenant un chiffre romain caché", "indices": ["DIVIN", "CIVIL", "MIXTE", "CLIMAT"]},
+            {"lien": "Stations de métro parisien portant un nom de scientifique", "indices": ["PASTEUR", "CURIE", "VOLTA", "AMPERE"]},
+            {"lien": "Grandes familles nobles dans Game of Thrones", "indices": ["STARK", "BOLTON", "TULLY", "ARRYN"]},
+            {"lien": "Gaz nobles (gaz rares)", "indices": ["RADON", "XENON", "NEON", "ARGON"]}
+        ]
+    },
+    {
+        "groupes": [
+            {"lien": "Mots qui sont des anagrammes de pays", "indices": ["IRAN", "CHINE", "MALI", "OMAN"]}, # ex: NOIR/IRAN, NICHE/CHINE, LIMA/MALI
+            {"lien": "Acteurs ayant incarné James Bond", "indices": ["MOORE", "CONNERY", "CRAIG", "BROSNAN"]},
+            {"lien": "Termes avec un double sens monétaire", "indices": ["BALLE", "BRIQUE", "SAC", "BATON"]},
+            {"lien": "Titres d'albums des Beatles", "indices": ["HELP", "REVOLVER", "ABBEY", "LET IT BE"]}
+        ]
+    },
+    {
+        "groupes": [
+            {"lien": "Capitales européennes situées sur le Danube", "indices": ["VIENNE", "BRATISLAVA", "BUDAPEST", "BELGRADE"]},
+            {"lien": "Prénoms qui sont aussi des marques automobiles", "indices": ["MERCEDES", "ALFA", "LOTUS", "ZOE"]},
+            {"lien": "Mots finissant phonétiquement par le son [O] mais sans la lettre O", "indices": ["CHAPEAU", "DRAIX", "ASSAUT", "HERAUT"]},
+            {"lien": "Villes ayant accueilli les JO d'hiver", "indices": ["CHAMONIX", "SOCHI", "TURIN", "CALGARY"]}
+        ]
+    },
+    {
+        "groupes": [
+            {"lien": "Termes de tennis pouvant désigner un vêtement ou accessoire", "indices": ["FILET", "MANCHE", "JUPE", "BANDEAU"]},
+            {"lien": "Présidents américains assassinés", "indices": ["LINCOLN", "GARFIELD", "MCKINLEY", "KENNEDY"]},
+            {"lien": "Satellites naturels de Jupiter", "indices": ["EUROPE", "IO", "GANYMEDE", "CALLISTO"]},
+            {"lien": "Mots qui prennent un X au pluriel", "indices": ["BIJOU", "CAILLOU", "CHOU", "GENOU"]}
+        ]
     }
-    consigne_choisie = consignes_diff.get(difficulte.lower(), consignes_diff["difficile"])
+]
+
+async def generer_mur_only_connect_ia(theme: str = "culture générale", difficulte: str = "difficile") -> dict:
+    """Génère un mur de connexions 100% inédit via Gemini ou pioche un secours varié."""
+    
+    banque_angles = [
+        ["homophones", "anagrammes", "patronymes célèbres", "termes sportifs"],
+        ["cinéma culte", "capitales méconnues", "titres de musique", "éléments chimiques"],
+        ["mythologie grecque", "jeux de mots étymologiques", "villes fluviales", "argot ancien"],
+        ["séries TV", "prix Nobel français", "animaux emblématiques", "termes d'échecs"],
+        ["marques disparues", "instruments de musique", "présidents historiques", "acronymes"]
+    ]
+    angles_selectionnes = random.choice(banque_angles)
+    graine_aleatoire = uuid.uuid4().hex[:8]
 
     prompt = (
-        "Tu es le producteur le plus impitoyable de l'émission télévisée 'Only Connect' (BBC Two).\n"
-        f"Génère un Connecting Wall (Mur de Connexions) en français sur le thème : {theme}.\n"
-        f"EXIGENCE DU NIVEAU ({difficulte.upper()}) :\n{consigne_choisie}\n\n"
-        "RÈGLES D'OR IMPÉRATIVES :\n"
-        "1. Exactement 4 catégories distinctes.\n"
-        "2. Exactement 4 indices courts (1 ou 2 mots max par case) par catégorie.\n"
-        "3. Interdiction formelle de créer des catégories triviales comme 'Couleurs' ou 'Animaux'.\n"
-        "4. Les connexions doivent reposer sur la déduction pure, l'étymologie, des jeux de mots ou des faits culturels précis.\n\n"
-        "FORMAT STRICT ATTENDU (JSON BRUT UNIQUEMENT) :\n"
+        "Tu es le créateur en chef de l'émission britannique 'Only Connect'.\n"
+        f"Génère un Connecting Wall (Mur de Connexions) en français TOTALEMENT INÉDIT.\n"
+        f"Graine d'aléatoire : {graine_aleatoire}\n"
+        f"Thème global : {theme}\n"
+        f"Difficulté imposée : {difficulte.upper()}\n"
+        f"Pour garantir la variété, utilise des catégories inspirées de : {', '.join(angles_selectionnes)}.\n\n"
+        "DIRECTIVES STRICTES :\n"
+        "1. Exactement 4 groupes distincts de 4 éléments.\n"
+        "2. Exactement 4 indices courts (1 ou 2 mots max) par groupe.\n"
+        "3. Pas de catégories basiques (pas de 'couleurs', 'capitales' sans spécificité, 'fruits').\n"
+        "4. Fais en sorte qu'au moins 2 ou 3 mots semblent pouvoir aller dans plusieurs groupes (faux amis/pièges croisés).\n\n"
+        "RENVOIE UNIQUEMENT CE FORMAT JSON SANS AUCUN AUTRE TEXTE :\n"
         "{\n"
         '  "groupes": [\n'
-        '    {"lien": "Description ultra-précise du lien 1", "indices": ["Mot1", "Mot2", "Mot3", "Mot4"]},\n'
-        '    {"lien": "Description ultra-précise du lien 2", "indices": ["Mot5", "Mot6", "Mot7", "Mot8"]},\n'
-        '    {"lien": "Description ultra-précise du lien 3", "indices": ["Mot9", "Mot10", "Mot11", "Mot12"]},\n'
-        '    {"lien": "Description ultra-précise du lien 4", "indices": ["Mot13", "Mot14", "Mot15", "Mot16"]}\n'
+        '    {"lien": "Description du lien 1", "indices": ["Mot1", "Mot2", "Mot3", "Mot4"]},\n'
+        '    {"lien": "Description du lien 2", "indices": ["Mot5", "Mot6", "Mot7", "Mot8"]},\n'
+        '    {"lien": "Description du lien 3", "indices": ["Mot9", "Mot10", "Mot11", "Mot12"]},\n'
+        '    {"lien": "Description du lien 4", "indices": ["Mot13", "Mot14", "Mot15", "Mot16"]}\n'
         "  ]\n"
         "}"
     )
@@ -7882,23 +7916,24 @@ async def generer_mur_only_connect_ia(theme: str = "culture générale", difficu
             gemini_client.models.generate_content,
             model=MODEL_NAME,
             contents=prompt,
-            config={"response_mime_type": "application/json", "temperature": 1.0}
+            config={
+                "response_mime_type": "application/json",
+                "temperature": 1.0
+            }
         )
         data = json.loads(response.text.strip())
-        if len(data.get("groupes", [])) == 4:
+        groupes = data.get("groupes", [])
+        
+        # Validation du format
+        if len(groupes) == 4 and all(len(g.get("indices", [])) == 4 for g in groupes):
             return data
+        else:
+            print("⚠️ Réponse Gemini malformée, bascule sur une grille aléatoire de secours.")
     except Exception as e:
-        print(f"Erreur génération Only Connect IA : {e}")
+        print(f"❌ Erreur lors de la génération Only Connect Gemini : {e}")
 
-    # Grille de secours niveau difficile (avec pièges croisés)
-    return {
-        "groupes": [
-            {"lien": "Mots contenant un chiffre romain caché", "indices": ["DIVIN", "CIVIL", "MIXTE", "CLIMAT"]},
-            {"lien": "Stations de métro parisien portant un nom de scientifique", "indices": ["PASTEUR", "CURIE", "VOLTA", "AMPERE"]},
-            {"lien": "Noms de familles nobles dans Game of Thrones", "indices": ["STARK", "BOLTON", "TULLY", "ARRYN"]},
-            {"lien": "Éléments chimiques finissant par -ON", "indices": ["RADON", "XENON", "NEON", "ARGON"]}
-        ]
-    }
+    # Si l'API échoue, on pioche aléatoirement dans les grilles de secours pour éviter les doublons
+    return random.choice(GRILLES_SECOURS)
 
 
 async def arbitrer_lien_only_connect_ia(lien_attendu: str, explication_joueur: str) -> tuple[bool, str]:
