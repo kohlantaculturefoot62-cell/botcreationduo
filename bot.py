@@ -7485,34 +7485,65 @@ async def blackjack_table(interaction: discord.Interaction):
     msg = await interaction.original_response()
     vue.message = msg
     asyncio.create_task(lancer_partie_blackjack(msg, vue))
+
 # ========================================================
-# BATTLE ROYALE CULTURE G — CODE COMPLET ET AUTONOME
+# BATTLE ROYALE CULTURE G — CODE INTÉGRAL & CORRIGÉ
 # ========================================================
 
-async def generer_question_culture_g_ia(theme: str = "général") -> str:
-    """Génère une question de culture générale directe, fermée et courte."""
+async def generer_question_culture_g_ia(theme: str = "général", questions_deja_posees: list[str] = None) -> str:
+    """Génère une question fermée inédite en excluant l'historique de la partie."""
+    questions_deja_posees = questions_deja_posees or []
+
+    angles = [
+        "insolite", "date ou record précis", "nom propre / personnage",
+        "géographie / lieu", "oeuvre ou création", "statistique ou chiffre clé"
+    ]
+    angle_choisi = random.choice(angles)
+
+    contexte_exclusion = ""
+    if questions_deja_posees:
+        liste_exclues = "\n".join([f"- {q}" for q in questions_deja_posees[-15:]])
+        contexte_exclusion = (
+            "\nINTERDICTION FORMELLE : Ne pose JAMAIS une question identique ou similaire à celles-ci :\n"
+            f"{liste_exclues}\n"
+        )
+
     prompt = (
-        "Tu es le présentateur d'un jeu télévisé de culture générale rapide.\n"
-        f"Génère UNE SEULE question de culture générale (thème : {theme}).\n"
+        "Tu es l'arbitre d'un jeu télévisé de culture générale rapide.\n"
+        f"Génère UNE SEULE question inédite et originale.\n"
+        f"Thème principal : {theme}\n"
+        f"Angle spécifique du tour : {angle_choisi}\n"
+        f"{contexte_exclusion}\n"
         "RÈGLES STRICTES :\n"
         "1. Question courte, directe et précise (1 phrase max).\n"
-        "2. La réponse doit être un fait précis (un nom propre, un pays, un mot simple, une date, un chiffre).\n"
-        "3. Pas de QCM ni de propositions A/B/C/D.\n"
-        "4. Renvoie UNIQUEMENT la question brute, sans guillemets ni introduction."
+        "2. La réponse doit être un fait précis vérifiable (nom, pays, nombre, terme exact).\n"
+        "3. Pas de QCM, pas de propositions.\n"
+        "4. Renvoie UNIQUEMENT la question brute, sans guillemets, sans politesse ni mise en forme."
     )
+
     try:
         response = await asyncio.to_thread(
             gemini_client.models.generate_content,
             model=MODEL_NAME,
-            contents=prompt
+            contents=prompt,
+            config={"temperature": 1.0}
         )
-        return response.text.strip()
+        texte = response.text.strip().replace('"', '')
+        return texte
     except Exception:
-        return "Quelle est la capitale de l'Australie ?"
+        secours = [
+            "Quel est le plus grand océan du monde en superficie ?",
+            "En quelle année a eu lieu le premier pas sur la Lune ?",
+            "Quel métal a pour symbole chimique Fe ?",
+            "Quelle est la capitale du Canada ?",
+            "Quel fleuve traverse l'Égypte ?"
+        ]
+        restantes = [q for q in secours if q not in questions_deja_posees]
+        return random.choice(restantes) if restantes else random.choice(secours)
 
 
 async def arbitrer_reponse_culture_g_ia(question: str, reponse_joueur: str) -> tuple[bool, str]:
-    """Vérifie si la réponse du joueur est correcte et donne la bonne réponse."""
+    """Vérifie si la réponse du joueur est correcte et extrait la réponse attendue."""
     prompt = (
         "Tu es l'arbitre officiel d'un jeu de culture générale.\n"
         f"QUESTION : \"{question}\"\n"
@@ -7532,7 +7563,7 @@ async def arbitrer_reponse_culture_g_ia(question: str, reponse_joueur: str) -> t
         )
         texte = response.text.strip()
         valide = "VALIDE: OUI" in texte.upper()
-        
+
         bonne_rep = ""
         if "REPONSE_ATTENDUE:" in texte:
             bonne_rep = texte.split("REPONSE_ATTENDUE:", 1)[1].strip()
@@ -7571,6 +7602,7 @@ async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: li
     ordre_joueurs = list(joueurs)
     random.shuffle(ordre_joueurs)
     numero_tour = 1
+    questions_posees = []
 
     recap_participants = "\n".join([f"▫️ {j.mention} : ❤️❤️" for j in ordre_joueurs])
     embed_intro = discord.Embed(
@@ -7589,15 +7621,15 @@ async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: li
 
     index = 0
 
-    # Tourne jusqu'à ce qu'il ne reste qu'un seul survivant
     while sum(1 for v in vies.values() if v > 0) > 1:
         joueur_actif = ordre_joueurs[index % len(ordre_joueurs)]
         if vies[joueur_actif.id] <= 0:
             index += 1
             continue
 
-        # 1. Question IA
-        question = await generer_question_culture_g_ia(theme)
+        # 1. Génération de la question IA sans doublon
+        question = await generer_question_culture_g_ia(theme, questions_posees)
+        questions_posees.append(question)
 
         now = datetime.datetime.now(datetime.timezone.utc)
         fin_ts = int((now + datetime.timedelta(seconds=15)).timestamp())
@@ -7634,14 +7666,14 @@ async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: li
         except asyncio.TimeoutError:
             temps_ecoule = True
 
-        # 2. Arbitrage IA
+        # 2. Arbitrage Gemini
         if temps_ecoule or not reponse_donnee:
             vies[joueur_actif.id] -= 1
             if vies[joueur_actif.id] <= 0:
                 desc = f"🛑 **Temps écoulé !** {joueur_actif.mention} n'a plus de cœur et est **ÉLIMINÉ** 💀 !"
             else:
                 desc = f"🛑 **Temps écoulé !** {joueur_actif.mention} perd 1 cœur ({'❤️' * vies[joueur_actif.id]})."
-            
+
             await channel.send(embed=discord.Embed(title="⏰ HORS DÉLAI !", description=desc, color=discord.Color.red()))
         else:
             valide, bonne_rep = await arbitrer_reponse_culture_g_ia(question, reponse_donnee)
@@ -7667,7 +7699,7 @@ async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: li
                         f"📖 **Bonne réponse :** **{bonne_rep}**\n\n"
                         f"❌ {joueur_actif.mention} perd 1 cœur ({'❤️' * vies[joueur_actif.id]})."
                     )
-                
+
                 embed_echec = discord.Embed(title="❌ ERREUR !", description=desc_echec, color=discord.Color.red())
                 await channel.send(embed=embed_echec)
 
@@ -7675,7 +7707,7 @@ async def lancer_partie_battle_culture(channel: discord.TextChannel, joueurs: li
         numero_tour += 1
         await asyncio.sleep(3)
 
-    # 3. Vainqueur final
+    # 3. Fin et annonce du vainqueur
     gagnant_id = next(uid for uid, vie in vies.items() if vie > 0)
     gagnant = next(j for j in ordre_joueurs if j.id == gagnant_id)
 
