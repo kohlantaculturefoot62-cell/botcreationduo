@@ -8253,24 +8253,29 @@ async def only_connect(
     vue_mur.message = msg
 
 # ========================================================
-# COMMANDE SLASH TROLL : /collier
+# COMMANDE SLASH TROLL : /collier (BLOC COMPLET)
 # ========================================================
 
 COLLIERS_ECLATES = [
     {
-        "nom": "Le Trombone Tordu et sa Ficelle",
-        "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/66/One_red_paperclip.jpg/515px-One_red_paperclip.jpg",
-        "description": "Même pas de quoi attacher deux feuilles de vote."
+        "nom": "Le Collier de Nouilles de Maternelle",
+        "image": "https://i.imgur.com/w1b6sB2.png",
+        "description": "Fait main en 2004 avec de la colle blanche périmée et des penne rigate."
     },
     {
-        "nom": "Le Sac Poubelle Déchiré",
-        "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/52/Black_bin_bag.jpg/640px-Black_bin_bag.jpg",
-        "description": "Idéal pour ramasser ta dignité après le conseil."
+        "nom": "La Cordelette de Sac Poubelle 50L",
+        "image": "https://i.imgur.com/T0b7LgE.png",
+        "description": "Un lien en plastique bleu trouvé près du campement. Zéro protection, 100% honte."
     },
     {
-        "nom": "Les Pâtes Crues Ficelées",
-        "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Penne_rigate_pasta.jpg/640px-Penne_rigate_pasta.jpg",
-        "description": "Fait main en maternelle, zéro pouvoir au dépouillement."
+        "nom": "Le Trombone Rouillé et son Bout de Ficelle",
+        "image": "https://i.imgur.com/X2Wj5r1.png",
+        "description": "Même pas de quoi attacher deux feuilles, encore moins te sauver au conseil."
+    },
+    {
+        "nom": "La Guirlande de Bouchons en Liège",
+        "image": "https://i.imgur.com/6U8YvLq.png",
+        "description": "Flotte sur l'eau, mais coule instantanément ta crédibilité sur l'île."
     }
 ]
 
@@ -8281,7 +8286,7 @@ async def generer_trash_collier_ia(pseudo: str, objet_nom: str) -> str:
         f"Le candidat nommé '{pseudo}' vient de taper la commande '/collier' en espérant trouver une immunité secrète.\n"
         f"À la place, il tombe sur un déchet ridicule : '{objet_nom}'.\n\n"
         "RÈGLES STRICTES :\n"
-        "1. Taille violemment et avec humour sa naïveté : il pensait vraiment qu'un collier d'immunité se trouvait en spammant une commande Discord ?\n"
+        "1. Taille avec ironie et humour sa naïveté : il pensait vraiment trouver une immunité en spammant une commande Discord ?\n"
         "2. Reste piquant, satirique et moqueur (ton télé-réalité / orga condescendant mais drôle).\n"
         "3. Longueur : 2 à 3 phrases percutantes maximum.\n"
         "4. Pas de guillemets autour du texte."
@@ -8300,15 +8305,32 @@ async def generer_trash_collier_ia(pseudo: str, objet_nom: str) -> str:
             f"Garde précieusement ce déchet autour du cou, ça t'évitera de chercher des excuses quand ton nom sortira de l'urne."
         )
 
+def a_acces_collier(interaction: discord.Interaction) -> bool:
+    """Vérifie si le membre est admin/orga OU s'il possède le rôle 'Eleas'."""
+    if est_orga_ou_admin(interaction):
+        return True
+
+    if isinstance(interaction.user, discord.Member):
+        return any(role.name.lower() == "eleas" for role in interaction.user.roles)
+
+    return False
 
 @bot.tree.command(
     name="collier",
     description="Fouille les buissons pour tenter de trouver un collier d'immunité..."
 )
 async def collier(interaction: discord.Interaction):
-    # Visible par tout le monde dans le salon pour afficher la honte en public
+    # Restriction : Admin / Orga OU rôle Eleas
+    if not a_acces_collier(interaction):
+        await interaction.response.send_message(
+            "⛔ Les buissons restent désespérément calmes... Cette commande ne t'est pas destinée.",
+            ephemeral=True
+        )
+        return
+
+    # Si autorisé, affichage public dans le chat
     await interaction.response.defer(ephemeral=False)
-    
+
     objet = random.choice(COLLIERS_ECLATES)
     pseudo = interaction.user.display_name
 
@@ -8323,12 +8345,15 @@ async def collier(interaction: discord.Interaction):
             f"{texte_trash}\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
-        color=discord.Color.from_rgb(139, 69, 19)  # Couleur marron/boue
+        color=discord.Color.from_rgb(139, 69, 19)
     )
     embed.set_image(url=objet["image"])
     embed.set_footer(text="Effet : Annule 0 vote • Augmente de 200% les chances de te faire tej au conseil")
 
-    await interaction.followup.send(content=f"👀 {interaction.user.mention} a fouillé le camp...", embed=embed)
+    await interaction.followup.send(
+        content=f"👀 {interaction.user.mention} a fouillé le camp...",
+        embed=embed
+    )
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
