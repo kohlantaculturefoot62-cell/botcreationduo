@@ -8413,29 +8413,33 @@ async def recuperer_discussions_recentes_24h(guild: discord.Guild) -> str:
 
 
 async def generer_briefing_conseil_ia(nom_tribu: str, archives_semaine: str, activite_24h: str) -> str:
-    """Génère le dossier complet de Denis Brogniart croisant la semaine et le jour J."""
+    """Génère le dossier Denis Brogniart avec des questions ouvertes, immersives et innovantes."""
     prompt = (
-        "Tu es Denis Brogniart, l'animateur emblématique et incisif de Koh-Lanta.\n"
-        "Ce soir à 20h a lieu le Conseil d'Immunité d'une tribu après sa défaite.\n"
-        "Le jeu se déroule sur Discord (alliances en MP/salons secrets, vocal, trahisons, votes au mérite vs affinité).\n\n"
+        "Tu es Denis Brogniart, le présentateur légendaire de Koh-Lanta, réputé pour son sens psychologique aiguisé.\n"
+        "Ce soir à 20h a lieu le Conseil d'Immunité d'une tribu après une défaite.\n"
+        "Le jeu se déroule sur Discord (alliances en MP, complots en vocal, faux-semblants sur les salons de camp).\n\n"
         f"TRIBU AU CONSEIL : {nom_tribu}\n\n"
-        "DOSSIER 1 — ARCHIVES DES JOURNAUX QUOTIDIENS DE LA SEMAINE ÉCOULÉE :\n\"\"\"\n"
+        "DOSSIER 1 — ARCHIVES DES JOURNAUX QUOTIDIENS DES 7 DERNIERS JOURS :\n\"\"\"\n"
         f"{archives_semaine or 'Pas d\'archives disponibles pour les jours précédents.'}\n\"\"\"\n\n"
-        "DOSSIER 2 — DISCUSSIONS BRUTES & COMPLOTS DES DERNIÈRES 24H (AUJOURD'HUI JUSQU'À 20H) :\n\"\"\"\n"
-        f"{activite_24h or 'Calme plat ou complots hors salons publics ces dernières 24h.'}\n\"\"\"\n\n"
+        "DOSSIER 2 — ACTIVITÉ & COMPLOTS DES DERNIÈRES 24 HEURES :\n\"\"\"\n"
+        f"{activite_24h or 'Calme plat ou tractations discrètes ces dernières 24h.'}\n\"\"\"\n\n"
         "MISSION POUR L'ORGANISATION :\n"
-        "Rédige la note de cadrage stratégique complète pour préparer le Conseil de ce soir.\n\n"
-        "STRUCTURE STRICTE OBLIGATOIRE :\n"
-        "1. 🔥 DYNAMIQUE GLOBALE & ÉVOLUTION SUR 7 JOURS\n"
-        "   - Résume la trajectoire de la tribu cette semaine d'après les anciens récaps : montées de tensions, clans formés, coups d'éclat ou désillusions.\n\n"
-        "2. ⚡ L'ACCÉLÉRATION DU JOUR J (LES DERNIÈRES 24 HEURES)\n"
-        "   - Analyse spécifiquement les dernières 24h : qui panique ? qui complote ? y a-t-il eu un revirement cet après-midi ?\n\n"
+        "Rédige la note de cadrage stratégique du Conseil de ce soir.\n\n"
+        "STRUCTURE DU RAPPORT :\n"
+        "1. 🔥 DYNAMIQUE GLOBALE SUR 7 JOURS\n"
+        "   - Synthèse de la semaine : trajectoire de la tribu, fatigue, lignes de fracture ou désillusions.\n\n"
+        "2. ⚡ L'ACCÉLÉRATION DU JOUR J (DERNIÈRES 24H)\n"
+        "   - Ce qui s'est tramé aujourd'hui : panique de dernière minute, hésitations, ambiances feutrées.\n\n"
         "3. ⚖️ TENDANCES DE VOTE & ZONES D'OMBRE\n"
-        "   - Dégage les 2 ou 3 candidats en danger sans certitude absolue (garde le suspense de la sentence irrévocable).\n\n"
-        "4. 🎙️ 5 QUESTIONS CLÉS À POSER AU CONSEIL\n"
-        "   - Formule exactement 5 questions percutantes, incisives et réfléchies à poser pendant le conseil.\n"
-        "   - CRITÈRES : Ne pas accabler une seule personne, ne pas cramer une alliance secrète, mais appuyer là où ça fait réfléchir.\n\n"
-        "Ton Denis Brogniart : posé, solennel, captivant, direct."
+        "   - Les scénarios probables pour les orgas, tout en préservant le doute jusqu'à l'urne.\n\n"
+        "4. 🎙️ 5 QUESTIONS CLÉS À POSER AU CONSEIL (DIRECTIVES ESSENTIELLES)\n"
+        "   Innove et imagine 5 questions marquantes, originales et percutantes qui sonnent 100% Denis Brogniart.\n"
+        "   GARDES-FOUS IMPÉRATIFS :\n"
+        "   - AUCUN SPOIL : N'accuse personne nommément, ne mentionne pas d'alliance explicite entendue en privé et ne révèle aucun plan de vote.\n"
+        "   - QUESTIONS OUVERTES & SUGGESTIVES : Les questions doivent forcer les candidats à s'interroger, à douter de leurs certitudes et à se regarder entre eux.\n"
+        "   - DIVERSITÉ DES ANGLES : Varie les cibles (au capitaine, à la tribu dans son ensemble, à ceux qui se croient à l'abri, sur la frontière entre jeu individuel et collectif, sur le poids des promesses faites sur le camp...).\n"
+        "   - Le but est d'installer une vraie tension dramatique sans jamais donner aux candidats d'indices sur ce qui va se passer au dépouillement.\n\n"
+        "Ton : Solennel, incisif, psychologique et immersif."
     )
 
     try:
@@ -8443,7 +8447,9 @@ async def generer_briefing_conseil_ia(nom_tribu: str, archives_semaine: str, act
             gemini_client.models.generate_content,
             model=MODEL_NAME,
             contents=prompt,
-            config={"temperature": 0.75}
+            config={
+                "temperature": 0.85  # Température relevée pour encourager des formulations fraîches et innovantes
+            }
         )
         return response.text.strip()
     except Exception as e:
