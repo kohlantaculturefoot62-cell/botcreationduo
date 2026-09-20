@@ -764,15 +764,33 @@ async def traiter_suggestion_orga(channel_src, salon_dest, candidat, joueur_myst
 
 @tasks.loop(minutes=1)
 async def horloge_serveur():
-    """Horloge robuste calée sur l'heure de Paris (Déclenchement groupé à 23h30)."""
-    global DERNIER_JOUR_RECAP
-
+    """Horloge serveur calée sur l'heure de Paris.
+    - Lundi 20h00 : Dossier Conseil (Archives 7j + scan 24h en direct)
+    - Tous les soirs 23h30 : Journal global, Spectateurs, Confessionnal
+    """
+    global DERNIER_JOUR_RECAP, DERNIER_LUNDI_CONSEIL
+    
     try:
         paris_tz = ZoneInfo("Europe/Paris")
         maintenant = datetime.datetime.now(paris_tz)
         jour_actuel = maintenant.strftime("%Y-%m-%d")
 
-        # Déclenchement unique par jour à 23h30
+        # ========================================================
+        # 1. DOSSIER CONSEIL — LUNDI 20H00 PILE
+        # ========================================================
+        if maintenant.weekday() == 0:  # 0 = Lundi
+            if maintenant.hour == 20 and maintenant.minute >= 0 and DERNIER_LUNDI_CONSEIL != jour_actuel:
+                DERNIER_LUNDI_CONSEIL = jour_actuel
+                print(f"⏰ [Lundi 20:00 Paris] Lancement automatique du préparatif de conseil...")
+                try:
+                    for guild in bot.guilds:
+                        await executer_preparatif_conseil(guild=guild, nom_tribu="Tribu au Conseil")
+                except Exception as e_conseil:
+                    print(f"❌ Erreur lors du préparatif de conseil : {e_conseil}")
+
+        # ========================================================
+        # 2. SESSION DU SOIR — TOUS LES SOIRS À 23H30 PILE
+        # ========================================================
         if maintenant.hour == 23 and maintenant.minute >= 30 and DERNIER_JOUR_RECAP != jour_actuel:
             DERNIER_JOUR_RECAP = jour_actuel
             print(f"⏰ [23:30 Paris] Lancement automatique de la session du {jour_actuel}...")
@@ -806,7 +824,7 @@ async def horloge_serveur():
 
                 await asyncio.sleep(4)
 
-                # 3. 🎙️ Questions Confessionnal / Conseil
+                # 3. 🎙️ Questions Confessionnal / Interviews
                 if salon_recap and salon_questions:
                     try:
                         print("🎙️ Génération des questions du confessionnal...")
@@ -8327,6 +8345,253 @@ async def collier(interaction: discord.Interaction):
         content=f"👀 {interaction.user.mention} a fouillé le camp...",
         embed=embed
     )
+
+# ========================================================
+# MODULE : PRÉPARATIF CONSEIL (RÉCAPS SEMAINE + ANALYSE 24H)
+# ========================================================
+
+CHAN_PREPARATIF_CONSEIL_ID = 1551027822925971536
+DERNIER_LUNDI_CONSEIL = None
+
+
+async def recuperer_recaps_journaliers_archives(guild: discord.Guild, jours: int = 7) -> str:
+    """Lit les anciens journaux quotidiens postés dans RECAP_CHANNEL_ID."""
+    salon_recap = guild.get_channel(RECAP_CHANNEL_ID)
+    if not salon_recap:
+        return ""
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    limite = now - datetime.timedelta(days=jours)
+    recaps = []
+
+    try:
+        async for m in salon_recap.history(limit=50, after=limite, oldest_first=True):
+            contenu = ""
+            if m.embeds:
+                for emb in m.embeds:
+                    morceaux = [emb.title or "", emb.description or ""]
+                    for f in emb.fields:
+                        morceaux.append(f"{f.name}: {f.value}")
+                    contenu += "\n".join([t for t in morceaux if t])
+            elif m.content.strip():
+                contenu = m.clean_content
+
+            if contenu.strip():
+                date_post = m.created_at.strftime("%d/%m")
+                recaps.append(f"--- [RÉCAP ARCHIVÉ DU {date_post}] ---\n{contenu}")
+    except Exception as e:
+        print(f"⚠️ Erreur lecture archives récaps : {e}")
+
+    return "\n\n".join(recaps)
+
+
+async def recuperer_discussions_recentes_24h(guild: discord.Guild) -> str:
+    """Scanne les salons de jeu sur les dernières 24h (comme pour le récap quotidien)."""
+    maintenant_utc = datetime.datetime.now(datetime.timezone.utc)
+    il_y_a_24h = maintenant_utc - datetime.timedelta(hours=24)
+    morceaux = []
+
+    for c in guild.text_channels:
+        # Exclusion des salons orga, logs, annonces ou archives
+        nom_low = c.name.lower()
+        if any(banni in nom_low for banni in ["log", "bot", "orga", "staff", "admin", "annonces", "reglement"]):
+            continue
+
+        try:
+            msgs_salon = []
+            async for m in c.history(limit=120, after=il_y_a_24h, oldest_first=True):
+                if m.author.bot or not m.content.strip() or m.content.startswith(("/", "!")):
+                    continue
+                msgs_salon.append(f"{m.author.display_name}: {m.clean_content}")
+
+            if msgs_salon:
+                morceaux.append(f"### SALON #{c.name} (Dernières 24h) :\n" + "\n".join(msgs_salon[-60:]))
+        except Exception:
+            continue
+
+    return "\n\n".join(morceaux)
+
+
+async def generer_briefing_conseil_ia(nom_tribu: str, archives_semaine: str, activite_24h: str) -> str:
+    """Génère le dossier complet de Denis Brogniart croisant la semaine et le jour J."""
+    prompt = (
+        "Tu es Denis Brogniart, l'animateur emblématique et incisif de Koh-Lanta.\n"
+        "Ce soir à 20h a lieu le Conseil d'Immunité d'une tribu après sa défaite.\n"
+        "Le jeu se déroule sur Discord (alliances en MP/salons secrets, vocal, trahisons, votes au mérite vs affinité).\n\n"
+        f"TRIBU AU CONSEIL : {nom_tribu}\n\n"
+        "DOSSIER 1 — ARCHIVES DES JOURNAUX QUOTIDIENS DE LA SEMAINE ÉCOULÉE :\n\"\"\"\n"
+        f"{archives_semaine or 'Pas d\'archives disponibles pour les jours précédents.'}\n\"\"\"\n\n"
+        "DOSSIER 2 — DISCUSSIONS BRUTES & COMPLOTS DES DERNIÈRES 24H (AUJOURD'HUI JUSQU'À 20H) :\n\"\"\"\n"
+        f"{activite_24h or 'Calme plat ou complots hors salons publics ces dernières 24h.'}\n\"\"\"\n\n"
+        "MISSION POUR L'ORGANISATION :\n"
+        "Rédige la note de cadrage stratégique complète pour préparer le Conseil de ce soir.\n\n"
+        "STRUCTURE STRICTE OBLIGATOIRE :\n"
+        "1. 🔥 DYNAMIQUE GLOBALE & ÉVOLUTION SUR 7 JOURS\n"
+        "   - Résume la trajectoire de la tribu cette semaine d'après les anciens récaps : montées de tensions, clans formés, coups d'éclat ou désillusions.\n\n"
+        "2. ⚡ L'ACCÉLÉRATION DU JOUR J (LES DERNIÈRES 24 HEURES)\n"
+        "   - Analyse spécifiquement les dernières 24h : qui panique ? qui complote ? y a-t-il eu un revirement cet après-midi ?\n\n"
+        "3. ⚖️ TENDANCES DE VOTE & ZONES D'OMBRE\n"
+        "   - Dégage les 2 ou 3 candidats en danger sans certitude absolue (garde le suspense de la sentence irrévocable).\n\n"
+        "4. 🎙️ 5 QUESTIONS CLÉS À POSER AU CONSEIL\n"
+        "   - Formule exactement 5 questions percutantes, incisives et réfléchies à poser pendant le conseil.\n"
+        "   - CRITÈRES : Ne pas accabler une seule personne, ne pas cramer une alliance secrète, mais appuyer là où ça fait réfléchir.\n\n"
+        "Ton Denis Brogniart : posé, solennel, captivant, direct."
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
+            model=MODEL_NAME,
+            contents=prompt,
+            config={"temperature": 0.75}
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"❌ Erreur lors de la génération du briefing : {e}"
+
+
+async def executer_preparatif_conseil(guild: discord.Guild, nom_tribu: str = "Tribu au Conseil"):
+    """Exécute la chaîne : lecture archives 7j + analyse 24h + rédaction Denis Brogniart."""
+    chan_dest = guild.get_channel(CHAN_PREPARATIF_CONSEIL_ID)
+    if not chan_dest:
+        print(f"❌ Salon préparatif conseil introuvable (ID: {CHAN_PREPARATIF_CONSEIL_ID})")
+        return
+
+    print("📚 Lecture des récaps archivés de la semaine...")
+    archives_semaine = await recuperer_recaps_journaliers_archives(guild, jours=7)
+
+    print("🔍 Analyse à chaud des discussions des dernières 24h...")
+    activite_24h = await recuperer_discussions_recentes_24h(guild)
+
+    print("✍️ Rédaction du dossier par Denis Brogniart...")
+    briefing = await generer_briefing_conseil_ia(
+        nom_tribu=nom_tribu,
+        archives_semaine=archives_semaine,
+        activite_24h=activite_24h
+    )
+
+    now_paris = datetime.datetime.now(ZoneInfo("Europe/Paris"))
+    date_formatee = now_paris.strftime("%d/%m/%Y")
+
+    embed_intro = discord.Embed(
+        title=f"🔥 DOSSIER CONSEIL — {nom_tribu.upper()}",
+        description=(
+            f"📅 **Lundi {date_formatee} (20h00)**\n"
+            "📊 **Sources croisées :**\n"
+            "▫️ Journaux stratégiques des 7 derniers jours\n"
+            "▫️ Analyse en direct des salons textuels (dernières 24h)"
+        ),
+        color=discord.Color.dark_red()
+    )
+    embed_intro.set_footer(text="Dossier confidentiel Organisation & Staff • Style Denis Brogniart")
+    await chan_dest.send(embed=embed_intro)
+
+    # Découpage si > 2000 caractères
+    if len(briefing) <= 1900:
+        await chan_dest.send(briefing)
+    else:
+        parties = briefing.split("\n\n")
+        tampon = ""
+        for p in parties:
+            if len(tampon) + len(p) + 2 > 1900:
+                await chan_dest.send(tampon)
+                tampon = p + "\n\n"
+            else:
+                tampon += p + "\n\n"
+        if tampon.strip():
+            await chan_dest.send(tampon)
+
+
+@bot.tree.command(
+    name="preparatif_conseil",
+    description="Génère le dossier du Conseil (archives 7j + analyse 24h en direct)."
+)
+@app_commands.describe(nom_tribu="Nom de la tribu au conseil (ex: Tribu Rouge, Tribu Jaune...)")
+@app_commands.check(est_orga_ou_admin)
+async def preparatif_conseil_cmd(interaction: discord.Interaction, nom_tribu: str = "Tribu au Conseil"):
+    await interaction.response.defer(ephemeral=True)
+    await executer_preparatif_conseil(guild=interaction.guild, nom_tribu=nom_tribu)
+    await interaction.followup.send(
+        f"✅ Dossier du conseil généré dans <#{CHAN_PREPARATIF_CONSEIL_ID}> !",
+        ephemeral=True
+    )
+# ========================================================
+# COMMANDES DE FORCE & TEST (PRÉPARATIF CONSEIL)
+# ========================================================
+
+@bot.tree.command(
+    name="forcer_preparatif_conseil",
+    description="[TEST/FORCE] Lance immédiatement la routine du lundi 20h pour le conseil."
+)
+@app_commands.describe(
+    nom_tribu="Nom de la tribu concernée (par défaut : Tribu au Conseil)",
+    ignorer_verrou="Si True, bypass le verrou de date pour forcer même si déjà exécuté aujourd'hui"
+)
+@app_commands.check(est_orga_ou_admin)
+async def forcer_preparatif_conseil(
+    interaction: discord.Interaction, 
+    nom_tribu: str = "Tribu au Conseil",
+    ignorer_verrou: bool = True
+):
+    """Force manuellement l'exécution de la routine du lundi 20h00."""
+    global DERNIER_LUNDI_CONSEIL
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        if ignorer_verrou:
+            DERNIER_LUNDI_CONSEIL = None
+
+        await interaction.followup.send(
+            f"⏳ Déclenchement forcé du préparatif conseil pour **{nom_tribu}**...\n"
+            f"Lecture des archives 7j et analyse des dernières 24h en cours.",
+            ephemeral=True
+        )
+
+        await executer_preparatif_conseil(guild=interaction.guild, nom_tribu=nom_tribu)
+
+        await interaction.channel.send(
+            f"✅ **[TEST/ORGA]** Le dossier du conseil a été généré avec succès dans <#{CHAN_PREPARATIF_CONSEIL_ID}> !"
+        )
+    except Exception as e:
+        await interaction.followup.send(f"❌ Erreur lors du forçage : {e}", ephemeral=True)
+
+
+@bot.tree.command(
+    name="tester_recup_conseil",
+    description="[TEST/DEBUG] Vérifie le volume de texte récupéré (archives 7j + 24h) sans appeler Gemini."
+)
+@app_commands.check(est_orga_ou_admin)
+async def tester_recup_conseil(interaction: discord.Interaction):
+    """Permet de vérifier en 2 secondes si le bot lit bien le salon récap et les salons de jeu."""
+    await interaction.response.defer(ephemeral=True)
+
+    archives = await recuperer_recaps_journaliers_archives(interaction.guild, jours=7)
+    activite_24h = await recuperer_discussions_recentes_24h(interaction.guild)
+
+    nb_caracteres_archives = len(archives)
+    nb_caracteres_24h = len(activite_24h)
+
+    embed = discord.Embed(
+        title="🔍 Diagnostic Récupération Données Conseil",
+        color=discord.Color.blue()
+    )
+    embed.add_field(
+        name="📚 Archives 7j (RECAP_CHANNEL_ID)",
+        value=f"**{nb_caracteres_archives}** caractères récupérés\n*(Présence de récaps : {'Oui' if archives else 'Non'})*",
+        inline=False
+    )
+    embed.add_field(
+        name="⚡ Salons scannés (Dernières 24h)",
+        value=f"**{nb_caracteres_24h}** caractères récupérés\n*(Présence d'activité : {'Oui' if activite_24h else 'Non'})*",
+        inline=False
+    )
+
+    if not archives:
+        embed.description = "⚠️ **Attention :** Aucun message trouvé dans `RECAP_CHANNEL_ID` sur les 7 derniers jours."
+    else:
+        embed.description = "✅ Données prêtes à être ingérées par Gemini."
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
