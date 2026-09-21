@@ -8673,7 +8673,292 @@ async def pregenerer_variantes_equipe_ia(membres: list[discord.Member]) -> dict[
         )
         texte = response.text.strip()
         if texte.startswith("```"):
-            texte = texte.split("
+            texte = texte.split("```")[1]
+            if texte.startswith("json"):
+                texte = texte[4:]
+        data = json.loads(texte.strip())
+        for k, v in data.items():
+            variantes = [str(nom).strip().upper() for nom in v if nom]
+            random.shuffle(variantes)
+            resultat[int(k)] = variantes
+    except Exception as e:
+        print(f"⚠️ Erreur pré-génération variantes IA: {e}")
+
+    # Filet de secours local si l'API est indisponible
+    for m in membres:
+        if m.id not in resultat or len(resultat[m.id]) < 3:
+            base = m.display_name.upper()
+            secours = [
+                base,
+                base + "E",
+                base.replace("C", "K") if "C" in base else base + "H",
+                base.replace("I", "Y") if "I" in base else base.replace("Y", "I"),
+                base[:-1] if len(base) > 4 else base + "S",
+                base
+            ]
+            random.shuffle(secours)
+            resultat[m.id] = secours
+
+    return resultat
+
+
+def creer_image_parchemin_depuis_jpeg(nom_affiche: str) -> io.BytesIO:
+    """Ouvre parchemin_vierge.jpeg et écrit le nom au centre façon charbon de bois."""
+    if os.path.exists(CHEMIN_PARCHEMIN_JPEG):
+        img = Image.open(CHEMIN_PARCHEMIN_JPEG).convert("RGBA")
+    else:
+        img = Image.new("RGBA", (800, 800), (228, 205, 160, 255))
+
+    largeur, hauteur = img.size
+    draw = ImageDraw.Draw(img)
+
+    taille_police = max(32, int(hauteur * 0.08))
+    police = charger_police(taille=taille_police)
+
+    texte = nom_affiche.upper()
+    bbox = draw.textbbox((0, 0), texte, font=police)
+    w_txt = bbox[2] - bbox[0]
+    h_txt = bbox[3] - bbox[1]
+
+    pos_x = (largeur - w_txt) // 2
+    pos_y = int(hauteur * 0.45) - (h_txt // 2)
+
+    # Effet encre fusain : ombre portée + texte principal
+    draw.text((pos_x + 3, pos_y + 3), texte, fill=(60, 35, 15, 120), font=police)
+    draw.text((pos_x, pos_y), texte, fill=(25, 15, 5, 245), font=police)
+
+    tampon = io.BytesIO()
+    img.save(tampon, format="PNG")
+    tampon.seek(0)
+    return tampon
+
+
+def generer_image_candidat_en_flammes_depuis_jpeg(avatar_bytes: bytes) -> io.BytesIO:
+    """Incruste l'avatar du candidat dans le cadre carré de brasier.jpeg."""
+    if os.path.exists(CHEMIN_BRASIER_JPEG):
+        fond = Image.open(CHEMIN_BRASIER_JPEG).convert("RGBA")
+    else:
+        fond = Image.new("RGBA", (1024, 1024), (20, 5, 5, 255))
+
+    largeur, hauteur = fond.size
+
+    try:
+        taille_cadre = int(largeur * 0.46)
+        avatar_src = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
+        avatar_src = ImageOps.fit(avatar_src, (taille_cadre, taille_cadre), centering=(0.5, 0.5))
+
+        masque = Image.new("L", (taille_cadre, taille_cadre), 0)
+        draw_m = ImageDraw.Draw(masque)
+        draw_m.rounded_rectangle([0, 0, taille_cadre, taille_cadre], radius=25, fill=255)
+        masque = masque.filter(ImageFilter.GaussianBlur(radius=8))
+
+        avatar_pret = Image.new("RGBA", (taille_cadre, taille_cadre), (0, 0, 0, 0))
+        avatar_pret.paste(avatar_src, (0, 0), masque)
+
+        teinte_rouge = Image.new("RGBA", (taille_cadre, taille_cadre), (255, 60, 0, 80))
+        avatar_pret = Image.alpha_composite(avatar_pret, teinte_rouge)
+
+        pos_x = (largeur - taille_cadre) // 2
+        pos_y = int(hauteur * 0.22)
+
+        fond.paste(avatar_pret, (pos_x, pos_y), avatar_pret)
+    except Exception as e:
+        print(f"⚠️ Erreur insertion avatar dans brasier.jpeg : {e}")
+
+    tampon = io.BytesIO()
+    fond.save(tampon, format="PNG")
+    tampon.seek(0)
+    return tampon
+
+
+async def terminer_et_bruler(channel: discord.TextChannel, elimine: discord.Member):
+    """Envoie l'avatar calciné sur le fond de brasier et souffle le flambeau."""
+    avatar_bytes = await elimine.display_avatar.read()
+    img_flammes = await asyncio.to_thread(generer_image_candidat_en_flammes_depuis_jpeg, avatar_bytes)
+    fichier = discord.File(img_flammes, filename="sentence.png")
+
+    embed = discord.Embed(
+        title="🔥 LA SENTENCE EST IRRÉVOCABLE",
+        description=(
+            f"# {elimine.display_name.upper()}, LES AVENTURIERS ONT DÉCIDÉ DE VOUS ÉLIMINER.\n\n"
+            f"*{elimine.mention}, prenez votre sac à dos, venez me rejoindre avec votre flambeau.*\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "💨 *(Denis souffle sur le flambeau)*\n"
+            f"**« {elimine.display_name}, votre flambeau est éteint. Votre aventure s'arrête ce soir. »**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=discord.Color.dark_red()
+    )
+    embed.set_image(url="attachment://sentence.png")
+    embed.set_footer(text="Koh-Lanta • Conseil d'Immunité")
+
+    await channel.send(content=f"💀 {elimine.mention}", file=fichier, embed=embed)
+
+
+# --------------------------------------------------------
+# 2. COMMANDES DU CONSEIL
+# --------------------------------------------------------
+
+@bot.tree.command(
+    name="demarrer_conseil",
+    description="Initialise le conseil, lit l'équipe et prépare les noms pour un dépouillement instantané."
+)
+@app_commands.describe(
+    equipe="Rôle de la tribu convoquée au conseil",
+    total_votants="Nombre total de bulletins dans l'urne"
+)
+@app_commands.check(est_orga_ou_admin)
+async def demarrer_conseil(interaction: discord.Interaction, equipe: discord.Role, total_votants: int):
+    if total_votants < 2:
+        await interaction.response.send_message("❌ Il faut au moins 2 votants.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    membres = [m for m in equipe.members if not m.bot]
+    if not membres:
+        await interaction.followup.send(f"❌ Aucun membre trouvé sous le rôle {equipe.mention}.", ephemeral=True)
+        return
+
+    banque_noms = await pregenerer_variantes_equipe_ia(membres)
+
+    seuil_majorite = (total_votants // 2) + 1
+    SESSIONS_CONSEIL[interaction.channel_id] = {
+        "equipe": equipe,
+        "total_votants": total_votants,
+        "seuil_majorite": seuil_majorite,
+        "decompte": Counter(),
+        "votes_depouilles": 0,
+        "banque_variantes": banque_noms,
+        "termine": False
+    }
+
+    embed = discord.Embed(
+        title="🔥 LE CONSEIL D'IMMUNITÉ EST OUVERT",
+        description=(
+            f"Tribu convoquée : {equipe.mention} (**{len(membres)} aventuriers**)\n"
+            f"📥 **{total_votants} bulletins** dans l'urne.\n"
+            f"⚖️ Seuil d'élimination : **{seuil_majorite} voix**.\n\n"
+            "✨ *Tous les bulletins ont été préparés dans l'urne.*\n\n"
+            "*« Si quelqu'un possède un collier d'immunité et souhaite le jouer, c'est le moment de me le remettre. »*"
+        ),
+        color=discord.Color.dark_orange()
+    )
+    embed.set_footer(text="Enchaîne les bulletins avec /depouiller_vote")
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(
+    name="depouiller_vote",
+    description="Sors et affiche immédiatement le prochain bulletin de l'urne."
+)
+@app_commands.describe(candidat="La personne dont le nom est sur ce bulletin")
+@app_commands.check(est_orga_ou_admin)
+async def depouiller_vote(interaction: discord.Interaction, candidat: discord.Member):
+    cid = interaction.channel_id
+    if cid not in SESSIONS_CONSEIL:
+        await interaction.response.send_message("❌ Aucun conseil en cours ici. Lance d'abord `/demarrer_conseil`.", ephemeral=True)
+        return
+
+    session = SESSIONS_CONSEIL[cid]
+    if session["termine"]:
+        await interaction.response.send_message("⚠️ Ce conseil est déjà terminé.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    session["votes_depouilles"] += 1
+    index = session["votes_depouilles"]
+    session["decompte"][candidat.id] += 1
+    voix_actuelles = session["decompte"][candidat.id]
+
+    # Pioche avec rotation continue (garantit l'alternance vrai nom / fautes)
+    pool = session["banque_variantes"].get(candidat.id, [])
+    if not pool:
+        pool = [candidat.display_name.upper(), candidat.display_name.upper() + "E"]
+        session["banque_variantes"][candidat.id] = pool
+
+    nom_choisi = pool.pop(0)
+    pool.append(nom_choisi)
+
+    img_buf = await asyncio.to_thread(creer_image_parchemin_depuis_jpeg, nom_choisi)
+    fichier = discord.File(img_buf, filename="bulletin.png")
+
+    lignes = [
+        f"▫️ **{(interaction.guild.get_member(uid) or candidat).display_name}** : {cnt} vote{'s' if cnt > 1 else ''}"
+        for uid, cnt in session["decompte"].most_common()
+    ]
+
+    embed_vote = discord.Embed(
+        title=f"📜 BULLETIN #{index} SUR {session['total_votants']}",
+        description=(
+            f"Le nom inscrit est : **{nom_choisi}** *(pour {candidat.mention})*.\n\n"
+            f"📊 **État de l'urne :**\n" + "\n".join(lignes)
+        ),
+        color=discord.Color.from_rgb(212, 175, 55)
+    )
+    embed_vote.set_image(url="attachment://bulletin.png")
+    await interaction.followup.send(file=fichier, embed=embed_vote)
+
+    # Cas 1 : Majorité absolue atteinte
+    if voix_actuelles >= session["seuil_majorite"]:
+        session["termine"] = True
+        votes_restants = session["total_votants"] - session["votes_depouilles"]
+        txt_victoire = f"🛑 **{candidat.mention} a recueilli la majorité absolue ({voix_actuelles} voix).**"
+        if votes_restants > 0:
+            txt_victoire += (
+                f"\n\nInutile de dépouiller les **{votes_restants} bulletin{'s' if votes_restants > 1 else ''}** restant{'s' if votes_restants > 1 else ''} : "
+                f"**ils sont tous contre {candidat.mention}**."
+            )
+
+        embed_fin = discord.Embed(
+            title="🛑 LA SENTENCE EST INÉVITABLE",
+            description=txt_victoire,
+            color=discord.Color.red()
+        )
+        await interaction.channel.send(embed=embed_fin)
+        await asyncio.sleep(2)
+        await terminer_et_bruler(interaction.channel, candidat)
+        del SESSIONS_CONSEIL[cid]
+        return
+
+    # Cas 2 : Alerte vote décisif
+    votes_restants = session["total_votants"] - session["votes_depouilles"]
+    if votes_restants > 0:
+        candidats_danger = [
+            interaction.guild.get_member(uid)
+            for uid, c in session["decompte"].items()
+            if c == session["seuil_majorite"] - 1
+        ]
+        if candidats_danger:
+            mentions = ", ".join([m.mention for m in candidats_danger if m])
+            embed_suspense = discord.Embed(
+                title="⚡ SUSPENSE : LE PROCHAIN VOTE PEUT ÊTRE DÉCISIF !",
+                description=f"Si le nom de {mentions} ressort au prochain bulletin, son élimination sera définitive !",
+                color=discord.Color.gold()
+            )
+            await interaction.channel.send(embed=embed_suspense)
+
+    # Cas 3 : Dépouillement terminé sans majorité anticipée
+    if session["votes_depouilles"] >= session["total_votants"]:
+        session["termine"] = True
+        top_uid, _ = session["decompte"].most_common(1)[0]
+        elimine = interaction.guild.get_member(top_uid) or candidat
+        await terminer_et_bruler(interaction.channel, elimine)
+        del SESSIONS_CONSEIL[cid]
+
+
+@bot.tree.command(
+    name="annuler_conseil",
+    description="Annule et réinitialise la séance de dépouillement en cours."
+)
+@app_commands.check(est_orga_ou_admin)
+async def annuler_conseil(interaction: discord.Interaction):
+    if interaction.channel_id in SESSIONS_CONSEIL:
+        del SESSIONS_CONSEIL[interaction.channel_id]
+        await interaction.response.send_message("🗑️ Le conseil a été annulé et réinitialisé.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Aucun conseil en cours à annuler.", ephemeral=True)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
