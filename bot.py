@@ -8609,15 +8609,19 @@ import json
 import asyncio
 import random
 from collections import Counter
+import aiohttp
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 import discord
 from discord import app_commands
 
-# Fichiers JPEG locaux à la racine du projet
+# Chemins des images locales
 CHEMIN_PARCHEMIN_JPEG = "parchemin_vierge.jpeg"
 CHEMIN_BRASIER_JPEG = "brasier.jpeg"
 
-# Mémoire vive des conseils actifs : { channel_id: dict }
+# ID du salon Discord où sont postées les présentations / fiches des candidats
+CHAN_PRESENTATION_ID = 1545479374608793652
+
+# Mémoire des sessions en cours : { channel_id: dict }
 SESSIONS_CONSEIL = {}
 
 
@@ -8684,7 +8688,6 @@ async def pregenerer_variantes_equipe_ia(membres: list[discord.Member]) -> dict[
     except Exception as e:
         print(f"⚠️ Erreur pré-génération variantes IA: {e}")
 
-    # Filet de secours local si l'API est indisponible
     for m in membres:
         if m.id not in resultat or len(resultat[m.id]) < 3:
             base = m.display_name.upper()
@@ -8723,7 +8726,6 @@ def creer_image_parchemin_depuis_jpeg(nom_affiche: str) -> io.BytesIO:
     pos_x = (largeur - w_txt) // 2
     pos_y = int(hauteur * 0.45) - (h_txt // 2)
 
-    # Effet encre fusain : ombre portée + texte principal
     draw.text((pos_x + 3, pos_y + 3), texte, fill=(60, 35, 15, 120), font=police)
     draw.text((pos_x, pos_y), texte, fill=(25, 15, 5, 245), font=police)
 
@@ -8733,48 +8735,103 @@ def creer_image_parchemin_depuis_jpeg(nom_affiche: str) -> io.BytesIO:
     return tampon
 
 
-def generer_image_candidat_en_flammes_depuis_jpeg(avatar_bytes: bytes) -> io.BytesIO:
-    """Incruste l'avatar du candidat dans le cadre carré de brasier.jpeg."""
-    if os.path.exists(CHEMIN_BRASIER_JPEG):
-        fond = Image.open(CHEMIN_BRASIER_JPEG).convert("RGBA")
-    else:
-        fond = Image.new("RGBA", (1024, 1024), (20, 5, 5, 255))
+async def recuperer_photo_candidat(guild: discord.Guild, membre: discord.Member) -> bytes:
+    """Récupère l'image postée dans le salon des présentations, sinon l'avatar Discord."""
+    channel_pres = guild.get_channel(CHAN_PRESENTATION_ID)
+    if channel_pres:
+        try:
+            async for msg in channel_pres.history(limit=120):
+                est_concerne = (
+                    membre in msg.mentions 
+                    or membre.display_name.lower() in msg.content.lower()
+                    or any(membre.display_name.lower() in (e.description or "").lower() for e in msg.embeds)
+                    or any(membre.display_name.lower() in (e.title or "").lower() for e in msg.embeds)
+                )
 
-    largeur, hauteur = fond.size
+                if est_concerne:
+                    for att in msg.attachments:
+                        if att.content_type and att.content_type.startswith("image/"):
+                            return await att.read()
+                    for emb in msg.embeds:
+                        url_cible = (emb.image.url if emb.image else None) or (emb.thumbnail.url if emb.thumbnail else None)
+                        if url_cible:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(url_cible) as resp:
+                                    if resp.status == 200:
+                                        return await resp.read()
+        except Exception as e:
+            print(f"⚠️ Erreur récupération photo présentation: {e}")
+
+    return await membre.display_avatar.read()
+
+
+def generer_image_candidat_en_flammes_depuis_jpeg(photo_bytes: bytes) -> io.BytesIO:
+    """Incruste la photo SOUS le cadre de feu avec masque d'adoucissement et ambiance braise."""
+    if os.path.exists(CHEMIN_BRASIER_JPEG):
+        fond_flammes = Image.open(CHEMIN_BRASIER_JPEG).convert("RGBA")
+    else:
+        fond_flammes = Image.new("RGBA", (1024, 1024), (20, 5, 5, 255))
+
+    largeur, hauteur = fond_flammes.size
+
+    cadre_w = int(largeur * 0.54)
+    cadre_h = int(hauteur * 0.50)
+    pos_x = (largeur - cadre_w) // 2
+    pos_y = int(hauteur * 0.17)
 
     try:
-        taille_cadre = int(largeur * 0.46)
-        avatar_src = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
-        avatar_src = ImageOps.fit(avatar_src, (taille_cadre, taille_cadre), centering=(0.5, 0.5))
+        portrait_src = Image.open(io.BytesIO(photo_bytes)).convert("RGBA")
+        portrait = ImageOps.fit(portrait_src, (cadre_w, cadre_h), centering=(0.5, 0.4))
 
-        masque = Image.new("L", (taille_cadre, taille_cadre), 0)
+        # Masque avec fondu progressif sur les bords
+        masque = Image.new("L", (cadre_w, cadre_h), 0)
         draw_m = ImageDraw.Draw(masque)
-        draw_m.rounded_rectangle([0, 0, taille_cadre, taille_cadre], radius=25, fill=255)
-        masque = masque.filter(ImageFilter.GaussianBlur(radius=8))
+        marge = 25
+        draw_m.rectangle([marge, marge, cadre_w - marge, cadre_h - marge], fill=255)
+        masque = masque.filter(ImageFilter.GaussianBlur(radius=18))
 
-        avatar_pret = Image.new("RGBA", (taille_cadre, taille_cadre), (0, 0, 0, 0))
-        avatar_pret.paste(avatar_src, (0, 0), masque)
+        portrait_fondu = Image.new("RGBA", (cadre_w, cadre_h), (0, 0, 0, 0))
+        portrait_fondu.paste(portrait, (0, 0), masque)
 
-        teinte_rouge = Image.new("RGBA", (taille_cadre, taille_cadre), (255, 60, 0, 80))
-        avatar_pret = Image.alpha_composite(avatar_pret, teinte_rouge)
+        # Filtres d'intégration d'éclairage : chaleur orange + assombrissement supérieur
+        filtre_chaud = Image.new("RGBA", (cadre_w, cadre_h), (255, 90, 0, 75))
+        filtre_nuit = Image.new("RGBA", (cadre_w, cadre_h), (0, 0, 0, 0))
+        draw_fn = ImageDraw.Draw(filtre_nuit)
+        for y in range(int(cadre_h * 0.35)):
+            alpha = int(140 * (1 - (y / (cadre_h * 0.35))))
+            draw_fn.line([(0, y), (cadre_w, y)], fill=(10, 5, 0, alpha))
 
-        pos_x = (largeur - taille_cadre) // 2
-        pos_y = int(hauteur * 0.22)
+        portrait_fondu = Image.alpha_composite(portrait_fondu, filtre_chaud)
+        portrait_fondu = Image.alpha_composite(portrait_fondu, filtre_nuit)
 
-        fond.paste(avatar_pret, (pos_x, pos_y), avatar_pret)
+        # Composition : le portrait est posé puis les flammes lumineuses passent devant
+        scene = Image.new("RGBA", (largeur, hauteur), (12, 6, 4, 255))
+        scene.paste(portrait_fondu, (pos_x, pos_y), portrait_fondu)
+
+        masque_flammes = fond_flammes.convert("L").point(lambda p: 255 if p > 35 else int(p * 2.5))
+        masque_flammes = masque_flammes.filter(ImageFilter.GaussianBlur(radius=2))
+        scene.paste(fond_flammes, (0, 0), masque_flammes)
+
+        zone_bas = (0, int(hauteur * 0.75), largeur, hauteur)
+        scene.paste(fond_flammes.crop(zone_bas), zone_bas)
+
+        tampon = io.BytesIO()
+        scene.save(tampon, format="PNG")
+        tampon.seek(0)
+        return tampon
+
     except Exception as e:
-        print(f"⚠️ Erreur insertion avatar dans brasier.jpeg : {e}")
-
-    tampon = io.BytesIO()
-    fond.save(tampon, format="PNG")
-    tampon.seek(0)
-    return tampon
+        print(f"⚠️ Erreur composition photo : {e}")
+        tampon = io.BytesIO()
+        fond_flammes.save(tampon, format="PNG")
+        tampon.seek(0)
+        return tampon
 
 
 async def terminer_et_bruler(channel: discord.TextChannel, elimine: discord.Member):
-    """Envoie l'avatar calciné sur le fond de brasier et souffle le flambeau."""
-    avatar_bytes = await elimine.display_avatar.read()
-    img_flammes = await asyncio.to_thread(generer_image_candidat_en_flammes_depuis_jpeg, avatar_bytes)
+    """Envoie l'image fondue dans le brasier et clôture le conseil."""
+    photo_bytes = await recuperer_photo_candidat(channel.guild, elimine)
+    img_flammes = await asyncio.to_thread(generer_image_candidat_en_flammes_depuis_jpeg, photo_bytes)
     fichier = discord.File(img_flammes, filename="sentence.png")
 
     embed = discord.Embed(
@@ -8796,7 +8853,7 @@ async def terminer_et_bruler(channel: discord.TextChannel, elimine: discord.Memb
 
 
 # --------------------------------------------------------
-# 2. COMMANDES DU CONSEIL
+# 2. COMMANDES SLASH DU CONSEIL
 # --------------------------------------------------------
 
 @bot.tree.command(
@@ -8872,7 +8929,6 @@ async def depouiller_vote(interaction: discord.Interaction, candidat: discord.Me
     session["decompte"][candidat.id] += 1
     voix_actuelles = session["decompte"][candidat.id]
 
-    # Pioche avec rotation continue (garantit l'alternance vrai nom / fautes)
     pool = session["banque_variantes"].get(candidat.id, [])
     if not pool:
         pool = [candidat.display_name.upper(), candidat.display_name.upper() + "E"]
@@ -8900,7 +8956,7 @@ async def depouiller_vote(interaction: discord.Interaction, candidat: discord.Me
     embed_vote.set_image(url="attachment://bulletin.png")
     await interaction.followup.send(file=fichier, embed=embed_vote)
 
-    # Cas 1 : Majorité absolue atteinte
+    # Majorité absolue atteinte
     if voix_actuelles >= session["seuil_majorite"]:
         session["termine"] = True
         votes_restants = session["total_votants"] - session["votes_depouilles"]
@@ -8922,7 +8978,7 @@ async def depouiller_vote(interaction: discord.Interaction, candidat: discord.Me
         del SESSIONS_CONSEIL[cid]
         return
 
-    # Cas 2 : Alerte vote décisif
+    # Alerte vote décisif
     votes_restants = session["total_votants"] - session["votes_depouilles"]
     if votes_restants > 0:
         candidats_danger = [
@@ -8939,7 +8995,7 @@ async def depouiller_vote(interaction: discord.Interaction, candidat: discord.Me
             )
             await interaction.channel.send(embed=embed_suspense)
 
-    # Cas 3 : Dépouillement terminé sans majorité anticipée
+    # Fin de dépouillement standard
     if session["votes_depouilles"] >= session["total_votants"]:
         session["termine"] = True
         top_uid, _ = session["decompte"].most_common(1)[0]
