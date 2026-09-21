@@ -8600,35 +8600,80 @@ async def tester_recup_conseil(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 # ========================================================
-# MODULE : DÉPOUILLEMENT MANUEL AU TEMPO (KOH-LANTA)
+# MODULE : DÉPOUILLEMENT AU TEMPO HD (KOH-LANTA)
 # ========================================================
 
+import os
 import io
 import asyncio
 import random
 from collections import Counter
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+import aiohttp
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 import discord
 from discord import app_commands
 
 # Mémoire des conseils en cours : { channel_id: { ... } }
 SESSIONS_CONSEIL = {}
+CACHE_TEXTURES = {}
+
+URL_TEXTURE_PARCHEMIN = "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=1000&auto=format&fit=crop"
+URL_TEXTURE_BRASIER = "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1000&auto=format&fit=crop"
 
 
 # --------------------------------------------------------
-# 1. VISUELS : PARCHEMIN & FLAMMES
+# 1. RENDU VISUEL HD & GESTION DES POLICES
 # --------------------------------------------------------
+
+async def get_texture(session: aiohttp.ClientSession, url: str) -> Image.Image:
+    """Télécharge et met en cache une texture haute résolution."""
+    if url in CACHE_TEXTURES:
+        return CACHE_TEXTURES[url].copy()
+
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            if resp.status == 200:
+                data = await resp.read()
+                img = Image.open(io.BytesIO(data)).convert("RGBA")
+                CACHE_TEXTURES[url] = img
+                return img.copy()
+    except Exception as e:
+        print(f"⚠️ Erreur chargement texture {url}: {e}")
+
+    # Texture de secours par défaut si réseau KO
+    return Image.new("RGBA", (800, 450), (45, 25, 15, 255))
+
+
+def charger_police(taille: int):
+    """Charge une police Serif/Bold système selon l'environnement de build."""
+    chemins_possibles = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSerifBold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+        "C:\\Windows\\Fonts\\georgiab.ttf",
+        "C:\\Windows\\Fonts\\timesbd.ttf",
+        "/Library/Fonts/Georgia Bold.ttf",
+        "/System/Library/Fonts/Times.ttc"
+    ]
+    for p in chemins_possibles:
+        if os.path.exists(p):
+            try:
+                return ImageFont.truetype(p, taille)
+            except Exception:
+                continue
+    return ImageFont.load_default()
+
 
 async def generer_orthographe_bancale_ia(nom_original: str) -> str:
-    """Génère une écriture phonétique ou approximative façon aventurier KL."""
+    """Génère une orthographe phonétique bancale culte à la Koh-Lanta."""
     prompt = (
         "Tu es un candidat de Koh-Lanta qui écrit un prénom sur un bulletin de vote en bois.\n"
         f"PRÉNOM RÉEL : {nom_original}\n\n"
         "Écris ce prénom avec une orthographe phonétique, bizarre ou approximative, "
         "comme dans les conseils cultes de Koh-Lanta (ex: Moundir -> MOUNDIRE, Claude -> KLODE, "
-        "Teheiura -> TÉHÉYOURA, Grégoire -> GREGOAR).\n"
-        "RÈGLE STRICTE : Le nom DOIT rester parfaitement lisible et reconnaissable au premier coup d'œil.\n"
-        "Renvoie UNIQUEMENT le prénom déformé en MAJUSCULES, sans guillemets ni explications."
+        "Teheiura -> TÉHÉYOURA, Grégoire -> GREGOAR, Nicolas -> NYKOLA).\n"
+        "RÈGLE STRICTE : Le nom DOIT rester immédiatement reconnaissable et compréhensible.\n"
+        "Renvoie UNIQUEMENT le prénom déformé en MAJUSCULES, sans aucun autre mot ni guillemets."
     )
     try:
         response = await asyncio.to_thread(
@@ -8649,98 +8694,134 @@ async def generer_orthographe_bancale_ia(nom_original: str) -> str:
         return random.choice(variantes.get(nom_original.upper(), [nom_original.upper()]))
 
 
-def creer_image_parchemin_bulletin(nom_affiche: str) -> io.BytesIO:
-    """Dessine le bulletin parcheminé avec bords brûlés."""
-    largeur, hauteur = 650, 320
-    img = Image.new("RGBA", (largeur, hauteur), (230, 206, 155, 255))
-    draw = ImageDraw.Draw(img)
+async def creer_image_parchemin_bulletin_hd(nom_affiche: str) -> io.BytesIO:
+    """Génère un bulletin HD sur vraie texture parchemin avec lettrage fusain."""
+    async with aiohttp.ClientSession() as session:
+        fond = await get_texture(session, URL_TEXTURE_PARCHEMIN)
 
-    # Texture vieillie
-    for _ in range(1200):
-        rx = random.randint(0, largeur - 1)
-        ry = random.randint(0, hauteur - 1)
-        draw.point((rx, ry), fill=(random.randint(180, 215), random.randint(155, 185), random.randint(110, 140), 200))
+    fond = ImageOps.fit(fond, (750, 360), centering=(0.5, 0.5))
 
-    # Bords brûlés
-    draw.rectangle([0, 0, largeur, hauteur], outline=(75, 45, 25, 255), width=8)
-    draw.rectangle([8, 8, largeur - 8, hauteur - 8], outline=(140, 95, 55, 180), width=4)
+    # Bords calcinés / vignettage
+    calque_ombre = Image.new("RGBA", (750, 360), (0, 0, 0, 0))
+    draw_ombre = ImageDraw.Draw(calque_ombre)
+    draw_ombre.rectangle([0, 0, 750, 360], outline=(35, 18, 5, 230), width=14)
+    draw_ombre.rectangle([14, 14, 736, 346], outline=(60, 30, 10, 140), width=8)
+    calque_ombre = calque_ombre.filter(ImageFilter.GaussianBlur(radius=6))
+    fond = Image.alpha_composite(fond, calque_ombre)
 
-    police = ImageFont.load_default()
-    texte_affiche = f"  {nom_affiche}  "
+    draw = ImageDraw.Draw(fond)
+    police = charger_police(taille=60)
 
-    bbox = draw.textbbox((0, 0), texte_affiche, font=police)
+    texte = nom_affiche.upper()
+    bbox = draw.textbbox((0, 0), texte, font=police)
     w_txt = bbox[2] - bbox[0]
     h_txt = bbox[3] - bbox[1]
+    pos_x = (750 - w_txt) // 2
+    pos_y = (360 - h_txt) // 2
 
-    txt_img = Image.new("RGBA", (w_txt + 20, h_txt + 20), (0, 0, 0, 0))
-    txt_draw = ImageDraw.Draw(txt_img)
-    txt_draw.text((10, 10), texte_affiche, fill=(35, 20, 15, 255), font=police)
-
-    zoom = 6
-    txt_img_grande = txt_img.resize(((w_txt + 20) * zoom, (h_txt + 20) * zoom), Image.Resampling.NEAREST)
-
-    pos_x = (largeur - txt_img_grande.width) // 2
-    pos_y = (hauteur - txt_img_grande.height) // 2
-    img.paste(txt_img_grande, (pos_x, pos_y), txt_img_grande)
+    # Effet encre charbon (ombre + couche supérieure)
+    draw.text((pos_x + 3, pos_y + 3), texte, fill=(60, 40, 25, 140), font=police)
+    draw.text((pos_x, pos_y), texte, fill=(20, 10, 5, 245), font=police)
 
     tampon = io.BytesIO()
-    img.save(tampon, format="PNG")
+    fond.save(tampon, format="PNG", quality=95)
     tampon.seek(0)
     return tampon
 
 
-async def generer_image_candidat_en_flammes(avatar_bytes: bytes) -> io.BytesIO:
-    """Incruste l'avatar du candidat éliminé au milieu du brasier."""
-    largeur, hauteur = 700, 500
-    fond = Image.new("RGBA", (largeur, hauteur), (15, 5, 5, 255))
-    draw = ImageDraw.Draw(fond)
+async def generer_image_candidat_en_flammes_hd(avatar_bytes: bytes) -> io.BytesIO:
+    """Incruste l'avatar dans un vrai brasier HD avec effet de combustion."""
+    largeur, hauteur = 800, 500
 
-    for y in range(hauteur):
-        ratio = y / hauteur
-        r = int(60 + 195 * ratio)
-        g = int(20 + 80 * (ratio ** 2))
-        b = int(5 * ratio)
-        draw.line([(0, y), (largeur, y)], fill=(r, g, b, 255))
+    async with aiohttp.ClientSession() as session:
+        fond = await get_texture(session, URL_TEXTURE_BRASIER)
+
+    fond = ImageOps.fit(fond, (largeur, hauteur), centering=(0.5, 0.5))
 
     try:
         avatar_src = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
-        avatar_src = avatar_src.resize((240, 240))
+        taille_av = 220
+        avatar_src = ImageOps.fit(avatar_src, (taille_av, taille_av), centering=(0.5, 0.5))
 
-        masque = Image.new("L", (240, 240), 0)
-        draw_masque = ImageDraw.Draw(masque)
-        draw_masque.ellipse((0, 0, 240, 240), fill=255)
+        # Masque circulaire avec bordure adoucie
+        masque = Image.new("L", (taille_av, taille_av), 0)
+        draw_m = ImageDraw.Draw(masque)
+        draw_m.ellipse([10, 10, taille_av - 10, taille_av - 10], fill=255)
+        masque = masque.filter(ImageFilter.GaussianBlur(radius=5))
 
-        avatar_circ = ImageOps.fit(avatar_src, (240, 240), centering=(0.5, 0.5))
-        avatar_circ.putalpha(masque)
+        avatar_pret = Image.new("RGBA", (taille_av, taille_av), (0, 0, 0, 0))
+        avatar_pret.paste(avatar_src, (0, 0), masque)
 
-        teinte_rouge = Image.new("RGBA", (240, 240), (220, 40, 0, 100))
-        avatar_brule = Image.alpha_composite(avatar_circ, teinte_rouge)
+        # Teinte rougeâtre d'incandescence
+        calque_braise = Image.new("RGBA", (taille_av, taille_av), (255, 60, 0, 90))
+        avatar_pret = Image.alpha_composite(avatar_pret, calque_braise)
 
-        fond.paste(avatar_brule, (largeur // 2 - 120, 80), avatar_brule)
+        pos_x = (largeur - taille_av) // 2
+        pos_y = 60
+
+        # Halo d'incinération derrière l'avatar
+        halo = Image.new("RGBA", (largeur, hauteur), (0, 0, 0, 0))
+        draw_halo = ImageDraw.Draw(halo)
+        draw_halo.ellipse(
+            [pos_x - 30, pos_y - 30, pos_x + taille_av + 30, pos_y + taille_av + 30],
+            fill=(255, 120, 20, 160)
+        )
+        halo = halo.filter(ImageFilter.GaussianBlur(radius=25))
+        fond = Image.alpha_composite(fond, halo)
+
+        fond.paste(avatar_pret, (pos_x, pos_y), avatar_pret)
     except Exception as e:
-        print(f"⚠️ Erreur avatar flammes : {e}")
+        print(f"⚠️ Erreur composition avatar : {e}")
 
-    for _ in range(400):
-        fx = random.randint(50, largeur - 50)
-        fy = random.randint(180, hauteur - 10)
-        rayon = random.randint(4, 22)
-        couleur = random.choice([
-            (255, 69, 0, 200),
-            (255, 140, 0, 220),
-            (255, 215, 0, 230),
-            (180, 20, 0, 180)
-        ])
-        draw.ellipse([fx - rayon, fy - rayon, fx + rayon, fy + rayon], fill=couleur)
+    # Vignettage dramatique
+    vignette = Image.new("RGBA", (largeur, hauteur), (0, 0, 0, 0))
+    draw_v = ImageDraw.Draw(vignette)
+    draw_v.rectangle([0, hauteur - 120, largeur, hauteur], fill=(0, 0, 0, 190))
+    draw_v.rectangle([0, 0, largeur, hauteur], outline=(0, 0, 0, 180), width=20)
+    vignette = vignette.filter(ImageFilter.GaussianBlur(radius=15))
+    fond = Image.alpha_composite(fond, vignette)
+
+    # Inscription officielle
+    draw_final = ImageDraw.Draw(fond)
+    police_titre = charger_police(34)
+    txt_sentence = "SENTENCE IRRÉVOCABLE"
+    bbox_s = draw_final.textbbox((0, 0), txt_sentence, font=police_titre)
+    w_s = bbox_s[2] - bbox_s[0]
+    draw_final.text(((largeur - w_s) // 2, hauteur - 70), txt_sentence, fill=(255, 215, 150, 250), font=police_titre)
 
     tampon = io.BytesIO()
-    fond.save(tampon, format="PNG")
+    fond.save(tampon, format="PNG", quality=95)
     tampon.seek(0)
     return tampon
 
 
 # --------------------------------------------------------
-# 2. COMMANDES DU DÉPOUILLEMENT AU TEMPO
+# 2. LOGIQUE DU CONSEIL AU TEMPO
 # --------------------------------------------------------
+
+async def terminer_et_bruler(channel: discord.TextChannel, elimine: discord.Member):
+    """Envoie l'animation finale du flambeau éteint et de l'avatar calciné."""
+    avatar_bytes = await elimine.display_avatar.read()
+    img_flammes = await generer_image_candidat_en_flammes_hd(avatar_bytes)
+    fichier = discord.File(img_flammes, filename="sentence.png")
+
+    embed = discord.Embed(
+        title="🔥 LA SENTENCE EST IRRÉVOCABLE",
+        description=(
+            f"# {elimine.display_name.upper()}, LES AVENTURIERS DE LA TRIBU ONT DÉCIDÉ DE VOUS ÉLIMINER.\n\n"
+            f"*{elimine.mention}, prenez votre sac à dos, venez me rejoindre avec votre flambeau.*\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "💨 *(Denis éteint le flambeau)*\n"
+            f"**« {elimine.display_name}, votre flambeau est éteint. Votre aventure s'arrête ce soir. »**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=discord.Color.dark_red()
+    )
+    embed.set_image(url="attachment://sentence.png")
+    embed.set_footer(text="Koh-Lanta • Conseil d'Immunité")
+
+    await channel.send(content=f"💀 {elimine.mention}", file=fichier, embed=embed)
+
 
 @bot.tree.command(
     name="demarrer_conseil",
@@ -8785,12 +8866,12 @@ async def demarrer_conseil(interaction: discord.Interaction, total_votants: int)
 async def depouiller_vote(interaction: discord.Interaction, candidat: discord.Member):
     cid = interaction.channel_id
     if cid not in SESSIONS_CONSEIL:
-        await interaction.response.send_message("❌ Aucun conseil en cours ici. Tapez d'abord `/demarrer_conseil`.", ephemeral=True)
+        await interaction.response.send_message("❌ Aucun conseil en cours ici. Tape d'abord `/demarrer_conseil`.", ephemeral=True)
         return
 
     session = SESSIONS_CONSEIL[cid]
     if session["termine"]:
-        await interaction.response.send_message("⚠️ Ce conseil est déjà terminé. Tapez `/conclure_conseil` pour sceller l'élimination.", ephemeral=True)
+        await interaction.response.send_message("⚠️ Ce conseil est déjà terminé.", ephemeral=True)
         return
 
     await interaction.response.defer()
@@ -8801,12 +8882,12 @@ async def depouiller_vote(interaction: discord.Interaction, candidat: discord.Me
     voix_actuelles = session["decompte"][candidat.id]
     session["bulletins_details"].append(candidat)
 
-    # 1. Visuel du bulletin
+    # 1. Image HD du bulletin
     nom_bancal = await generer_orthographe_bancale_ia(candidat.display_name)
-    img_buf = await asyncio.to_thread(creer_image_parchemin_bulletin, nom_bancal)
+    img_buf = await creer_image_parchemin_bulletin_hd(nom_bancal)
     fichier = discord.File(img_buf, filename="bulletin.png")
 
-    # 2. Récapitulatif actuel
+    # 2. Récapitulatif dynamique des votes
     lignes_scores = []
     for uid, count in session["decompte"].most_common():
         mb = interaction.guild.get_member(uid)
@@ -8824,14 +8905,17 @@ async def depouiller_vote(interaction: discord.Interaction, candidat: discord.Me
     embed_vote.set_image(url="attachment://bulletin.png")
     await interaction.followup.send(file=fichier, embed=embed_vote)
 
-    # 3. Vérification de la majorité absolue
+    # 3. Majorité absolue atteinte
     if voix_actuelles >= session["seuil_majorite"]:
         session["termine"] = True
         votes_restants = session["total_votants"] - session["votes_depouilles"]
 
         desc_victoire = f"🛑 **{candidat.mention} a recueilli la majorité absolue ({voix_actuelles} voix).**"
         if votes_restants > 0:
-            desc_victoire += f"\n\nInutile de dépouiller les **{votes_restants} bulletin{'s' if votes_restants > 1 else ''}** restant{'s' if votes_restants > 1 else ''} : **ils sont tous contre {candidat.mention}**."
+            desc_victoire += (
+                f"\n\nInutile de dépouiller les **{votes_restants} bulletin{'s' if votes_restants > 1 else ''}** "
+                f"restant{'s' if votes_restants > 1 else ''} : **ils sont tous contre {candidat.mention}**."
+            )
 
         embed_fin = discord.Embed(
             title="🛑 LA SENTENCE EST INÉVITABLE",
@@ -8840,7 +8924,6 @@ async def depouiller_vote(interaction: discord.Interaction, candidat: discord.Me
         )
         await interaction.channel.send(embed=embed_fin)
         await asyncio.sleep(2)
-        # Exécute directement la combustion du candidat
         await terminer_et_bruler(interaction.channel, candidat)
         del SESSIONS_CONSEIL[cid]
         return
@@ -8862,37 +8945,13 @@ async def depouiller_vote(interaction: discord.Interaction, candidat: discord.Me
             )
             await interaction.channel.send(embed=embed_suspense)
 
-    # Si tous les bulletins ont été tirés sans majorité anticipée
+    # 5. Dernier vote atteint sans majorité absolue
     if session["votes_depouilles"] >= session["total_votants"]:
         session["termine"] = True
         top_uid, _ = session["decompte"].most_common(1)[0]
         elimine = interaction.guild.get_member(top_uid)
         await terminer_et_bruler(interaction.channel, elimine)
         del SESSIONS_CONSEIL[cid]
-
-
-async def terminer_et_bruler(channel: discord.TextChannel, elimine: discord.Member):
-    """Envoie l'animation du flambeau éteint et l'avatar calciné."""
-    avatar_bytes = await elimine.display_avatar.read()
-    img_flammes = await asyncio.to_thread(generer_image_candidat_en_flammes, avatar_bytes)
-    fichier = discord.File(img_flammes, filename="sentence.png")
-
-    embed = discord.Embed(
-        title="🔥 LA SENTENCE EST IRRÉVOCABLE",
-        description=(
-            f"# {elimine.display_name.upper()}, LES AVENTURIERS DE LA TRIBU ONT DÉCIDÉ DE VOUS ÉLIMINER.\n\n"
-            f"*{elimine.mention}, prenez votre sac à dos, venez me rejoindre avec votre flambeau.*\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "💨 *(Denis éteint le flambeau)*\n"
-            f"**« {elimine.display_name}, votre flambeau est éteint. Votre aventure s'arrête ce soir. »**\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        ),
-        color=discord.Color.dark_red()
-    )
-    embed.set_image(url="attachment://sentence.png")
-    embed.set_footer(text="Koh-Lanta • Conseil d'Immunité")
-
-    await channel.send(content=f"💀 {elimine.mention}", file=fichier, embed=embed)
 
 
 @bot.tree.command(
