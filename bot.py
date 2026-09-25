@@ -8904,7 +8904,7 @@ async def annuler_conseil(interaction: discord.Interaction):
 
 CHAN_LOGS_ORGA_ID = 1553032799995564204            # Salon privé des logs orgas
 CHAN_BANQUE_QUESTIONS_ID = 1553034639604715581     # Salon des questions (Question | Réponse)
-CHAN_BANQUE_FLECHES_ID = 1553034639604715581       # Salon secret des flèches (@Candidat | 1, 4, 7)
+CHAN_BANQUE_FLECHES_ID = 1553050178146275480       # Salon secret des flèches (@Candidat | 1, 4, 7)
 
 BANQUE_QUESTIONS_DYNAMIQUE = []
 ETAT_FLECHES = {}  # { user_id: { "membre": Member, "fleches": set(int) } }
