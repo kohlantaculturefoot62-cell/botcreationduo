@@ -883,227 +883,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         print(f"⚠️ INFO : {member.display_name} s'est MUTÉ.")
 
 
-@bot.event
-async def on_message(message: discord.Message):
-    """Écouteur unique : Flèches, Vitesse, Brouilleur, Décodeur, Recherche et Draft."""
-    if message.author.bot:
-        return
-
-    contenu = message.content.strip()
-
-    # ========================================================
-    # 0. ÉPREUVE DES FLÈCHES & VITESSE (PRIORITÉ ABSOLUE)
-    # ========================================================
-
-    # A. Action de casser une flèche : !casser @Joueur <num>
-    if contenu.lower().startswith("!casser "):
-        parties = contenu.split()
-        if len(parties) >= 3 and message.mentions:
-            cible = message.mentions[0]
-            num_str = parties[2]
-            if num_str.isdigit():
-                await action_casser_fleche(message.channel, message.author, cible, int(num_str))
-                return
-
-    # B. Commandes organisateurs relatives à l'épreuve (!s, !charger, !stop, !reset_q)
-    if contenu.startswith("!") and isinstance(message.author, discord.Member) and est_role_orga(message.author):
-        cmd_parts = contenu.split()
-        cmd = cmd_parts[0].lower()
-
-        if cmd in ["!suivante", "!s", "!next"]:
-            try:
-                await message.delete()
-            except discord.DiscordException:
-                pass
-            await action_question_suivante(message.channel, message.author)
-            return
-
-        if cmd in ["!charger", "!load"]:
-            try:
-                await message.delete()
-            except discord.DiscordException:
-                pass
-
-            sec_param = 10
-            dep_param = 1
-            if len(cmd_parts) >= 2 and cmd_parts[1].isdigit():
-                sec_param = int(cmd_parts[1])
-            if len(cmd_parts) >= 3 and cmd_parts[2].isdigit():
-                dep_param = int(cmd_parts[2])
-
-            nb_q, nb_f, sec, q_deb = await configurer_et_charger_epreuve(message.guild, sec_param, dep_param)
-            await message.channel.send(
-                f"⚙️ **Épreuve prête :** {nb_q} questions | Départ **Q#{q_deb}** | Chrono **{sec}s** | {nb_f} candidats.",
-                delete_after=6
-            )
-            return
-
-        if cmd in ["!stop", "!fin"]:
-            try:
-                await message.delete()
-            except discord.DiscordException:
-                pass
-            if SESSION_JEU.get("actif"):
-                await cloturer_question_et_donner_main(message.channel)
-            return
-
-        if cmd == "!reset_q":
-            SESSION_JEU["index_liste"] = 0
-            SESSION_JEU["num_question"] = 0
-            try:
-                await message.delete()
-            except discord.DiscordException:
-                pass
-            await message.channel.send("🔄 *Banque réinitialisée à la Question #1.*", delete_after=3)
-            return
-
-    # C. Réponse d'un candidat pendant le chrono (Suppression instantanée prioritaire)
-    if SESSION_JEU.get("actif") and message.channel.id == SESSION_JEU.get("channel_id"):
-        try:
-            await message.delete()
-        except discord.DiscordException:
-            pass
-
-        chrono = time.time() - SESSION_JEU["top_depart"]
-        uid = message.author.id
-
-        if uid in SESSION_JEU["reponses_question"]:
-            return
-
-        val_num = extraire_nombre(contenu)
-        SESSION_JEU["reponses_question"][uid] = {
-            "membre": message.author,
-            "chrono": chrono,
-            "texte": contenu,
-            "val_num": val_num
-        }
-
-        salon_orga = message.guild.get_channel(CHAN_LOGS_ORGA_ID)
-        if salon_orga:
-            rang = len(SESSION_JEU["reponses_question"])
-            embed_log = discord.Embed(
-                title=f"⚡ Q#{SESSION_JEU['num_question']} — #{rang} en `{chrono:.2f}s`",
-                description=f"**{message.author.display_name}** : `{contenu}` (Cible: `{SESSION_JEU['reponse_cible_brute']}`)",
-                color=discord.Color.green(),
-                timestamp=discord.utils.utcnow()
-            )
-            await salon_orga.send(embed=embed_log)
-
-        return
-
-    # ========================================================
-    # 1. BROUILLEUR DE SALON
-    # ========================================================
-    if message.channel.id in SALONS_BROUILLEUR_ACTIFS and message.content.strip():
-        if not message.content.startswith(("!", "/")):
-            texte_source = message.content.strip()
-            auteur = message.author
-            channel = message.channel
-
-            try:
-                await message.delete()
-                texte_brouille = await transformer_en_charabia_ia(texte_source)
-
-                webhooks = await channel.webhooks()
-                webhook = next((w for w in webhooks if w.user.id == bot.user.id), None)
-                if not webhook:
-                    webhook = await channel.create_webhook(name="Brouilleur")
-
-                await webhook.send(
-                    content=texte_brouille,
-                    username=auteur.display_name,
-                    avatar_url=auteur.display_avatar.url
-                )
-                return
-            except Exception as e:
-                print(f"Erreur lors du brouillage du message : {e}")
-
-    # ========================================================
-    # 2. DÉCODEUR CHARABIA
-    # ========================================================
-    if message.channel.id in SESSIONS_DECODEUR:
-        cible_data = SESSIONS_DECODEUR[message.channel.id]
-        if message.author.id == cible_data["user_id"]:
-            texte = message.content.strip()
-            if len(texte) >= 2:
-                async with message.channel.typing():
-                    traduction = await decoder_charabia_ia(message.author.display_name, texte)
-                    embed_decodeur = discord.Embed(
-                        description=f"🌐 **DÉCODEUR OFFICIEL — Langue parlée : `{message.author.display_name}`**\n\n{traduction}",
-                        color=discord.Color.teal()
-                    )
-                    embed_decodeur.set_footer(text="Service de traduction automatique en temps réel")
-                    await message.reply(embed=embed_decodeur, mention_author=False)
-
-    # ========================================================
-    # 3. ÉPREUVE DE RECHERCHE (JOUEUR MYSTÈRE)
-    # ========================================================
-    if message.channel.id in SESSIONS_RECHERCHE_ACTIVES:
-        session = SESSIONS_RECHERCHE_ACTIVES[message.channel.id]
-        if message.author.id == session["candidat_id"]:
-            texte_q = message.content.strip()
-            if len(texte_q) >= 4:
-                salon_orgas = bot.get_channel(SALON_REMARQUES_QUESTIONS_ID)
-                if salon_orgas:
-                    asyncio.create_task(
-                        traiter_suggestion_orga(
-                            channel_src=message.channel,
-                            salon_dest=salon_orgas,
-                            candidat=message.author,
-                            joueur_mystere=session["joueur"],
-                            question=texte_q
-                        )
-                    )
-
-    # ========================================================
-    # 4. DRAFT INTERACTIVE DES ÉQUIPES
-    # ========================================================
-    if ETAT_COMPOSITION["actif"] and message.channel.id == ETAT_COMPOSITION["channel_id"]:
-        cap1 = ETAT_COMPOSITION["capitaine_1"]
-        cap2 = ETAT_COMPOSITION["capitaine_2"]
-        tour = ETAT_COMPOSITION["tour"]
-
-        cap_actif = cap1 if tour == 1 else cap2
-        role_actif = ETAT_COMPOSITION["role_1"] if tour == 1 else ETAT_COMPOSITION["role_2"]
-        cap_suivant = cap2 if tour == 1 else cap1
-
-        if message.author.id == cap_actif.id:
-            if message.mentions:
-                cible = message.mentions[0]
-                role_1 = ETAT_COMPOSITION["role_1"]
-                role_2 = ETAT_COMPOSITION["role_2"]
-
-                if cible.bot:
-                    await message.channel.send(f"❌ {cap_actif.mention}, tu ne peux pas recruter un bot !")
-                    return
-
-                if role_1 in cible.roles or role_2 in cible.roles:
-                    await message.channel.send(f"⚠️ {cap_actif.mention}, **{cible.display_name}** a déjà été choisi dans une équipe !")
-                    return
-
-                try:
-                    await cible.add_roles(role_actif, reason=f"Choisi par le capitaine {cap_actif.display_name}")
-                    ETAT_COMPOSITION["tour"] = 2 if tour == 1 else 1
-
-                    embed_choix = discord.Embed(
-                        title="🤝 NOUVELLE RECRUE !",
-                        description=(
-                            f"🔴 **{cible.mention}** rejoint l'équipe {role_actif.mention} !\n\n"
-                            f"👉 **Au tour de {cap_suivant.mention}** de faire son choix (mentionne un candidat) !"
-                        ),
-                        color=role_actif.color if role_actif.color.value != 0 else discord.Color.gold()
-                    )
-                    await message.channel.send(embed=embed_choix)
-
-                except discord.Forbidden:
-                    await message.channel.send(f"❌ Erreur de permissions : le bot ne peut pas attribuer le rôle {role_actif.mention}.")
-                except Exception as e:
-                    await message.channel.send(f"❌ Erreur lors de l'attribution du rôle : {e}")
-
-    # Permet l'exécution des autres commandes préfixes classiques du bot si tu en as
-    await bot.process_commands(message)
-
-
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
@@ -9119,27 +8898,41 @@ async def annuler_conseil(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("Aucun conseil en cours à annuler.", ephemeral=True)
 
-# ========================================================
-# ÉPREUVE DES FLÈCHES : QUESTIONS + CASSAGE + PARAMÈTRES
-# ========================================================
-
+import os
 import re
 import time
 import asyncio
 from difflib import SequenceMatcher
 import discord
 from discord import app_commands
+from discord.ext import commands
 
-CHAN_LOGS_ORGA_ID = 1553032799995564204       # Salon logs orga
-CHAN_BANQUE_QUESTIONS_ID = 1553034639604715581 # Salon avec les questions (Question | Réponse)
-CHAN_BANQUE_FLECHES_ID = 1553034639604715581   # Salon secret avec les flèches (@Joueur | 1, 3, 5)
+# ========================================================
+# CONFIGURATION DES INTENTS & CLIENT
+# ========================================================
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
 
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ========================================================
+# IDS FIXES DES SALONS (Tes IDs existants)
+# ========================================================
+CHAN_LOGS_ORGA_ID = 1553032799995564204           # Salon privé des logs orgas
+CHAN_BANQUE_QUESTIONS_ID = 1553034639604715581     # Salon des questions (Question | Réponse)
+CHAN_BANQUE_FLECHES_ID = 1553034639604715581       # Salon secret des flèches (@Candidat | 1, 4, 7)
+SALON_REMARQUES_QUESTIONS_ID = 1553032799995564204 # Salon remarques pour la recherche
+
+# ========================================================
+# STRUCTURES DE DONNÉES GLOBALES
+# ========================================================
 BANQUE_QUESTIONS_DYNAMIQUE = []
 ETAT_FLECHES = {}  # { user_id: { "membre": Member, "fleches": set(int) } }
 
 SESSION_JEU = {
-    "index_liste": 0,           # Index actuel (base 0)
-    "duree_sec": 10,            # Durée réglable (défaut: 10s)
+    "index_liste": 0,
+    "duree_sec": 10,
     "actif": False,
     "channel_id": None,
     "num_question": 0,
@@ -9149,11 +8942,31 @@ SESSION_JEU = {
     "top_depart": 0.0,
     "task_timer": None,
     "reponses_question": {},
-    "tireur_autorise_id": None  # ID du joueur qui a le droit de tirer
+    "tireur_autorise_id": None
 }
 
+# Mémoires pour tes autres modules (brouilleur, décodeur, recherche, draft)
+SALONS_BROUILLEUR_ACTIFS = set()
+SESSIONS_DECODEUR = {}
+SESSIONS_RECHERCHE_ACTIVES = {}
+ETAT_COMPOSITION = {
+    "actif": False,
+    "channel_id": None,
+    "capitaine_1": None,
+    "capitaine_2": None,
+    "role_1": None,
+    "role_2": None,
+    "tour": 1
+}
+
+# ========================================================
+# OUTILS ET HELPERS
+# ========================================================
 
 def est_role_orga(user: discord.Member) -> bool:
+    """Vérifie si l'utilisateur est admin ou possède un rôle d'organisation."""
+    if not isinstance(user, discord.Member):
+        return False
     if user.guild_permissions.administrator:
         return True
     roles_orga = {"orga", "organisateur", "admin", "mj", "maitre du jeu", "animation"}
@@ -9161,6 +8974,7 @@ def est_role_orga(user: discord.Member) -> bool:
 
 
 def extraire_nombre(texte: str):
+    """Extrait le premier entier ou flottant d'une chaîne."""
     texte_propre = texte.replace(",", ".").replace(" ", "")
     match = re.search(r"[-+]?\d*\.?\d+", texte_propre)
     if match:
@@ -9171,32 +8985,35 @@ def extraire_nombre(texte: str):
     return None
 
 
-# --------------------------------------------------------
+# ========================================================
 # CHARGEMENT DES DONNÉES (QUESTIONS & FLÈCHES)
-# --------------------------------------------------------
+# ========================================================
 
 async def charger_questions(guild: discord.Guild) -> int:
+    """Scanne le salon des questions ligne par ligne."""
     global BANQUE_QUESTIONS_DYNAMIQUE
     salon = guild.get_channel(CHAN_BANQUE_QUESTIONS_ID)
     if not salon:
         return 0
 
     nouvelle_banque = []
-    async for msg in salon.history(limit=100, oldest_first=True):
+    async for msg in salon.history(limit=150, oldest_first=True):
         for ligne in msg.content.splitlines():
             ligne = ligne.strip()
             if not ligne or ligne.startswith("#"):
                 continue
             if "|" in ligne:
                 q, r = ligne.split("|", 1)
-                if q.strip() and r.strip():
-                    nouvelle_banque.append((q.strip(), r.strip()))
+                q_clean, r_clean = q.strip(), r.strip()
+                if q_clean and r_clean:
+                    nouvelle_banque.append((q_clean, r_clean))
 
     BANQUE_QUESTIONS_DYNAMIQUE = nouvelle_banque
     return len(BANQUE_QUESTIONS_DYNAMIQUE)
 
 
 async def charger_fleches(guild: discord.Guild) -> int:
+    """Scanne le salon secret pour associer les numéros aux joueurs."""
     global ETAT_FLECHES
     salon = guild.get_channel(CHAN_BANQUE_FLECHES_ID)
     if not salon:
@@ -9220,9 +9037,9 @@ async def charger_fleches(guild: discord.Guild) -> int:
                         membre = m
                         break
             if not membre:
-                nom = cible_str.replace("@", "").lower()
+                nom_cible = cible_str.replace("@", "").strip().lower()
                 for m in guild.members:
-                    if m.display_name.lower() == nom or m.name.lower() == nom:
+                    if m.display_name.lower() == nom_cible or m.name.lower() == nom_cible:
                         membre = m
                         break
 
@@ -9238,35 +9055,31 @@ async def charger_fleches(guild: discord.Guild) -> int:
 
 
 async def configurer_et_charger_epreuve(guild: discord.Guild, duree_sec: int = 10, depart_question: int = 1):
-    """Charge les données et applique les réglages de temps et de départ."""
     nb_q = await charger_questions(guild)
     nb_f = await charger_fleches(guild)
 
-    # Réglage du chrono
     SESSION_JEU["duree_sec"] = max(3, duree_sec)
-
-    # Réglage du point de départ (index base 0)
     idx_depart = max(0, depart_question - 1)
     if idx_depart >= nb_q and nb_q > 0:
         idx_depart = 0
+
     SESSION_JEU["index_liste"] = idx_depart
     SESSION_JEU["num_question"] = idx_depart
-
     return nb_q, nb_f, SESSION_JEU["duree_sec"], idx_depart + 1
 
 
-# --------------------------------------------------------
-# MOTEUR DE QUESTIONS & CHRONO
-# --------------------------------------------------------
+# ========================================================
+# GESTION DES QUESTIONS ET DÉSIGNATION DU TIREUR
+# ========================================================
 
 async def timer_question(channel: discord.TextChannel, num_q: int, duree: int):
     await asyncio.sleep(duree)
-    if SESSION_JEU["actif"] and SESSION_JEU["num_question"] == num_q:
+    if SESSION_JEU.get("actif") and SESSION_JEU.get("num_question") == num_q:
         await cloturer_question_et_donner_main(channel)
 
 
 async def lancer_question_moteur(channel: discord.TextChannel, q_texte: str, q_rep: str, auteur: discord.Member):
-    if SESSION_JEU["task_timer"] and not SESSION_JEU["task_timer"].done():
+    if SESSION_JEU.get("task_timer") and not SESSION_JEU["task_timer"].done():
         SESSION_JEU["task_timer"].cancel()
 
     duree = SESSION_JEU["duree_sec"]
@@ -9285,19 +9098,19 @@ async def lancer_question_moteur(channel: discord.TextChannel, q_texte: str, q_r
         description=(
             f"# {q_texte}\n\n"
             f"⏱️ **{duree} secondes pour répondre dans ce chat !**\n"
-            "🔒 *Vos messages sont immédiatement masqués pour les autres.*\n"
-            "🎯 *Le plus proche remporte le tir pour briser une flèche !*"
+            "🔒 *Vos messages sont immédiatement masqués.*\n"
+            "🎯 *Le plus proche remporte le droit de briser une flèche !*"
         ),
         color=discord.Color.red()
     )
-    embed.set_footer(text=f"Lancée par {auteur.display_name} • Fin dans {duree}s !")
+    embed.set_footer(text=f"Lancée par {auteur.display_name} • Fin dans {duree}s pile !")
     await channel.send(embed=embed)
 
     SESSION_JEU["task_timer"] = asyncio.create_task(timer_question(channel, SESSION_JEU["num_question"], duree))
 
 
 async def cloturer_question_et_donner_main(channel: discord.TextChannel):
-    if SESSION_JEU["task_timer"] and not SESSION_JEU["task_timer"].done():
+    if SESSION_JEU.get("task_timer") and not SESSION_JEU["task_timer"].done():
         SESSION_JEU["task_timer"].cancel()
 
     SESSION_JEU["actif"] = False
@@ -9308,13 +9121,13 @@ async def cloturer_question_et_donner_main(channel: discord.TextChannel):
     if not reponses:
         embed_vide = discord.Embed(
             title=f"⌛ FIN MANCHE #{SESSION_JEU['num_question']}",
-            description=f"🎯 **Réponse officielle : `{SESSION_JEU['reponse_cible_brute']}`**\n\n*Aucune réponse reçue à temps. Personne ne tire !*",
+            description=f"🎯 **Réponse attendue : `{SESSION_JEU['reponse_cible_brute']}`**\n\n*Aucune réponse reçue à temps. Personne ne tire !*",
             color=discord.Color.dark_grey()
         )
         await channel.send(embed=embed_vide)
         return
 
-    # Tri : Proximité puis Vitesse
+    # Tri par précision puis rapidité
     if cible_num is not None:
         for r in reponses:
             val = r["val_num"]
@@ -9329,15 +9142,18 @@ async def cloturer_question_et_donner_main(channel: discord.TextChannel):
     vainqueur = vainqueur_data["membre"]
     SESSION_JEU["tireur_autorise_id"] = vainqueur.id
 
-    info_score = f"Écart : **{vainqueur_data['ecart']:g}**" if (cible_num is not None and vainqueur_data.get("ecart") != float("inf")) else f"Réponse : `{vainqueur_data['texte']}`"
+    if cible_num is not None and vainqueur_data.get("ecart") != float("inf"):
+        info_score = f"Écart : **{vainqueur_data['ecart']:g}** (Proposition : `{vainqueur_data['texte']}`)"
+    else:
+        info_score = f"Proposition : `{vainqueur_data['texte']}`"
 
     embed_resultat = discord.Embed(
-        title=f"🎯 {vainqueur.display_name} REMPORTE LA MANCHE !",
+        title=f"🎯 {vainqueur.display_name} REMPORTE LE TIR !",
         description=(
             f"**Énoncé :** {SESSION_JEU['texte_question']}\n"
             f"🎯 **Réponse officielle : `{SESSION_JEU['reponse_cible_brute']}`**\n\n"
             f"🥇 **Vainqueur :** {vainqueur.mention} ({info_score} en `{vainqueur_data['chrono']:.2f}s`)\n\n"
-            f"🏹 **À TOI DE TIRER !** Tape ta cible dans le chat :\n"
+            f"🏹 **À TOI DE BRISER UNE FLÈCHE !** Tape :\n"
             f"👉 `!casser @Joueur <numero>` *(ex: `!casser @Sarah 3`)*"
         ),
         color=discord.Color.gold()
@@ -9346,17 +9162,19 @@ async def cloturer_question_et_donner_main(channel: discord.TextChannel):
     await channel.send(embed=embed_resultat)
 
 
-# --------------------------------------------------------
-# ACTION DE CASSER LA FLÈCHE & MUTE LECTURE SEULE
-# --------------------------------------------------------
+# ========================================================
+# ACTION DE CASSER LA FLÈCHE & MUTE DU RÔLE CANDIDAT
+# ========================================================
 
 async def action_casser_fleche(channel: discord.TextChannel, tireur: discord.Member, cible: discord.Member, numero_f: int):
+    # 1. Vérification tireur légitime
     if not est_role_orga(tireur) and tireur.id != SESSION_JEU.get("tireur_autorise_id"):
-        await channel.send(f"⛔ {tireur.mention}, ce n'est pas à toi de tirer ! Seul le vainqueur de la manche peut casser une flèche.", delete_after=5)
+        await channel.send(f"⛔ {tireur.mention}, ce n'est pas ton tour de tirer !", delete_after=5)
         return
 
+    # 2. Vérification cible
     if cible.id not in ETAT_FLECHES:
-        await channel.send(f"⚠️ {cible.mention} n'a pas de flèches enregistrées.", delete_after=5)
+        await channel.send(f"⚠️ {cible.mention} n'a pas de flèches enregistrées pour cette épreuve.", delete_after=5)
         return
 
     SESSION_JEU["tireur_autorise_id"] = None
@@ -9370,27 +9188,50 @@ async def action_casser_fleche(channel: discord.TextChannel, tireur: discord.Mem
         embed_hit = discord.Embed(
             title="💥 FLÈCHE CASSÉE EN DEUX !",
             description=(
-                f"🏹 **{tireur.display_name}** vise dans le mille !\n\n"
+                f"🏹 **{tireur.display_name}** vise juste !\n\n"
                 f"La flèche **n°{numero_f}** de {cible.mention} est **BRISÉE** !\n"
-                f"Il lui reste **{restantes} flèche{'s' if restantes > 1 else ''}**."
+                f"Il lui reste **{restantes} flèche{'s' if restantes > 1 else ''}** en jeu."
             ),
             color=discord.Color.red()
         )
         await channel.send(embed=embed_hit)
 
+        # Si le joueur n'a plus de flèches : RETRAIT DE LA PERMISSION D'ÉCRIRE SUR SON RÔLE CANDIDAT
         if restantes == 0:
-            try:
-                # Met le joueur en lecture seule dans ce salon
-                await channel.set_permissions(cible, send_messages=False, reason="Éliminé de l'épreuve des flèches")
-            except discord.DiscordException as e:
-                print(f"⚠️ Erreur permissions mute {cible.display_name}: {e}")
+            role_applique = False
+            # Recherche des overwrites du salon correspondant aux rôles du candidat
+            for overwrite_target in channel.overwrites:
+                if isinstance(overwrite_target, discord.Role):
+                    if overwrite_target in cible.roles and overwrite_target != channel.guild.default_role:
+                        # On ne touche jamais aux rôles administratifs ou d'animation
+                        if not any(r_nom in overwrite_target.name.lower() for r_nom in ["orga", "admin", "mj", "bot"]):
+                            try:
+                                perms = channel.overwrites_for(overwrite_target)
+                                perms.send_messages = False
+                                perms.send_messages_in_threads = False
+                                await channel.set_permissions(
+                                    overwrite_target,
+                                    overwrite=perms,
+                                    reason=f"Élimination des flèches : {cible.display_name}"
+                                )
+                                role_applique = True
+                                break
+                            except discord.DiscordException as e:
+                                print(f"⚠️ Erreur lors du mute sur le rôle {overwrite_target.name} : {e}")
+
+            # Sécurité si le rôle n'était pas configuré dans les permissions du salon
+            if not role_applique:
+                try:
+                    await channel.set_permissions(cible, send_messages=False, send_messages_in_threads=False, reason="Élimination flèches")
+                except discord.DiscordException:
+                    pass
 
             embed_mort = discord.Embed(
                 title="💀 ÉLIMINATION !",
                 description=(
                     f"# {cible.mention} N'A PLUS DE FLÈCHES !\n\n"
-                    "Toutes vos armes sont détruites. Votre épreuve s'arrête ici.\n"
-                    "🔒 *Vos permissions d'écriture dans ce salon ont été révoquées.*"
+                    "Toutes tes armes sont brisées. Ton épreuve s'arrête ici.\n"
+                    "🔒 *La permission d'écrire a été révoquée sur ton rôle dans ce salon.*"
                 ),
                 color=discord.Color.dark_grey()
             )
@@ -9402,30 +9243,26 @@ async def action_casser_fleche(channel: discord.TextChannel, tireur: discord.Mem
             title="💨 TIR DANS L'EAU...",
             description=(
                 f"🏹 **{tireur.display_name}** a tenté le numéro **{numero_f}** sur {cible.mention}...\n\n"
-                f"❌ **Raté !** Cette combinaison n'existe pas ou est déjà brisée."
+                f"❌ **Raté !** Cette flèche n'existe pas ou a déjà été brisée."
             ),
             color=discord.Color.light_grey()
         )
         await channel.send(embed=embed_rate)
 
-    await channel.send("➡️ *Prêt pour la question suivante ? Tapez `!s`*")
+    await channel.send("➡️ *Prêt pour la suite ? Tapez `!s` pour la question suivante.*")
 
-
-# --------------------------------------------------------
-# COMMANDES SLASH & CHAT
-# --------------------------------------------------------
 
 async def action_question_suivante(channel: discord.TextChannel, auteur: discord.Member):
     global BANQUE_QUESTIONS_DYNAMIQUE
     if not BANQUE_QUESTIONS_DYNAMIQUE:
         nb_q, _, _, _ = await configurer_et_charger_epreuve(channel.guild)
         if nb_q == 0:
-            await channel.send("❌ Aucune question trouvée. Vérifiez `CHAN_BANQUE_QUESTIONS_ID`.")
+            await channel.send("❌ Aucune question trouvée. Vérifie l'ID du salon `CHAN_BANQUE_QUESTIONS_ID`.")
             return
 
     idx = SESSION_JEU["index_liste"]
     if idx >= len(BANQUE_QUESTIONS_DYNAMIQUE):
-        await channel.send("🏁 **Toutes les questions ont été posées !** Tapez `!charger` pour relancer.")
+        await channel.send("🏁 **Toutes les questions préparées ont été posées !** Tapez `!charger` pour relancer.")
         return
 
     q_texte, q_rep = BANQUE_QUESTIONS_DYNAMIQUE[idx]
@@ -9433,24 +9270,252 @@ async def action_question_suivante(channel: discord.TextChannel, auteur: discord
     await lancer_question_moteur(channel, q_texte, q_rep, auteur)
 
 
-@bot.tree.command(name="charger_epreuve", description="Configure et synchronise l'épreuve des flèches.")
+# ========================================================
+# COMMANDES SLASH POUR LES ORGAS
+# ========================================================
+
+@bot.tree.command(name="charger_epreuve", description="Configure et recharge l'épreuve des flèches.")
 @app_commands.describe(
-    temps_sec="Temps pour répondre par question en secondes (défaut : 10)",
+    temps_sec="Temps pour répondre en secondes (défaut : 10)",
     question_depart="Numéro de la question où commencer (défaut : 1)"
 )
 @app_commands.check(est_role_orga)
 async def charger_epreuve_slash(interaction: discord.Interaction, temps_sec: int = 10, question_depart: int = 1):
     await interaction.response.defer(ephemeral=True)
-    nb_q, nb_f, sec, q_debut = await configurer_et_charger_epreuve(interaction.guild, temps_sec, question_depart)
+    nb_q, nb_f, sec, q_deb = await configurer_et_charger_epreuve(interaction.guild, temps_sec, question_depart)
     await interaction.followup.send(
         f"✅ **Épreuve synchronisée !**\n"
-        f"📚 Questions : **{nb_q}** (Départ à la **Q#{q_debut}**)\n"
+        f"📚 Questions : **{nb_q}** (Départ à la **Q#{q_deb}**)\n"
         f"🎯 Candidats configurés : **{nb_f}**\n"
         f"⏱️ Chrono réglé à : **{sec} secondes**",
         ephemeral=True
     )
 
 
+@bot.tree.command(name="suivante", description="Envoie la question suivante.")
+@app_commands.check(est_role_orga)
+async def suivante_slash(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    await action_question_suivante(interaction.channel, interaction.user)
+    await interaction.followup.send("Question lancée !", ephemeral=True)
+
+
+@bot.tree.command(name="cloturer_vitesse", description="Arrête immédiatement la manche active.")
+@app_commands.check(est_role_orga)
+async def cloturer_vitesse_slash(interaction: discord.Interaction):
+    if not SESSION_JEU.get("actif"):
+        await interaction.response.send_message("❌ Aucune manche active.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    await cloturer_question_et_donner_main(interaction.channel)
+    await interaction.followup.send("Manche clôturée !", ephemeral=True)
+
+
+# ========================================================
+# ÉCOUTEUR UNIQUE ON_MESSAGE (TOUS LES MODULES RÉUNIS)
+# ========================================================
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+
+    contenu = message.content.strip()
+
+    # ----------------------------------------------------
+    # 1. ÉPREUVE DES FLÈCHES : !casser @Candidat <num>
+    # ----------------------------------------------------
+    if contenu.lower().startswith("!casser "):
+        parties = contenu.split()
+        if len(parties) >= 3 and message.mentions:
+            cible = message.mentions[0]
+            num_str = parties[2]
+            if num_str.isdigit():
+                await action_casser_fleche(message.channel, message.author, cible, int(num_str))
+                return
+
+    # ----------------------------------------------------
+    # 2. COMMANDES ORGANISATEURS (!s, !charger, !stop, etc.)
+    # ----------------------------------------------------
+    if contenu.startswith("!") and isinstance(message.author, discord.Member) and est_role_orga(message.author):
+        cmd_parts = contenu.split()
+        cmd = cmd_parts[0].lower()
+
+        # A. Lancer la question suivante
+        if cmd in ["!suivante", "!s", "!next"]:
+            try:
+                await message.delete()
+            except discord.DiscordException:
+                pass
+            await action_question_suivante(message.channel, message.author)
+            return
+
+        # B. Charger avec chrono et départ optionnels : !charger [secondes] [depart]
+        if cmd in ["!charger", "!load"]:
+            try:
+                await message.delete()
+            except discord.DiscordException:
+                pass
+            sec_param = 10
+            dep_param = 1
+            if len(cmd_parts) >= 2 and cmd_parts[1].isdigit():
+                sec_param = int(cmd_parts[1])
+            if len(cmd_parts) >= 3 and cmd_parts[2].isdigit():
+                dep_param = int(cmd_parts[2])
+
+            nb_q, nb_f, sec, q_deb = await configurer_et_charger_epreuve(message.guild, sec_param, dep_param)
+            await message.channel.send(
+                f"⚙️ **Épreuve prête :** {nb_q} questions | Départ **Q#{q_deb}** | Chrono **{sec}s** | {nb_f} candidats configurés.",
+                delete_after=6
+            )
+            return
+
+        # C. Arrêt manuel de la question
+        if cmd in ["!stop", "!fin"]:
+            try:
+                await message.delete()
+            except discord.DiscordException:
+                pass
+            if SESSION_JEU.get("actif"):
+                await cloturer_question_et_donner_main(message.channel)
+            return
+
+        # D. Reset direct à la Q#1
+        if cmd == "!reset_q":
+            SESSION_JEU["index_liste"] = 0
+            SESSION_JEU["num_question"] = 0
+            try:
+                await message.delete()
+            except discord.DiscordException:
+                pass
+            await message.channel.send("🔄 *Liste réinitialisée à la Question 1.*", delete_after=3)
+            return
+
+    # ----------------------------------------------------
+    # 3. INTERCEPTION & SUPPRESSION DES RÉPONSES (10S CHRONO)
+    # ----------------------------------------------------
+    if SESSION_JEU.get("actif") and message.channel.id == SESSION_JEU.get("channel_id"):
+        try:
+            await message.delete()
+        except discord.DiscordException:
+            pass
+
+        chrono = time.time() - SESSION_JEU["top_depart"]
+        uid = message.author.id
+
+        if uid in SESSION_JEU["reponses_question"]:
+            return
+
+        val_num = extraire_nombre(contenu)
+        SESSION_JEU["reponses_question"][uid] = {
+            "membre": message.author,
+            "chrono": chrono,
+            "texte": contenu,
+            "val_num": val_num
+        }
+
+        salon_orga = message.guild.get_channel(CHAN_LOGS_ORGA_ID)
+        if salon_orga:
+            rang = len(SESSION_JEU["reponses_question"])
+            embed_log = discord.Embed(
+                title=f"⚡ Q#{SESSION_JEU['num_question']} — #{rang} en `{chrono:.2f}s`",
+                description=f"**{message.author.display_name}** : `{contenu}` (Cible: `{SESSION_JEU['reponse_cible_brute']}`)",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            await salon_orga.send(embed=embed_log)
+        return
+
+    # ----------------------------------------------------
+    # 4. MODULES COMPLÉMENTAIRES (Brouilleur, Décodeur, etc.)
+    # ----------------------------------------------------
+    if message.channel.id in SALONS_BROUILLEUR_ACTIFS and message.content.strip():
+        if not message.content.startswith(("!", "/")):
+            try:
+                await message.delete()
+                if "transformer_en_charabia_ia" in globals():
+                    texte_brouille = await transformer_en_charabia_ia(message.content.strip())
+                    webhooks = await message.channel.webhooks()
+                    webhook = next((w for w in webhooks if w.user.id == bot.user.id), None)
+                    if webhook:
+                        await webhook.send(
+                            content=texte_brouille,
+                            username=message.author.display_name,
+                            avatar_url=message.author.display_avatar.url
+                        )
+                return
+            except Exception as e:
+                print(f"Erreur brouilleur : {e}")
+
+    if message.channel.id in SESSIONS_DECODEUR:
+        cible_data = SESSIONS_DECODEUR[message.channel.id]
+        if message.author.id == cible_data.get("user_id"):
+            texte = message.content.strip()
+            if len(texte) >= 2 and "decoder_charabia_ia" in globals():
+                async with message.channel.typing():
+                    traduction = await decoder_charabia_ia(message.author.display_name, texte)
+                    embed_decodeur = discord.Embed(
+                        description=f"🌐 **DÉCODEUR OFFICIEL — Langue parlée : `{message.author.display_name}`**\n\n{traduction}",
+                        color=discord.Color.teal()
+                    )
+                    await message.reply(embed=embed_decodeur, mention_author=False)
+
+    if message.channel.id in SESSIONS_RECHERCHE_ACTIVES:
+        session = SESSIONS_RECHERCHE_ACTIVES[message.channel.id]
+        if message.author.id == session.get("candidat_id"):
+            texte_q = message.content.strip()
+            if len(texte_q) >= 4 and "traiter_suggestion_orga" in globals():
+                salon_orgas = bot.get_channel(SALON_REMARQUES_QUESTIONS_ID)
+                if salon_orgas:
+                    asyncio.create_task(
+                        traiter_suggestion_orga(
+                            channel_src=message.channel,
+                            salon_dest=salon_orgas,
+                            candidat=message.author,
+                            joueur_mystere=session.get("joueur"),
+                            question=texte_q
+                        )
+                    )
+
+    if ETAT_COMPOSITION.get("actif") and message.channel.id == ETAT_COMPOSITION.get("channel_id"):
+        cap1 = ETAT_COMPOSITION.get("capitaine_1")
+        tour = ETAT_COMPOSITION.get("tour")
+        cap_actif = cap1 if tour == 1 else ETAT_COMPOSITION.get("capitaine_2")
+        role_actif = ETAT_COMPOSITION.get("role_1") if tour == 1 else ETAT_COMPOSITION.get("role_2")
+        cap_suivant = ETAT_COMPOSITION.get("capitaine_2") if tour == 1 else cap1
+
+        if cap_actif and message.author.id == cap_actif.id and message.mentions:
+            cible = message.mentions[0]
+            r1 = ETAT_COMPOSITION.get("role_1")
+            r2 = ETAT_COMPOSITION.get("role_2")
+
+            if not cible.bot and r1 not in cible.roles and r2 not in cible.roles:
+                try:
+                    await cible.add_roles(role_actif, reason=f"Choisi par {cap_actif.display_name}")
+                    ETAT_COMPOSITION["tour"] = 2 if tour == 1 else 1
+                    couleur = getattr(role_actif, "color", discord.Color.gold())
+                    embed_choix = discord.Embed(
+                        title="🤝 NOUVELLE RECRUE !",
+                        description=(
+                            f"🔴 **{cible.mention}** rejoint l'équipe {role_actif.mention} !\n\n"
+                            f"👉 **Au tour de {cap_suivant.mention}** de faire son choix !"
+                        ),
+                        color=couleur if couleur.value != 0 else discord.Color.gold()
+                    )
+                    await message.channel.send(embed=embed_choix)
+                except discord.DiscordException as e:
+                    await message.channel.send(f"❌ Erreur attribution rôle : {e}")
+
+    await bot.process_commands(message)
+
+
+# ========================================================
+# ON_READY & SYNCHRONISATION
+# ========================================================
+@bot.event
+async def on_ready():
+    await bot.tree.sync()
+    print(f"🔥 Connecté en tant que {bot.user} | Arbre de commandes slash synchronisé.")
 
 # ==========================================
 # DÉMARRAGE DU BOT
