@@ -9017,7 +9017,7 @@ async def annuler_conseil(interaction: discord.Interaction):
         await interaction.response.send_message("Aucun conseil en cours à annuler.", ephemeral=True)
 
 # ========================================================
-# MODULE : QUESTIONS DE VITESSE DEPUIS UN SALON DISCORD
+# ÉPREUVE DES FLÈCHES : QUESTIONS + CASSAGE + PARAMÈTRES
 # ========================================================
 
 import re
@@ -9027,14 +9027,16 @@ from difflib import SequenceMatcher
 import discord
 from discord import app_commands
 
-CHAN_LOGS_ORGA_ID = 1553032799995564204  # ID de votre salon orga
-CHAN_BANQUE_QUESTIONS_ID = 1553034639604715581            # 👈 Mets ici l'ID du salon Discord contenant tes questions
+CHAN_LOGS_ORGA_ID = 1553032799995564204       # Salon logs orga
+CHAN_BANQUE_QUESTIONS_ID = 1553034639604715581 # Salon avec les questions (Question | Réponse)
+CHAN_BANQUE_FLECHES_ID = 1553034639604715581   # Salon secret avec les flèches (@Joueur | 1, 3, 5)
 
-# Liste dynamique chargée depuis le salon
 BANQUE_QUESTIONS_DYNAMIQUE = []
+ETAT_FLECHES = {}  # { user_id: { "membre": Member, "fleches": set(int) } }
 
-SESSION_VITESSE = {
-    "index_liste": 0,
+SESSION_JEU = {
+    "index_liste": 0,           # Index actuel (base 0)
+    "duree_sec": 10,            # Durée réglable (défaut: 10s)
     "actif": False,
     "channel_id": None,
     "num_question": 0,
@@ -9043,7 +9045,8 @@ SESSION_VITESSE = {
     "reponse_cible_num": None,
     "top_depart": 0.0,
     "task_timer": None,
-    "reponses_question": {}
+    "reponses_question": {},
+    "tireur_autorise_id": None  # ID du joueur qui a le droit de tirer
 }
 
 
@@ -9065,74 +9068,150 @@ def extraire_nombre(texte: str):
     return None
 
 
-async def charger_questions_depuis_salon(guild: discord.Guild) -> int:
-    """Lit tous les messages du salon et découpe ligne par ligne."""
+# --------------------------------------------------------
+# CHARGEMENT DES DONNÉES (QUESTIONS & FLÈCHES)
+# --------------------------------------------------------
+
+async def charger_questions(guild: discord.Guild) -> int:
     global BANQUE_QUESTIONS_DYNAMIQUE
     salon = guild.get_channel(CHAN_BANQUE_QUESTIONS_ID)
     if not salon:
         return 0
 
     nouvelle_banque = []
-    # Parcourt les messages du plus ancien au plus récent
     async for msg in salon.history(limit=100, oldest_first=True):
-        # Découpage ligne par ligne de chaque message
         for ligne in msg.content.splitlines():
             ligne = ligne.strip()
             if not ligne or ligne.startswith("#"):
                 continue
-
             if "|" in ligne:
-                partie_q, partie_r = ligne.split("|", 1)
-                q = partie_q.strip()
-                r = partie_r.strip()
-                if q and r:
-                    nouvelle_banque.append((q, r))
+                q, r = ligne.split("|", 1)
+                if q.strip() and r.strip():
+                    nouvelle_banque.append((q.strip(), r.strip()))
 
     BANQUE_QUESTIONS_DYNAMIQUE = nouvelle_banque
     return len(BANQUE_QUESTIONS_DYNAMIQUE)
 
-async def timer_10_secondes(channel: discord.TextChannel, num_q: int):
-    await asyncio.sleep(10)
-    if SESSION_VITESSE["actif"] and SESSION_VITESSE["num_question"] == num_q:
-        await cloturer_et_publier_resultats(channel)
+
+async def charger_fleches(guild: discord.Guild) -> int:
+    global ETAT_FLECHES
+    salon = guild.get_channel(CHAN_BANQUE_FLECHES_ID)
+    if not salon:
+        return 0
+
+    ETAT_FLECHES.clear()
+    total = 0
+    async for msg in salon.history(limit=100, oldest_first=True):
+        for ligne in msg.content.splitlines():
+            ligne = ligne.strip()
+            if not ligne or ligne.startswith("#") or "|" not in ligne:
+                continue
+
+            cible_str, fleches_str = ligne.split("|", 1)
+            cible_str = cible_str.strip()
+
+            membre = None
+            if msg.mentions:
+                for m in msg.mentions:
+                    if m.mention in cible_str or str(m.id) in cible_str:
+                        membre = m
+                        break
+            if not membre:
+                nom = cible_str.replace("@", "").lower()
+                for m in guild.members:
+                    if m.display_name.lower() == nom or m.name.lower() == nom:
+                        membre = m
+                        break
+
+            if membre:
+                nums = [int(n) for n in re.findall(r"\d+", fleches_str)]
+                if nums:
+                    ETAT_FLECHES[membre.id] = {
+                        "membre": membre,
+                        "fleches": set(nums)
+                    }
+                    total += 1
+    return total
 
 
-async def lancer_question_moteur(channel: discord.TextChannel, question_str: str, reponse_cible: str, auteur: discord.Member):
-    if SESSION_VITESSE["task_timer"] and not SESSION_VITESSE["task_timer"].done():
-        SESSION_VITESSE["task_timer"].cancel()
+async def configurer_et_charger_epreuve(guild: discord.Guild, duree_sec: int = 10, depart_question: int = 1):
+    """Charge les données et applique les réglages de temps et de départ."""
+    nb_q = await charger_questions(guild)
+    nb_f = await charger_fleches(guild)
 
-    SESSION_VITESSE["actif"] = True
-    SESSION_VITESSE["channel_id"] = channel.id
-    SESSION_VITESSE["num_question"] += 1
-    SESSION_VITESSE["texte_question"] = question_str
-    SESSION_VITESSE["reponse_cible_brute"] = reponse_cible.strip()
-    SESSION_VITESSE["reponse_cible_num"] = extraire_nombre(reponse_cible)
-    SESSION_VITESSE["reponses_question"].clear()
-    SESSION_VITESSE["top_depart"] = time.time()
+    # Réglage du chrono
+    SESSION_JEU["duree_sec"] = max(3, duree_sec)
+
+    # Réglage du point de départ (index base 0)
+    idx_depart = max(0, depart_question - 1)
+    if idx_depart >= nb_q and nb_q > 0:
+        idx_depart = 0
+    SESSION_JEU["index_liste"] = idx_depart
+    SESSION_JEU["num_question"] = idx_depart
+
+    return nb_q, nb_f, SESSION_JEU["duree_sec"], idx_depart + 1
+
+
+# --------------------------------------------------------
+# MOTEUR DE QUESTIONS & CHRONO
+# --------------------------------------------------------
+
+async def timer_question(channel: discord.TextChannel, num_q: int, duree: int):
+    await asyncio.sleep(duree)
+    if SESSION_JEU["actif"] and SESSION_JEU["num_question"] == num_q:
+        await cloturer_question_et_donner_main(channel)
+
+
+async def lancer_question_moteur(channel: discord.TextChannel, q_texte: str, q_rep: str, auteur: discord.Member):
+    if SESSION_JEU["task_timer"] and not SESSION_JEU["task_timer"].done():
+        SESSION_JEU["task_timer"].cancel()
+
+    duree = SESSION_JEU["duree_sec"]
+    SESSION_JEU["actif"] = True
+    SESSION_JEU["channel_id"] = channel.id
+    SESSION_JEU["num_question"] += 1
+    SESSION_JEU["texte_question"] = q_texte
+    SESSION_JEU["reponse_cible_brute"] = q_rep.strip()
+    SESSION_JEU["reponse_cible_num"] = extraire_nombre(q_rep)
+    SESSION_JEU["reponses_question"].clear()
+    SESSION_JEU["tireur_autorise_id"] = None
+    SESSION_JEU["top_depart"] = time.time()
 
     embed = discord.Embed(
-        title=f"⚽ QUESTION #{SESSION_VITESSE['num_question']} — ⏳ 10 SECONDES !",
+        title=f"🏹 MANCHE #{SESSION_JEU['num_question']} — ⏳ {duree} SECONDES !",
         description=(
-            f"# {question_str}\n\n"
-            "⏱️ **Vous avez 10 secondes chrono pour répondre dans ce chat !**\n"
+            f"# {q_texte}\n\n"
+            f"⏱️ **{duree} secondes pour répondre dans ce chat !**\n"
             "🔒 *Vos messages sont immédiatement masqués pour les autres.*\n"
-            "🎯 *Le plus proche l'emporte (départagé au chrono en cas d'égalité).* "
+            "🎯 *Le plus proche remporte le tir pour briser une flèche !*"
         ),
         color=discord.Color.red()
     )
-    embed.set_footer(text=f"Lancée par {auteur.display_name} • Fin dans 10 secondes pile !")
+    embed.set_footer(text=f"Lancée par {auteur.display_name} • Fin dans {duree}s !")
     await channel.send(embed=embed)
 
-    SESSION_VITESSE["task_timer"] = asyncio.create_task(timer_10_secondes(channel, SESSION_VITESSE["num_question"]))
+    SESSION_JEU["task_timer"] = asyncio.create_task(timer_question(channel, SESSION_JEU["num_question"], duree))
 
 
-async def cloturer_et_publier_resultats(channel: discord.TextChannel):
-    SESSION_VITESSE["actif"] = False
+async def cloturer_question_et_donner_main(channel: discord.TextChannel):
+    if SESSION_JEU["task_timer"] and not SESSION_JEU["task_timer"].done():
+        SESSION_JEU["task_timer"].cancel()
 
-    reponses = list(SESSION_VITESSE["reponses_question"].values())
-    cible_num = SESSION_VITESSE["reponse_cible_num"]
-    cible_texte = SESSION_VITESSE["reponse_cible_brute"].lower()
+    SESSION_JEU["actif"] = False
+    reponses = list(SESSION_JEU["reponses_question"].values())
+    cible_num = SESSION_JEU["reponse_cible_num"]
+    cible_texte = SESSION_JEU["reponse_cible_brute"].lower()
 
+    if not reponses:
+        embed_vide = discord.Embed(
+            title=f"⌛ FIN MANCHE #{SESSION_JEU['num_question']}",
+            description=f"🎯 **Réponse officielle : `{SESSION_JEU['reponse_cible_brute']}`**\n\n*Aucune réponse reçue à temps. Personne ne tire !*",
+            color=discord.Color.dark_grey()
+        )
+        await channel.send(embed=embed_vide)
+        return
+
+    # Tri : Proximité puis Vitesse
     if cible_num is not None:
         for r in reponses:
             val = r["val_num"]
@@ -9140,96 +9219,158 @@ async def cloturer_et_publier_resultats(channel: discord.TextChannel):
         reponses.sort(key=lambda x: (0 if x["ecart"] != float("inf") else 1, x["ecart"], x["chrono"]))
     else:
         for r in reponses:
-            ratio = SequenceMatcher(None, cible_texte, r["texte"].lower()).ratio()
-            r["ratio"] = ratio
+            r["ratio"] = SequenceMatcher(None, cible_texte, r["texte"].lower()).ratio()
         reponses.sort(key=lambda x: (-x["ratio"], x["chrono"]))
 
-    medailles = ["🥇", "🥈", "🥉"]
-    lignes = []
-    for i, data in enumerate(reponses[:8]):
-        symbole = medailles[i] if i < 3 else f"`#{i+1}`"
-        nom = data["membre"].display_name
-        chrono_str = f"`{data['chrono']:.2f}s`"
+    vainqueur_data = reponses[0]
+    vainqueur = vainqueur_data["membre"]
+    SESSION_JEU["tireur_autorise_id"] = vainqueur.id
 
-        if cible_num is not None:
-            if data["ecart"] != float("inf"):
-                info_ecart = f"Écart : **{data['ecart']:g}**" if data["ecart"] > 0 else "🎯 **TOUT PILE !**"
-                lignes.append(f"{symbole} **{nom}** — {data['texte']} ({info_ecart} en {chrono_str})")
-            else:
-                lignes.append(f"{symbole} **{nom}** — {data['texte']} *(non numérique)* en {chrono_str}")
-        else:
-            pct = int(data["ratio"] * 100)
-            lignes.append(f"{symbole} **{nom}** — « {data['texte']} » ({pct}% match en {chrono_str})")
-
-    texte_recap = "\n".join(lignes) if lignes else "*Aucun candidat n'a répondu dans le temps imparti.*"
+    info_score = f"Écart : **{vainqueur_data['ecart']:g}**" if (cible_num is not None and vainqueur_data.get("ecart") != float("inf")) else f"Réponse : `{vainqueur_data['texte']}`"
 
     embed_resultat = discord.Embed(
-        title=f"⌛ FIN QUESTION #{SESSION_VITESSE['num_question']} — RÉSULTATS",
+        title=f"🎯 {vainqueur.display_name} REMPORTE LA MANCHE !",
         description=(
-            f"**Énoncé :** {SESSION_VITESSE['texte_question']}\n\n"
-            f"🎯 **Réponse officielle : `{SESSION_VITESSE['reponse_cible_brute']}`**\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{texte_recap}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"**Énoncé :** {SESSION_JEU['texte_question']}\n"
+            f"🎯 **Réponse officielle : `{SESSION_JEU['reponse_cible_brute']}`**\n\n"
+            f"🥇 **Vainqueur :** {vainqueur.mention} ({info_score} en `{vainqueur_data['chrono']:.2f}s`)\n\n"
+            f"🏹 **À TOI DE TIRER !** Tape ta cible dans le chat :\n"
+            f"👉 `!casser @Joueur <numero>` *(ex: `!casser @Sarah 3`)*"
         ),
         color=discord.Color.gold()
     )
+    embed_resultat.set_thumbnail(url=vainqueur.display_avatar.url)
     await channel.send(embed=embed_resultat)
 
 
-async def action_question_suivante(channel: discord.TextChannel, auteur: discord.Member):
-    global BANQUE_QUESTIONS_DYNAMIQUE
-    if not BANQUE_QUESTIONS_DYNAMIQUE:
-        # Tentative de chargement automatique si la liste est vide
-        nb = await charger_questions_depuis_salon(channel.guild)
-        if nb == 0:
-            await channel.send("❌ **Aucune question trouvée !** Vérifiez que `CHAN_BANQUE_QUESTIONS_ID` est bien configuré et rempli.")
-            return
+# --------------------------------------------------------
+# ACTION DE CASSER LA FLÈCHE & MUTE LECTURE SEULE
+# --------------------------------------------------------
 
-    idx = SESSION_VITESSE["index_liste"]
-    if idx >= len(BANQUE_QUESTIONS_DYNAMIQUE):
-        await channel.send("🏁 **Toutes les questions du salon ont été posées !** (Tapez `!reset_q` pour recommencer)")
+async def action_casser_fleche(channel: discord.TextChannel, tireur: discord.Member, cible: discord.Member, numero_f: int):
+    if not est_role_orga(tireur) and tireur.id != SESSION_JEU.get("tireur_autorise_id"):
+        await channel.send(f"⛔ {tireur.mention}, ce n'est pas à toi de tirer ! Seul le vainqueur de la manche peut casser une flèche.", delete_after=5)
         return
 
-    q_texte, q_rep = BANQUE_QUESTIONS_DYNAMIQUE[idx]
-    SESSION_VITESSE["index_liste"] += 1
-    await lancer_question_moteur(channel, q_texte, q_rep, auteur)
+    if cible.id not in ETAT_FLECHES:
+        await channel.send(f"⚠️ {cible.mention} n'a pas de flèches enregistrées.", delete_after=5)
+        return
+
+    SESSION_JEU["tireur_autorise_id"] = None
+    data_cible = ETAT_FLECHES[cible.id]
+    fleches_candidat = data_cible["fleches"]
+
+    if numero_f in fleches_candidat:
+        fleches_candidat.remove(numero_f)
+        restantes = len(fleches_candidat)
+
+        embed_hit = discord.Embed(
+            title="💥 FLÈCHE CASSÉE EN DEUX !",
+            description=(
+                f"🏹 **{tireur.display_name}** vise dans le mille !\n\n"
+                f"La flèche **n°{numero_f}** de {cible.mention} est **BRISÉE** !\n"
+                f"Il lui reste **{restantes} flèche{'s' if restantes > 1 else ''}**."
+            ),
+            color=discord.Color.red()
+        )
+        await channel.send(embed=embed_hit)
+
+        if restantes == 0:
+            try:
+                # Met le joueur en lecture seule dans ce salon
+                await channel.set_permissions(cible, send_messages=False, reason="Éliminé de l'épreuve des flèches")
+            except discord.DiscordException as e:
+                print(f"⚠️ Erreur permissions mute {cible.display_name}: {e}")
+
+            embed_mort = discord.Embed(
+                title="💀 ÉLIMINATION !",
+                description=(
+                    f"# {cible.mention} N'A PLUS DE FLÈCHES !\n\n"
+                    "Toutes vos armes sont détruites. Votre épreuve s'arrête ici.\n"
+                    "🔒 *Vos permissions d'écriture dans ce salon ont été révoquées.*"
+                ),
+                color=discord.Color.dark_grey()
+            )
+            embed_mort.set_thumbnail(url=cible.display_avatar.url)
+            await channel.send(embed=embed_mort)
+
+    else:
+        embed_rate = discord.Embed(
+            title="💨 TIR DANS L'EAU...",
+            description=(
+                f"🏹 **{tireur.display_name}** a tenté le numéro **{numero_f}** sur {cible.mention}...\n\n"
+                f"❌ **Raté !** Cette combinaison n'existe pas ou est déjà brisée."
+            ),
+            color=discord.Color.light_grey()
+        )
+        await channel.send(embed=embed_rate)
+
+    await channel.send("➡️ *Prêt pour la question suivante ? Tapez `!s`*")
 
 
 # --------------------------------------------------------
 # COMMANDES SLASH & CHAT
 # --------------------------------------------------------
 
-@bot.tree.command(name="charger_banque", description="Actualise la liste des questions depuis le salon Discord dédié.")
-@app_commands.check(est_orga_ou_admin)
-async def charger_banque_slash(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    total = await charger_questions_depuis_salon(interaction.guild)
-    await interaction.followup.send(f"✅ **{total} questions** chargées depuis le salon de banque !", ephemeral=True)
+async def action_question_suivante(channel: discord.TextChannel, auteur: discord.Member):
+    global BANQUE_QUESTIONS_DYNAMIQUE
+    if not BANQUE_QUESTIONS_DYNAMIQUE:
+        nb_q, _, _, _ = await configurer_et_charger_epreuve(channel.guild)
+        if nb_q == 0:
+            await channel.send("❌ Aucune question trouvée. Vérifiez `CHAN_BANQUE_QUESTIONS_ID`.")
+            return
+
+    idx = SESSION_JEU["index_liste"]
+    if idx >= len(BANQUE_QUESTIONS_DYNAMIQUE):
+        await channel.send("🏁 **Toutes les questions ont été posées !** Tapez `!charger` pour relancer.")
+        return
+
+    q_texte, q_rep = BANQUE_QUESTIONS_DYNAMIQUE[idx]
+    SESSION_JEU["index_liste"] += 1
+    await lancer_question_moteur(channel, q_texte, q_rep, auteur)
 
 
-@bot.tree.command(name="suivante", description="Envoie automatiquement la question suivante du salon de banque.")
-@app_commands.check(est_orga_ou_admin)
-async def suivante_slash(interaction: discord.Interaction):
+@bot.tree.command(name="charger_epreuve", description="Configure et synchronise l'épreuve des flèches.")
+@app_commands.describe(
+    temps_sec="Temps pour répondre par question en secondes (défaut : 10)",
+    question_depart="Numéro de la question où commencer (défaut : 1)"
+)
+@app_commands.check(est_role_orga)
+async def charger_epreuve_slash(interaction: discord.Interaction, temps_sec: int = 10, question_depart: int = 1):
     await interaction.response.defer(ephemeral=True)
-    await action_question_suivante(interaction.channel, interaction.user)
-    await interaction.followup.send(f"✅ Question #{SESSION_VITESSE['num_question']} envoyée !", ephemeral=True)
+    nb_q, nb_f, sec, q_debut = await configurer_et_charger_epreuve(interaction.guild, temps_sec, question_depart)
+    await interaction.followup.send(
+        f"✅ **Épreuve synchronisée !**\n"
+        f"📚 Questions : **{nb_q}** (Départ à la **Q#{q_debut}**)\n"
+        f"🎯 Candidats configurés : **{nb_f}**\n"
+        f"⏱️ Chrono réglé à : **{sec} secondes**",
+        ephemeral=True
+    )
 
 
 @bot.event
 async def on_message(message: discord.Message):
-    # Ne touche jamais aux messages des bots
     if message.author.bot:
         return
 
     contenu = message.content.strip()
 
-    # ----------------------------------------------------
-    # 1. COMMANDES DES ORGANISATEURS (avec "!")
-    # ----------------------------------------------------
+    # --- 1. ACTION DE CASSER UNE FLÈCHE ---
+    if contenu.lower().startswith("!casser "):
+        parties = contenu.split()
+        if len(parties) >= 3 and message.mentions:
+            cible = message.mentions[0]
+            num_str = parties[2]
+            if num_str.isdigit():
+                await action_casser_fleche(message.channel, message.author, cible, int(num_str))
+                return
+
+    # --- 2. COMMANDES ORGANISATEURS (avec "!") ---
     if contenu.startswith("!") and isinstance(message.author, discord.Member) and est_role_orga(message.author):
-        cmd = contenu.lower().split()[0]
-        
+        cmd_parts = contenu.split()
+        cmd = cmd_parts[0].lower()
+
+        # A. Lancer la question suivante
         if cmd in ["!suivante", "!s", "!next"]:
             try:
                 await message.delete()
@@ -9238,75 +9379,78 @@ async def on_message(message: discord.Message):
             await action_question_suivante(message.channel, message.author)
             return
 
+        # B. Charger l'épreuve avec arguments optionnels : !charger [secondes] [depart]
+        # Ex: !charger       -> 10s, Q#1
+        # Ex: !charger 15 8  -> 15s, démarre à la Q#8
+        if cmd in ["!charger", "!load"]:
+            try:
+                await message.delete()
+            except discord.DiscordException:
+                pass
+
+            sec_param = 10
+            dep_param = 1
+            if len(cmd_parts) >= 2 and cmd_parts[1].isdigit():
+                sec_param = int(cmd_parts[1])
+            if len(cmd_parts) >= 3 and cmd_parts[2].isdigit():
+                dep_param = int(cmd_parts[2])
+
+            nb_q, nb_f, sec, q_deb = await configurer_et_charger_epreuve(message.guild, sec_param, dep_param)
+            await message.channel.send(
+                f"⚙️ **Épreuve prête :** {nb_q} questions | Départ **Q#{q_deb}** | Chrono **{sec}s** | {nb_f} candidats.",
+                delete_after=6
+            )
+            return
+
+        # C. Arrêter / Clôturer immédiatement la manche en cours
+        if cmd in ["!stop", "!fin"]:
+            try:
+                await message.delete()
+            except discord.DiscordException:
+                pass
+            if SESSION_JEU.get("actif"):
+                await cloturer_question_et_donner_main(message.channel)
+            return
+
+        # D. Reset direct à la question 1
         if cmd == "!reset_q":
-            SESSION_VITESSE["index_liste"] = 0
+            SESSION_JEU["index_liste"] = 0
+            SESSION_JEU["num_question"] = 0
             try:
                 await message.delete()
             except discord.DiscordException:
                 pass
-            await message.channel.send("🔄 *Liste de questions réinitialisée au début.*", delete_after=3)
+            await message.channel.send("🔄 *Banque réinitialisée à la Question #1.*", delete_after=3)
             return
 
-        if cmd == "!charger":
-            try:
-                await message.delete()
-            except discord.DiscordException:
-                pass
-            total = await charger_questions_depuis_salon(message.guild)
-            await message.channel.send(f"✅ **{total} questions** rechargées !", delete_after=4)
-            return
-
-        if cmd == "!q":
-            corps = contenu[3:].strip()
-            try:
-                await message.delete()
-            except discord.DiscordException:
-                pass
-            if "|" in corps:
-                q_texte, q_rep = corps.split("|", 1)
-            else:
-                q_texte, q_rep = corps, ""
-            await lancer_question_moteur(message.channel, q_texte.strip(), q_rep.strip(), message.author)
-            return
-
-    # ----------------------------------------------------
-    # 2. PENDANT LES 10 SECONDES DU CHRONO
-    # ----------------------------------------------------
-    if SESSION_VITESSE.get("actif") and message.channel.id == SESSION_VITESSE.get("channel_id"):
-        # SUPPRESSION INSTANTANÉE POUR TOUT LE MONDE (Admins, Orgas, Candidats)
+    # --- 3. RÉPONSES DES CANDIDATS (Suppression instantanée) ---
+    if SESSION_JEU.get("actif") and message.channel.id == SESSION_JEU.get("channel_id"):
         try:
             await message.delete()
-        except discord.Forbidden:
-            print("🚨 ERREUR : Le bot n'a pas la permission 'Gérer les messages' dans ce salon !")
-        except discord.HTTPException as e:
-            print(f"⚠️ Erreur Discord delete : {e}")
+        except discord.DiscordException:
+            pass
 
-        chrono = time.time() - SESSION_VITESSE["top_depart"]
+        chrono = time.time() - SESSION_JEU["top_depart"]
         uid = message.author.id
 
-        # Une seule réponse prise en compte par personne
-        if uid in SESSION_VITESSE["reponses_question"]:
+        if uid in SESSION_JEU["reponses_question"]:
             return
 
         val_num = extraire_nombre(contenu)
-        SESSION_VITESSE["reponses_question"][uid] = {
+        SESSION_JEU["reponses_question"][uid] = {
             "membre": message.author,
             "chrono": chrono,
             "texte": contenu,
             "val_num": val_num
         }
 
-        # Envoi au salon privé des orgas
+        # Log orga
         salon_orga = message.guild.get_channel(CHAN_LOGS_ORGA_ID)
         if salon_orga:
-            rang = len(SESSION_VITESSE["reponses_question"])
+            rang = len(SESSION_JEU["reponses_question"])
             embed_log = discord.Embed(
-                title=f"⚡ Q#{SESSION_VITESSE['num_question']} — Réponse #{rang} en `{chrono:.2f}s`",
-                description=(
-                    f"**Aventurier :** {message.author.mention} (`{message.author.display_name}`)\n"
-                    f"**Proposition interceptée :** `{contenu}`\n"
-                    f"**Réponse attendue :** `{SESSION_VITESSE['reponse_cible_brute']}`"
-                ),
+                title=f"⚡ Q#{SESSION_JEU['num_question']} — #{rang} en `{chrono:.2f}s`",
+                description=f"**{message.author.display_name}** : `{contenu}` (Cible: `{SESSION_JEU['reponse_cible_brute']}`)",
                 color=discord.Color.green(),
                 timestamp=discord.utils.utcnow()
             )
@@ -9315,7 +9459,6 @@ async def on_message(message: discord.Message):
         return
 
     await bot.process_commands(message)
-
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
