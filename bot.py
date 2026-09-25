@@ -9218,14 +9218,19 @@ async def suivante_slash(interaction: discord.Interaction):
 
 @bot.event
 async def on_message(message: discord.Message):
+    # Ne touche jamais aux messages des bots
     if message.author.bot:
         return
 
     contenu = message.content.strip()
 
-    # --- 1. COMMANDES RAPIDES ORGA ---
-    if isinstance(message.author, discord.Member) and est_role_orga(message.author):
-        if contenu.lower() in ["!suivante", "!s", "!next"]:
+    # ----------------------------------------------------
+    # 1. COMMANDES DES ORGANISATEURS (avec "!")
+    # ----------------------------------------------------
+    if contenu.startswith("!") and isinstance(message.author, discord.Member) and est_role_orga(message.author):
+        cmd = contenu.lower().split()[0]
+        
+        if cmd in ["!suivante", "!s", "!next"]:
             try:
                 await message.delete()
             except discord.DiscordException:
@@ -9233,25 +9238,25 @@ async def on_message(message: discord.Message):
             await action_question_suivante(message.channel, message.author)
             return
 
-        if contenu.lower() == "!reset_q":
+        if cmd == "!reset_q":
             SESSION_VITESSE["index_liste"] = 0
             try:
                 await message.delete()
             except discord.DiscordException:
                 pass
-            await message.channel.send("🔄 *Liste de questions réinitialisée au début (Index 0).*", delete_after=3)
+            await message.channel.send("🔄 *Liste de questions réinitialisée au début.*", delete_after=3)
             return
 
-        if contenu.lower() == "!charger":
+        if cmd == "!charger":
             try:
                 await message.delete()
             except discord.DiscordException:
                 pass
             total = await charger_questions_depuis_salon(message.guild)
-            await message.channel.send(f"✅ **{total} questions** rechargées depuis le salon !", delete_after=4)
+            await message.channel.send(f"✅ **{total} questions** rechargées !", delete_after=4)
             return
 
-        if contenu.lower().startswith("!q "):
+        if cmd == "!q":
             corps = contenu[3:].strip()
             try:
                 await message.delete()
@@ -9264,45 +9269,50 @@ async def on_message(message: discord.Message):
             await lancer_question_moteur(message.channel, q_texte.strip(), q_rep.strip(), message.author)
             return
 
-    # --- 2. RÉPONSE D'UN CANDIDAT (10 SECONDES) ---
-    if SESSION_VITESSE["actif"] and message.channel.id == SESSION_VITESSE["channel_id"]:
-        if not est_role_orga(message.author):
-            try:
-                await message.delete()
-            except discord.DiscordException as e:
-                print(f"⚠️ Erreur suppression message : {e}")
+    # ----------------------------------------------------
+    # 2. PENDANT LES 10 SECONDES DU CHRONO
+    # ----------------------------------------------------
+    if SESSION_VITESSE.get("actif") and message.channel.id == SESSION_VITESSE.get("channel_id"):
+        # SUPPRESSION INSTANTANÉE POUR TOUT LE MONDE (Admins, Orgas, Candidats)
+        try:
+            await message.delete()
+        except discord.Forbidden:
+            print("🚨 ERREUR : Le bot n'a pas la permission 'Gérer les messages' dans ce salon !")
+        except discord.HTTPException as e:
+            print(f"⚠️ Erreur Discord delete : {e}")
 
-            chrono = time.time() - SESSION_VITESSE["top_depart"]
-            uid = message.author.id
+        chrono = time.time() - SESSION_VITESSE["top_depart"]
+        uid = message.author.id
 
-            if uid in SESSION_VITESSE["reponses_question"]:
-                return
-
-            val_num = extraire_nombre(contenu)
-
-            SESSION_VITESSE["reponses_question"][uid] = {
-                "membre": message.author,
-                "chrono": chrono,
-                "texte": contenu,
-                "val_num": val_num
-            }
-
-            salon_orga = message.guild.get_channel(CHAN_LOGS_ORGA_ID)
-            if salon_orga:
-                rang = len(SESSION_VITESSE["reponses_question"])
-                embed_log = discord.Embed(
-                    title=f"⚡ Q#{SESSION_VITESSE['num_question']} — Réponse #{rang} en `{chrono:.2f}s`",
-                    description=(
-                        f"**Candidat :** {message.author.mention} (`{message.author.display_name}`)\n"
-                        f"**Proposition interceptée :** `{contenu}`\n"
-                        f"**Réponse attendue :** `{SESSION_VITESSE['reponse_cible_brute']}`"
-                    ),
-                    color=discord.Color.green(),
-                    timestamp=discord.utils.utcnow()
-                )
-                await salon_orga.send(embed=embed_log)
-
+        # Une seule réponse prise en compte par personne
+        if uid in SESSION_VITESSE["reponses_question"]:
             return
+
+        val_num = extraire_nombre(contenu)
+        SESSION_VITESSE["reponses_question"][uid] = {
+            "membre": message.author,
+            "chrono": chrono,
+            "texte": contenu,
+            "val_num": val_num
+        }
+
+        # Envoi au salon privé des orgas
+        salon_orga = message.guild.get_channel(CHAN_LOGS_ORGA_ID)
+        if salon_orga:
+            rang = len(SESSION_VITESSE["reponses_question"])
+            embed_log = discord.Embed(
+                title=f"⚡ Q#{SESSION_VITESSE['num_question']} — Réponse #{rang} en `{chrono:.2f}s`",
+                description=(
+                    f"**Aventurier :** {message.author.mention} (`{message.author.display_name}`)\n"
+                    f"**Proposition interceptée :** `{contenu}`\n"
+                    f"**Réponse attendue :** `{SESSION_VITESSE['reponse_cible_brute']}`"
+                ),
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            await salon_orga.send(embed=embed_log)
+
+        return
 
     await bot.process_commands(message)
 
