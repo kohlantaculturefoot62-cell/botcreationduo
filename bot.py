@@ -9066,26 +9066,30 @@ def extraire_nombre(texte: str):
 
 
 async def charger_questions_depuis_salon(guild: discord.Guild) -> int:
-    """Va lire tous les messages du salon de banque pour actualiser la liste."""
+    """Lit tous les messages du salon et découpe ligne par ligne."""
     global BANQUE_QUESTIONS_DYNAMIQUE
     salon = guild.get_channel(CHAN_BANQUE_QUESTIONS_ID)
     if not salon:
         return 0
 
     nouvelle_banque = []
-    # Lecture des messages du salon (du plus ancien au plus récent)
-    async for msg in salon.history(limit=200, oldest_first=True):
-        contenu = msg.content.strip()
-        if "|" in contenu and not contenu.startswith("#"):
-            partie_q, partie_r = contenu.split("|", 1)
-            q = partie_q.strip()
-            r = partie_r.strip()
-            if q and r:
-                nouvelle_banque.append((q, r))
+    # Parcourt les messages du plus ancien au plus récent
+    async for msg in salon.history(limit=100, oldest_first=True):
+        # Découpage ligne par ligne de chaque message
+        for ligne in msg.content.splitlines():
+            ligne = ligne.strip()
+            if not ligne or ligne.startswith("#"):
+                continue
+
+            if "|" in ligne:
+                partie_q, partie_r = ligne.split("|", 1)
+                q = partie_q.strip()
+                r = partie_r.strip()
+                if q and r:
+                    nouvelle_banque.append((q, r))
 
     BANQUE_QUESTIONS_DYNAMIQUE = nouvelle_banque
     return len(BANQUE_QUESTIONS_DYNAMIQUE)
-
 
 async def timer_10_secondes(channel: discord.TextChannel, num_q: int):
     await asyncio.sleep(10)
