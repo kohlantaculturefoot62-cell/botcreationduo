@@ -9052,7 +9052,6 @@ async def lancer_question_moteur(channel: discord.TextChannel, q_texte: str, q_r
         description=(
             f"# {q_texte}\n\n"
             f"⏱️ **{duree} secondes pour répondre dans ce chat !**\n"
-            "🔒 *Vos messages sont immédiatement masqués.*\n"
             "🎯 *Le plus proche remporte le droit de briser une flèche !*"
         ),
         color=discord.Color.red()
