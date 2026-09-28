@@ -9081,6 +9081,7 @@ async def cloturer_question_et_donner_main(channel: discord.TextChannel):
         await channel.send(embed=embed_vide)
         return
 
+    # Tri par précision puis rapidité
     if cible_num is not None:
         for r in reponses:
             val = r["val_num"]
@@ -9089,60 +9090,110 @@ async def cloturer_question_et_donner_main(channel: discord.TextChannel):
     else:
         for r in reponses:
             r["ratio"] = SequenceMatcher(None, cible_texte, r["texte"].lower()).ratio()
-        reponses.sort(key=lambda x: (-x["ratio"], x["chrono"]))
+            r["ecart"] = round(1.0 - r["ratio"], 3)
+        reponses.sort(key=lambda x: (-r["ratio"], x["chrono"]))
 
+    # Attribution du droit exclusif de tir au 1er
     vainqueur_data = reponses[0]
     vainqueur = vainqueur_data["membre"]
     SESSION_JEU["tireur_autorise_id"] = vainqueur.id
 
-    if cible_num is not None and vainqueur_data.get("ecart") != float("inf"):
-        info_score = f"Écart : **{vainqueur_data['ecart']:g}** (Proposition : `{vainqueur_data['texte']}`)"
-    else:
-        info_score = f"Proposition : `{vainqueur_data['texte']}`"
+    # Construction du classement complet des distances
+    lignes_classement = []
+    for index, r in enumerate(reponses, 1):
+        medaille = "🥇" if index == 1 else ("🥈" if index == 2 else ("🥉" if index == 3 else f"`#{index}`"))
+        
+        if cible_num is not None:
+            if r["ecart"] != float("inf"):
+                info_ecart = f"Écart : **{r['ecart']:g}**"
+            else:
+                info_ecart = "*(Nombre non détecté)*"
+        else:
+            pct_ressemblance = round(r.get("ratio", 0) * 100, 1)
+            info_ecart = f"Précision : **{pct_ressemblance}%**"
+
+        lignes_classement.append(
+            f"{medaille} **{r['membre'].display_name}** ➔ `{r['texte']}` ({info_ecart} • `{r['chrono']:.2f}s`)"
+        )
+
+    description_resultats = (
+        f"**Question :** {SESSION_JEU['texte_question']}\n"
+        f"🎯 **Réponse officielle : `{SESSION_JEU['reponse_cible_brute']}`**\n\n"
+        f"📊 **CLASSEMENT DE LA MANCHE :**\n"
+        + "\n".join(lignes_classement) + "\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏹 **À TOI DE BRISER UNE FLÈCHE {vainqueur.mention} !**\n"
+        f"Tape la commande ci-dessous pour tirer :\n"
+        f"👉 `!casser @Joueur <numero>` *(ex: `!casser @Sarah 3`)*"
+    )
 
     embed_resultat = discord.Embed(
-        title=f"🎯 {vainqueur.display_name} REMPORTE LE TIR !",
-        description=(
-            f"**Énoncé :** {SESSION_JEU['texte_question']}\n"
-            f"🎯 **Réponse officielle : `{SESSION_JEU['reponse_cible_brute']}`**\n\n"
-            f"🥇 **Vainqueur :** {vainqueur.mention} ({info_score} en `{vainqueur_data['chrono']:.2f}s`)\n\n"
-            f"🏹 **À TOI DE BRISER UNE FLÈCHE !** Tape :\n"
-            f"👉 `!casser @Joueur <numero>` *(ex: `!casser @Sarah 3`)*"
-        ),
+        title=f"🎯 {vainqueur.display_name.upper()} EST LE PLUS PROCHE !",
+        description=description_resultats,
         color=discord.Color.gold()
     )
     embed_resultat.set_thumbnail(url=vainqueur.display_avatar.url)
-    await channel.send(embed=embed_resultat)
-
+    embed_resultat.set_footer(text=f"Seul {vainqueur.display_name} peut utiliser !casser")
+    
+    await channel.send(content=vainqueur.mention, embed=embed_resultat)
 
 async def action_casser_fleche(channel: discord.TextChannel, tireur: discord.Member, cible: discord.Member, numero_f: int):
+    # 1. Vérification tireur légitime
     if not est_role_orga(tireur) and tireur.id != SESSION_JEU.get("tireur_autorise_id"):
         await channel.send(f"⛔ {tireur.mention}, ce n'est pas ton tour de tirer !", delete_after=5)
         return
 
+    # 2. Vérification cible
     if cible.id not in ETAT_FLECHES:
         await channel.send(f"⚠️ {cible.mention} n'a pas de flèches enregistrées pour cette épreuve.", delete_after=5)
         return
 
+    # Consomme le droit de tir immédiatement pour éviter les spams
     SESSION_JEU["tireur_autorise_id"] = None
     data_cible = ETAT_FLECHES[cible.id]
     fleches_candidat = data_cible["fleches"]
 
+    # --- SÉQUENCE DE SUSPENSE ---
+    embed_suspense = discord.Embed(
+        title="🏹 TIR EN COURS...",
+        description=(
+            f"**{tireur.display_name}** bande son arc et ajuste sa mire...\n"
+            f"🎯 Cible désignée : {cible.mention}\n"
+            f"🔢 Flèche ciblée : **n°{numero_f}**\n\n"
+            "*(La flèche file dans les airs...)* 💨"
+        ),
+        color=discord.Color.gold()
+    )
+    msg_suspense = await channel.send(embed=embed_suspense)
+    await asyncio.sleep(2.5)
+
+    await msg_suspense.edit(embed=discord.Embed(
+        title="🏹 IMPACT IMMINENT...",
+        description=(
+            f"La flèche s'approche de la cible de {cible.mention}...\n\n"
+            "⏳ *Impact dans 3... 2... 1...*"
+        ),
+        color=discord.Color.orange()
+    ))
+    await asyncio.sleep(2.0)
+
+    # --- VERDICT DU TIR ---
     if numero_f in fleches_candidat:
         fleches_candidat.remove(numero_f)
         restantes = len(fleches_candidat)
 
         embed_hit = discord.Embed(
-            title="💥 FLÈCHE CASSÉE EN DEUX !",
+            title="💥 IMPACT ! FLÈCHE BRISÉE !",
             description=(
-                f"🏹 **{tireur.display_name}** vise juste !\n\n"
-                f"La flèche **n°{numero_f}** de {cible.mention} est **BRISÉE** !\n"
-                f"Il lui reste **{restantes} flèche{'s' if restantes > 1 else ''}** en jeu."
+                f"🏹 **Plein dans le mille !**\n\n"
+                f"La flèche **n°{numero_f}** de {cible.mention} est **CASSÉE EN DEUX** !\n\n"
+                f"📊 Il lui reste **{restantes} flèche{'s' if restantes > 1 else ''}** en jeu."
             ),
             color=discord.Color.red()
         )
-        await channel.send(embed=embed_hit)
+        await msg_suspense.edit(embed=embed_hit)
 
+        # Si le joueur n'a plus aucune flèche -> Mute du rôle dans le salon
         if restantes == 0:
             role_applique = False
             for overwrite_target in channel.overwrites:
@@ -9170,11 +9221,11 @@ async def action_casser_fleche(channel: discord.TextChannel, tireur: discord.Mem
                     pass
 
             embed_mort = discord.Embed(
-                title="💀 ÉLIMINATION !",
+                title="💀 ÉLIMINATION DÉFINITIVE !",
                 description=(
                     f"# {cible.mention} N'A PLUS DE FLÈCHES !\n\n"
-                    "Toutes tes armes sont brisées. Ton épreuve s'arrête ici.\n"
-                    "🔒 *La permission d'écrire a été révoquée sur ton rôle dans ce salon.*"
+                    "Toutes tes armes sont brisées. Ton aventure sur cette épreuve s'arrête net.\n"
+                    "🔒 *Tu passes désormais en simple spectateur dans ce salon.*"
                 ),
                 color=discord.Color.dark_grey()
             )
@@ -9185,14 +9236,15 @@ async def action_casser_fleche(channel: discord.TextChannel, tireur: discord.Mem
         embed_rate = discord.Embed(
             title="💨 TIR DANS L'EAU...",
             description=(
-                f"🏹 **{tireur.display_name}** a tenté le numéro **{numero_f}** sur {cible.mention}...\n\n"
-                f"❌ **Raté !** Cette flèche n'existe pas ou a déjà été brisée."
+                f"🏹 La flèche se plante dans le décor à côté !\n\n"
+                f"❌ **Raté pour {tireur.display_name} !**\n"
+                f"La flèche **n°{numero_f}** n'existe pas ou a déjà été brisée sur {cible.mention}."
             ),
             color=discord.Color.light_grey()
         )
-        await channel.send(embed=embed_rate)
+        await msg_suspense.edit(embed=embed_rate)
 
-    await channel.send("➡️ *Prêt pour la suite ? Tapez `!s` pour la question suivante.*")
+    await channel.send("➡️ *Prêt pour la suite ? Tapez `!s` pour lancer la question suivante.*")
 
 
 async def action_question_suivante(channel: discord.TextChannel, auteur: discord.Member):
@@ -9326,12 +9378,9 @@ async def on_message(message: discord.Message):
             await message.channel.send("🔄 *Liste réinitialisée à la Question 1.*", delete_after=3)
             return
 
-    # 3. INTERCEPTION & SUPPRESSION DES RÉPONSES AUX QUESTIONS RAPIDES
+    # 3. INTERCEPTION DES RÉPONSES (10S CHRONO - VISIBLES DANS LE CHAT)
     if SESSION_JEU.get("actif") and message.channel.id == SESSION_JEU.get("channel_id"):
-        try:
-            await message.delete()
-        except discord.DiscordException:
-            pass
+        # Les messages restent désormais visibles dans le salon
 
         chrono = time.time() - SESSION_JEU["top_depart"]
         uid = message.author.id
@@ -9356,7 +9405,6 @@ async def on_message(message: discord.Message):
                 )
                 await salon_orga.send(embed=embed_log)
         return
-
     # 4. MODULE BROUILLEUR
     if message.channel.id in SALONS_BROUILLEUR_ACTIFS and message.content.strip():
         if not message.content.startswith(("!", "/")):
