@@ -9136,15 +9136,46 @@ async def cloturer_question_et_donner_main(channel: discord.TextChannel):
     
     await channel.send(content=vainqueur.mention, embed=embed_resultat)
 
-async def action_casser_fleche(channel: discord.TextChannel, tireur: discord.Member, cible: discord.Member, numero_f: int):
-    # 1. Vérification tireur légitime
+async def action_casser_fleche(channel: discord.TextChannel, tireur: discord.Member, message_content: str, mentions_utilisateurs: list, mentions_roles: list):
+    # 1. Vérification du tireur légitime
     if not est_role_orga(tireur) and tireur.id != SESSION_JEU.get("tireur_autorise_id"):
         await channel.send(f"⛔ {tireur.mention}, ce n'est pas ton tour de tirer !", delete_after=5)
         return
 
-    # 2. Vérification cible
+    # 2. Résolution de la cible (soit un utilisateur mentionné, soit un rôle mentionné)
+    cible = None
+    numero_f = None
+
+    # Extraction du numéro dans le message
+    parties = message_content.split()
+    for p in parties:
+        if p.isdigit():
+            numero_f = int(p)
+            break
+
+    # Cas A : Un utilisateur a été tagué (@Pseudo)
+    if mentions_utilisateurs:
+        cible = mentions_utilisateurs[0]
+
+    # Cas B : Un rôle a été tagué (@Role) et aucun utilisateur direct
+    elif mentions_roles:
+        role_cible = mentions_roles[0]
+        # On cherche le premier membre du serveur qui a ce rôle et qui est enregistré dans les flèches
+        for m in role_cible.members:
+            if m.id in ETAT_FLECHES:
+                cible = m
+                break
+        # Si aucun membre enregistré n'a ce rôle, on prend juste le premier membre du rôle par défaut
+        if not cible and role_cible.members:
+            cible = role_cible.members[0]
+
+    # Validation de la cible et du numéro
+    if not cible or numero_f is None:
+        await channel.send("⚠️ Syntaxe invalide. Utilise : `!casser @Joueur ou @Role <numero>` *(ex: `!casser @Achille 5`)*", delete_after=6)
+        return
+
     if cible.id not in ETAT_FLECHES:
-        await channel.send(f"⚠️ {cible.mention} n'a pas de flèches enregistrées pour cette épreuve.", delete_after=5)
+        await channel.send(f"⚠️ {cible.display_name} n'a pas de flèches enregistrées pour cette épreuve.", delete_after=5)
         return
 
     # Consomme le droit de tir immédiatement pour éviter les spams
@@ -9316,15 +9347,16 @@ async def on_message(message: discord.Message):
 
     contenu = message.content.strip()
 
-    # 1. ÉPREUVE DES FLÈCHES : !casser @Candidat <num>
+    # 1. ÉPREUVE DES FLÈCHES : !casser @Candidat ou @Role <num>
     if contenu.lower().startswith("!casser "):
-        parties = contenu.split()
-        if len(parties) >= 3 and message.mentions:
-            cible = message.mentions[0]
-            num_str = parties[2]
-            if num_str.isdigit():
-                await action_casser_fleche(message.channel, message.author, cible, int(num_str))
-                return
+        await action_casser_fleche(
+            channel=message.channel,
+            tireur=message.author,
+            message_content=contenu,
+            mentions_utilisateurs=message.mentions,
+            mentions_roles=message.role_mentions
+        )
+        return
 
     # 2. COMMANDES ORGAS (!s, !charger, !stop, !reset_q)
     if contenu.startswith("!") and isinstance(message.author, discord.Member) and est_role_orga(message.author):
