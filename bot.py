@@ -8885,7 +8885,210 @@ async def depouiller_vote(interaction: discord.Interaction, candidat: discord.Me
         await terminer_et_bruler(interaction.channel, elimine)
         del SESSIONS_CONSEIL[cid]
 
+# ==============================================================================
+# CONSEIL ASSURANCE SURVIE
+# ==============================================================================
 
+@bot.tree.command(
+    name="demarrer_conseil_assurance",
+    description="Initialise un conseil avec un joueur ayant joué une Assurance Survie."
+)
+@app_commands.describe(
+    equipe="Rôle de la tribu convoquée au conseil",
+    total_votants="Nombre total de bulletins dans l'urne",
+    joueur_assure="Le joueur qui a joué son assurance survie"
+)
+@app_commands.check(est_orga_ou_admin)
+async def demarrer_conseil_assurance(
+    interaction: discord.Interaction, 
+    equipe: discord.Role, 
+    total_votants: int,
+    joueur_assure: discord.Member
+):
+    if total_votants < 2:
+        await interaction.response.send_message("❌ Il faut au moins 2 votants.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    membres = [m for m in equipe.members if not m.bot]
+    if not membres:
+        await interaction.followup.send(f"❌ Aucun membre trouvé sous le rôle {equipe.mention}.", ephemeral=True)
+        return
+
+    banque_noms = await pregenerer_variantes_equipe_ia(membres)
+
+    SESSIONS_CONSEIL[interaction.channel_id] = {
+        "equipe": equipe,
+        "total_votants": total_votants,
+        "decompte": Counter(),
+        "votes_depouilles": 0,
+        "banque_variantes": banque_noms,
+        "joueur_assure": joueur_assure,
+        "type": "assurance",
+        "termine": False
+    }
+
+    embed = discord.Embed(
+        title="🛡️ CONSEIL D'IMMUNITÉ - ASSURANCE SURVIE JOUÉE",
+        description=(
+            f"Tribu convoquée : {equipe.mention} (**{len(membres)} aventuriers**)\n"
+            f"📥 **{total_votants} bulletins** dans l'urne.\n"
+            f"🛡️ **Assurance Survie activée** par {joueur_assure.mention} !\n\n"
+            "✨ *Tous les bulletins doivent être dépouillés pour déterminer la sentence.*\n\n"
+            "*« L'assurance protège celui qui la joue uniquement s'il réunit le plus grand nombre de suffrages. »*"
+        ),
+        color=discord.Color.blue()
+    )
+    embed.set_footer(text="Enchaîne les bulletins avec /devoiler_vote_assurance")
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(
+    name="devoiler_vote_assurance",
+    description="Sors et affiche le prochain bulletin pour un conseil sous assurance."
+)
+@app_commands.describe(candidat="La personne dont le nom est sur ce bulletin")
+@app_commands.check(est_orga_ou_admin)
+async def devoiler_vote_assurance(interaction: discord.Interaction, candidat: discord.Member):
+    cid = interaction.channel_id
+    if cid not in SESSIONS_CONSEIL:
+        await interaction.response.send_message("❌ Aucun conseil en cours ici.", ephemeral=True)
+        return
+
+    session = SESSIONS_CONSEIL[cid]
+    if session.get("type") != "assurance":
+        await interaction.response.send_message("⚠️ Ce conseil n'est pas un conseil Assurance Survie. Utilise `/depouiller_vote`.", ephemeral=True)
+        return
+
+    if session["termine"]:
+        await interaction.response.send_message("⚠️ Ce conseil est déjà terminé.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    session["votes_depouilles"] += 1
+    index = session["votes_depouilles"]
+    session["decompte"][candidat.id] += 1
+
+    pool = session["banque_variantes"].get(candidat.id, [])
+    if not pool:
+        pool = [candidat.display_name.upper(), candidat.display_name.upper() + "E"]
+        session["banque_variantes"][candidat.id] = pool
+
+    nom_choisi = pool.pop(0)
+    pool.append(nom_choisi)
+
+    img_buf = await asyncio.to_thread(creer_image_parchemin_depuis_jpeg, nom_choisi)
+    fichier = discord.File(img_buf, filename="bulletin.png")
+
+    lignes = [
+        f"▫️ **{(interaction.guild.get_member(uid) or candidat).display_name}** : {cnt} vote{'s' if cnt > 1 else ''}"
+        for uid, cnt in session["decompte"].most_common()
+    ]
+
+    embed_vote = discord.Embed(
+        title=f"📜 BULLETIN #{index} SUR {session['total_votants']} (ASSURANCE)",
+        description=(
+            f"Le nom inscrit est : **{nom_choisi}** *(pour {candidat.mention})*.\n\n"
+            f"📊 **État de l'urne :**\n" + "\n".join(lignes)
+        ),
+        color=discord.Color.from_rgb(212, 175, 55)
+    )
+    embed_vote.set_image(url="attachment://bulletin.png")
+    await interaction.followup.send(file=fichier, embed=embed_vote)
+
+    # Fin du dépouillement : Résolution de l'assurance
+    if session["votes_depouilles"] >= session["total_votants"]:
+        session["termine"] = True
+        classement = session["decompte"].most_common()
+        joueur_assure = session["joueur_assure"]
+
+        if not classement:
+            await interaction.channel.send("❌ Aucun vote enregistre.")
+            del SESSIONS_CONSEIL[cid]
+            return
+
+        top_score = classement[0][1]
+        presents_en_tete = [uid for uid, score in classement if score == top_score]
+
+        # Égalité pour la 1ère place
+        if len(presents_en_tete) > 1:
+            mentions_egalite = ", ".join([f"<@{uid}>" for uid in presents_en_tete])
+            embed_egalite = discord.Embed(
+                title="⚖️ ÉGALITÉ AU SOMMET !",
+                description=(
+                    f"Il y a une égalité à la première place entre {mentions_egalite} avec **{top_score} votes**.\n\n"
+                    "L'assurance ne peut pas trancher seule. **Un revote ou une égalité doit être tranché(e) !**"
+                ),
+                color=discord.Color.gold()
+            )
+            await interaction.channel.send(embed=embed_egalite)
+            del SESSIONS_CONSEIL[cid]
+            return
+
+        # Vainqueur absolu des suffrages
+        premier_uid = classement[0][0]
+
+        if premier_uid == joueur_assure.id:
+            # L'assurance est validée !
+            if len(classement) < 2:
+                # Tous les votes étaient contre l'assuré uniquement
+                embed_seul = discord.Embed(
+                    title="🛡️ ASSURANCE ACTIVÉE ! MAIS...",
+                    description=f"{joueur_assure.mention} a reçu la totalité des votes et est **immunisé(e)** ! Aucun second candidat à éliminer.",
+                    color=discord.Color.green()
+                )
+                await interaction.channel.send(embed=embed_seul)
+            else:
+                second_uid = classement[1][0]
+                second_score = classement[1][1]
+                
+                # Vérification s'il y a égalité pour la 2ème place
+                presents_deuxieme = [uid for uid, score in classement if score == second_score and uid != premier_uid]
+                
+                if len(presents_deuxieme) > 1:
+                    mentions_2nd = ", ".join([f"<@{uid}>" for uid in presents_deuxieme])
+                    embed_eg2 = discord.Embed(
+                        title="🛡️ ASSURANCE ACTIVÉE - ÉGALITÉ EN 2ÈME PLACE",
+                        description=(
+                            f"🛡️ {joueur_assure.mention} arrive 1er ({top_score} votes) et est **IMMUNISÉ(E)** grâce à son assurance !\n\n"
+                            f"⚠️ En revanche, il y a une égalité pour la 2ème place entre {mentions_2nd} ({second_score} votes).\n"
+                            "**Un revote est nécessaire pour départager les 2èmes.**"
+                        ),
+                        color=discord.Color.orange()
+                    )
+                    await interaction.channel.send(embed=embed_eg2)
+                else:
+                    elimine = interaction.guild.get_member(second_uid) or candidat
+                    embed_sauve = discord.Embed(
+                        title="🛡️ L'ASSURANCE SURVIE A PARLÉ !",
+                        description=(
+                            f"🛡️ {joueur_assure.mention} termine 1er avec **{top_score} votes** et est **IMMUNISÉ(E)** !\n\n"
+                            f"☠️ C'est donc le 2ème du conseil, **{elimine.mention}** ({second_score} votes), qui est éliminé(e) !"
+                        ),
+                        color=discord.Color.dark_purple()
+                    )
+                    await interaction.channel.send(embed=embed_sauve)
+                    await asyncio.sleep(2)
+                    await terminer_et_bruler(interaction.channel, elimine)
+        else:
+            # L'assuré n'est pas arrivé seul 1er : l'assurance ne le sauve pas
+            elimine = interaction.guild.get_member(premier_uid) or candidat
+            embed_echec = discord.Embed(
+                title="❌ ASSURANCE INUTILE...",
+                description=(
+                    f" critical {joueur_assure.mention} n'est pas arrivé(e) en tête du conseil.\n\n"
+                    f"☠️️ **{elimine.mention}** termine 1er avec **{top_score} votes** et est éliminé(e) !"
+                ),
+                color=discord.Color.red()
+            )
+            await interaction.channel.send(embed=echec if 'echec' in locals() else embed_echec)
+            await asyncio.sleep(2)
+            await terminer_et_bruler(interaction.channel, elimine)
+
+        del SESSIONS_CONSEIL[cid]
+        
 @bot.tree.command(
     name="annuler_conseil",
     description="Annule et réinitialise la séance de dépouillement en cours."
