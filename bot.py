@@ -867,6 +867,7 @@ async def on_ready():
         horloge_serveur.start()
     print(f"🤖 Bot connecté en tant que : {bot.user}")
     print(f"⏰ Horloge active : Récapitulatif à 23h30 Paris | Questions à 09h00 Paris.")
+    await relancer_boucles_indices_apres_crash(bot)
 
 
 @bot.event
@@ -10097,17 +10098,6 @@ async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: in
 
     except asyncio.CancelledError:
         pass
-
-
-# ==============================================================================
-# ÉVÉNEMENT DU BOT (CHARGEMENT AUTO AU RE-DÉMARRAGE)
-# ==============================================================================
-
-@bot.event
-async def on_ready():
-    print(f"✅ Bot connecté sous {bot.user}")
-    await relancer_boucles_indices_apres_crash(bot)
-
 
 # ==============================================================================
 # COMMANDES DU BOT
