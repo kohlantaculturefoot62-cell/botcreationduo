@@ -10064,7 +10064,7 @@ async def lancer_destination_x(interaction: discord.Interaction):
         await interaction.response.send_message("⚠️ Tu as déjà lancé ton épreuve pour cette étape !", ephemeral=True)
         return
 
-    maintenant = datetime.now(timezone.utc)
+    maintenant = datetime.datetime.now(datetime.timezone.utc)
 
     session["joueurs"][uid] = {
         "debut": maintenant,
@@ -10105,7 +10105,7 @@ async def repondre_destination(interaction: discord.Interaction, proposition: st
         await interaction.response.send_message("⚠️ Tu as déjà enregistré ta réponse finale pour cette étape !", ephemeral=True)
         return
 
-    maintenant = datetime.now(timezone.utc)
+    maintenant = datetime.datetime.now(datetime.timezone.utc)
     duree_sec = (maintenant - infos_joueur["debut"]).total_seconds()
 
     # Vérification de la limite de 1h30 (5400s)
