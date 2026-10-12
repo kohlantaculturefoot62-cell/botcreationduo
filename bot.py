@@ -10082,40 +10082,64 @@ async def repondre_destination(interaction: discord.Interaction, proposition: st
     await interaction.response.send_message(embed_validation)
 
 
-@bot.tree.command(name="destination_fermer_etape", description="Ferme l'étape active et affiche les résultats.")
+@bot.tree.command(name="destination_fermer_etape", description="Ferme l'étape active dans TOUS les confessionnaux et affiche le bilan global.")
+@app_commands.describe(etape="Numéro de l'étape à fermer (optionnel si fermé depuis un confessionnal active)")
 @app_commands.check(est_orga_ou_admin)
-async def destination_fermer_etape(interaction: discord.Interaction):
-    cid = interaction.channel_id
-    if cid not in SESSION_DESTINATION or not SESSION_DESTINATION[cid]["active"]:
-        await interaction.response.send_message("❌ Aucune étape active à fermer ici.", ephemeral=True)
+async def destination_fermer_etape(interaction: discord.Interaction, etape: int | None = None):
+    # Si l'étape n'est pas spécifiée, on essaie de la deviner depuis le salon courant
+    if etape is None:
+        session_courante = SESSION_DESTINATION.get(interaction.channel_id)
+        if session_courante:
+            etape = session_courante["etape"]
+        else:
+            await interaction.response.send_message(
+                "❌ Précise le numéro de l'étape à fermer (ex: `/destination_fermer_etape etape:1`).", 
+                ephemeral=True
+            )
+            return
+
+    # Recherche de tous les confessionnaux/salons ayant cette étape active ou enregistrée
+    salons_concernes = [
+        cid for cid, s in SESSION_DESTINATION.items() 
+        if s.get("etape") == etape
+    ]
+
+    if not salons_concernes:
+        await interaction.response.send_message(f"❌ Aucune session trouvée pour l'Étape #{etape}.", ephemeral=True)
         return
 
-    session = SESSION_DESTINATION[cid]
-    session["active"] = False
+    # On clôture et annule les tâches d'indices sur TOUS les salons de cette étape
+    lignes_resultats = []
 
-    for data in session["joueurs"].values():
-        if data["tache_indices"] and not data["tache_indices"].done():
-            data["tache_indices"].cancel()
+    for cid in salons_concernes:
+        session = SESSION_DESTINATION[cid]
+        session["active"] = False
+
+        for uid, data in session["joueurs"].items():
+            # Annulation des tâches d'envoi d'indices
+            if data["tache_indices"] and not data["tache_indices"].done():
+                data["tache_indices"].cancel()
+
+            # Récupération du nom du membre (sur le serveur)
+            membre = interaction.guild.get_member(uid)
+            nom = membre.display_name if membre else f"<@{uid}>"
+
+            if data["reponse"] is not None:
+                mins = int(data["temps_ecoule_sec"] // 60)
+                secs = int(data["temps_ecoule_sec"] % 60)
+                lignes_resultats.append((data["temps_ecoule_sec"], f"✅ **{nom}** : `{data['reponse']}` *(en {mins}m {secs}s)*"))
+            else:
+                lignes_resultats.append((999999, f"❌ **{nom}** : *Pas de réponse enregistrée*"))
 
     sauvegarder_sessions()
 
-    lignes = []
-    for uid, data in session["joueurs"].items():
-        membre = interaction.guild.get_member(uid)
-        nom = membre.display_name if membre else f"<@{uid}>"
-
-        if data["reponse"] is not None:
-            mins = int(data["temps_ecoule_sec"] // 60)
-            secs = int(data["temps_ecoule_sec"] % 60)
-            lignes.append(f"✅ **{nom}** : `{data['reponse']}` *(en {mins}m {secs}s)*")
-        else:
-            lignes.append(f"❌ **{nom}** : *Pas de réponse enregistrée*")
-
-    text_desc = "\n".join(lignes) if lignes else "Aucun joueur n'avait lancé l'épreuve."
+    # Trier les résultats par temps de réponse (les plus rapides en premier)
+    lignes_resultats.sort(key=lambda x: x[0])
+    text_desc = "\n".join([ligne for _, ligne in lignes_resultats]) if lignes_resultats else "Aucun joueur n'a participé."
 
     embed = discord.Embed(
-        title=f"🔒 DESTINATION X — ÉTAPE {session['etape']} FERMÉE",
-        description=f"📊 **Bilan des réponses :**\n{text_desc}",
+        title=f"🔒 BILAN GLOBAL — DESTINATION X (ÉTAPE {etape})",
+        description=f"📊 **Résultats de tous les confessionnaux :**\n\n{text_desc}",
         color=discord.Color.red()
     )
     await interaction.response.send_message(embed=embed)
