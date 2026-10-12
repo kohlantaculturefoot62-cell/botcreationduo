@@ -10056,8 +10056,8 @@ async def destination_ouvrir_etape(interaction: discord.Interaction, etape: int)
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="lancer_epreuve", description="Démarre ton épreuve, le chrono de 1h30 et la réception des indices.")
-async def lancer_epreuve(interaction: discord.Interaction):
+@bot.tree.command(name="lancer_destination_X", description="Démarre ton épreuve, le chrono de 1h30 et la réception des indices.")
+async def lancer_destination_X(interaction: discord.Interaction):
     cid = interaction.channel_id
     if cid not in SESSION_DESTINATION or not SESSION_DESTINATION[cid]["active"]:
         await interaction.response.send_message("❌ Aucune étape de Destination X n'est active ici.", ephemeral=True)
