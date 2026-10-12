@@ -10128,7 +10128,7 @@ async def destination_ouvrir_etape(interaction: discord.Interaction, etape: int)
         title=f"🚀 DESTINATION X — ÉTAPE {etape} DISPONIBLE",
         description=(
             f"L'étape **#{etape}** est prête pour ce confessionnal.\n\n"
-            "▶️ Utilise `/lancer_epreuve` dès que tu souhaites commencer.\n"
+            "▶️ Utilise `/lancer_destination_x` dès que tu souhaites commencer.\n"
             "⏳ À partir du lancement, tu as **1h30** pour donner ta réponse.\n"
             "📍 Tu recevras **6 indices ici** (1 toutes les 10 minutes).\n"
             "📝 Utilise `/repondre_destination` pour valider ta localisation."
@@ -10138,8 +10138,8 @@ async def destination_ouvrir_etape(interaction: discord.Interaction, etape: int)
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="lancer_epreuve", description="Démarre ton épreuve, le chrono de 1h30 et la réception des indices.")
-async def lancer_epreuve(interaction: discord.Interaction):
+@bot.tree.command(name="lancer_destination_x", description="Démarre ton épreuve, le chrono de 1h30 et la réception des indices.")
+async def lancer_destination_x(interaction: discord.Interaction):
     cid = interaction.channel_id
     if cid not in SESSION_DESTINATION or not SESSION_DESTINATION[cid]["active"]:
         await interaction.response.send_message("❌ Aucune étape de Destination X n'est active ici.", ephemeral=True)
@@ -10185,7 +10185,7 @@ async def repondre_destination(interaction: discord.Interaction, proposition: st
 
     uid = interaction.user.id
     if uid not in session["joueurs"]:
-        await interaction.response.send_message("❌ Tu n'as pas encore lancé ton épreuve avec `/lancer_epreuve`.", ephemeral=True)
+        await interaction.response.send_message("❌ Tu n'as pas encore lancé ton épreuve avec `/lancer_destination_x`.", ephemeral=True)
         return
 
     infos_joueur = session["joueurs"][uid]
@@ -10252,7 +10252,7 @@ async def destination_fermer_etape(interaction: discord.Interaction):
             secs = int(data["temps_ecoule_sec"] % 60)
             lignes.append(f"✅ **{nom}** : `{data['reponse']}` *(en {mins}m {secs}s)*")
         else:
-            lignes.append(f"❌ **{nom}** : *Pas de réponse enregistrée*")
+            lignes.append(f"❌ **{nom}** : *Pas de réponse enregistrée*" )
 
     text_desc = "\n".join(lignes) if lignes else "Aucun joueur n'avait lancé l'épreuve."
 
