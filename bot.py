@@ -10287,6 +10287,58 @@ async def destination_fermer_etape(interaction: discord.Interaction):
         color=discord.Color.red()
     )
     await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(
+    name="configurer_permissions_spectateurs",
+    description="Autorise le rôle Spectateur aux commandes uniquement dans ses salons accessibles."
+)
+@app_commands.describe(role_spectateur="Le rôle Spectateur du serveur")
+@app_commands.check(est_orga_ou_admin)
+async def configurer_permissions_spectateurs(
+    interaction: discord.Interaction, 
+    role_spectateur: discord.Role
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    if not guild:
+        await interaction.followup.send("❌ Cette commande doit être exécutée dans un serveur.", ephemeral=True)
+        return
+
+    compteur_modifies = 0
+    compteur_ignores = 0
+    erreurs = 0
+
+    for channel in guild.text_channels:
+        try:
+            # Récupère les permissions effectives du rôle dans ce salon
+            permissions = channel.permissions_for(role_spectateur)
+
+            # On vérifie si le spectateur peut VOIR ce salon
+            if permissions.view_channel:
+                overwrites = channel.overwrites_for(role_spectateur)
+                overwrites.use_application_commands = True
+                
+                await channel.set_permissions(
+                    role_spectateur, 
+                    overwrite=overwrites, 
+                    reason="Activation des commandes d'application dans les salons accessibles aux spectateurs."
+                )
+                compteur_modifies += 1
+            else:
+                compteur_ignores += 1
+
+        except Exception as e:
+            erreurs += 1
+
+    await interaction.followup.send(
+        f"✅ **Configuration terminée !**\n"
+        f"▫️ Salons mis à jour : **{compteur_modifies}**\n"
+        f"▫️ Salons masqués/ignorés : **{compteur_ignores}**\n"
+        f"▫️ Erreurs : **{erreurs}**\n\n"
+        f"Les spectateurs peuvent désormais utiliser les commandes d'application uniquement dans les salons qu'ils peuvent voir !",
+        ephemeral=True
+    )
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
