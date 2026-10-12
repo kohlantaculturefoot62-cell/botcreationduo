@@ -9962,6 +9962,7 @@ def sauvegarder_sessions():
     for cid, s in SESSION_DESTINATION.items():
         data[str(cid)] = {
             "etape": s["etape"],
+            "intervalle_minutes": s.get("intervalle_minutes", 10),
             "active": s["active"],
             "joueurs": {
                 str(uid): {
@@ -9990,6 +9991,7 @@ def charger_sessions():
             cid = int(cid_str)
             SESSION_DESTINATION[cid] = {
                 "etape": s["etape"],
+                "intervalle_minutes": s.get("intervalle_minutes", 10),
                 "active": s["active"],
                 "joueurs": {}
             }
@@ -10037,17 +10039,18 @@ async def relancer_boucles_indices_apres_crash(bot: commands.Bot):
         for uid, j in s["joueurs"].items():
             if j["reponse"] is None:
                 duree_actuelle = (maintenant - j["debut"]).total_seconds()
-                if duree_actuelle < 5400:  # Si moins de 1h30
-                    tache = asyncio.create_task(
-                        boucle_indices_confessionnal(channel, uid, s["etape"])
-                    )
-                    j["tache_indices"] = tache
+                if duree_actuelle < 5400:  # Moins de 1h30
+                    if j.get("tache_indices") is None or j["tache_indices"].done():
+                        tache = asyncio.create_task(
+                            boucle_indices_confessionnal(channel, uid, s["etape"])
+                        )
+                        j["tache_indices"] = tache
 
 
 async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: int, etape: int):
-    """Gère l'envoi intelligent des indices sans renvoyer ce qui l'a déjà été."""
+    """Parcourt les indices de 1 à 6 et attend le moment exact défini par l'intervalle."""
     try:
-        while True:
+        for idx in range(1, 7):
             session_salon = SESSION_DESTINATION.get(channel.id)
             if not session_salon or not session_salon["active"] or user_id not in session_salon["joueurs"]:
                 break
@@ -10056,24 +10059,35 @@ async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: in
             if infos_joueur["reponse"] is not None:
                 break
 
+            indices_envoyes = infos_joueur.setdefault("indices_envoyes", set())
+
+            # Durée de l'intervalle configuré pour cette étape (par défaut 10 minutes = 600s)
+            intervalle_sec = session_salon.get("intervalle_minutes", 10) * 60
+
+            # Calcul du moment exact où l'indice 'idx' doit tomber
+            temps_cible_sec = (idx - 1) * intervalle_sec
             maintenant = datetime.datetime.now(datetime.timezone.utc)
             temps_ecoule = (maintenant - infos_joueur["debut"]).total_seconds()
 
-            if temps_ecoule >= 5400:
+            if temps_ecoule >= 5400:  # Limite 1h30
                 break
 
-            prochain_indice = int(temps_ecoule // 600) + 1
-            if prochain_indice > 6:
-                prochain_indice = 6
+            # Si le temps n'est pas encore venu pour cet indice, on attend la différence exacte
+            if temps_ecoule < temps_cible_sec:
+                attente = temps_cible_sec - temps_ecoule
+                await asyncio.sleep(attente)
 
-            indices_envoyes = infos_joueur.setdefault("indices_envoyes", set())
+            # Re-vérifier après l'attente
+            if infos_joueur["reponse"] is not None:
+                break
 
-            if prochain_indice not in indices_envoyes:
-                fichier_path = trouver_fichier_indice(etape, prochain_indice)
+            # Envoyer l'indice s'il n'a jamais été envoyé
+            if idx not in indices_envoyes:
+                fichier_path = trouver_fichier_indice(etape, idx)
 
                 embed = discord.Embed(
                     title=f"🧭 DESTINATION X — ÉTAPE {etape}",
-                    description=f"📍 **Indice #{prochain_indice} / 6**",
+                    description=f"📍 **Indice #{idx} / 6**",
                     color=discord.Color.blue()
                 )
 
@@ -10082,34 +10096,14 @@ async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: in
                     embed.set_image(url=f"attachment://{os.path.basename(fichier_path)}")
                     await channel.send(embed=embed, file=fichier_discord)
                 else:
-                    embed.description += f"\n⚠️ *(Fichier d'indice `Etape {etape} Indice {prochain_indice}` introuvable)*"
+                    embed.description += f"\n⚠️ *(Fichier d'indice `Etape {etape} Indice {idx}` introuvable)*"
                     await channel.send(embed=embed)
 
-                indices_envoyes.add(prochain_indice)
-                sauvegarder_sessions()  # Sauvegarder immédiatement l'indice envoyé !
-
-            if len(indices_envoyes) >= 6:
-                break
-
-            temps_prochain_indice = len(indices_envoyes) * 600
-            temps_attente = temps_prochain_indice - temps_ecoule
-            if temps_attente > 0:
-                await asyncio.sleep(temps_attente)
-            else:
-                await asyncio.sleep(5)
+                indices_envoyes.add(idx)
+                sauvegarder_sessions()
 
     except asyncio.CancelledError:
         pass
-
-
-# ==============================================================================
-# ÉVÉNEMENT DU BOT
-# ==============================================================================
-
-@bot.event
-async def on_ready():
-    print(f"✅ Bot connecté sous {bot.user}")
-    await relancer_boucles_indices_apres_crash(bot)
 
 
 # ==============================================================================
@@ -10117,11 +10111,15 @@ async def on_ready():
 # ==============================================================================
 
 @bot.tree.command(name="destination_ouvrir_etape", description="Ouvre une étape de Destination X dans ce confessionnal.")
-@app_commands.describe(etape="Numéro de l'étape")
+@app_commands.describe(
+    etape="Numéro de l'étape",
+    intervalle_minutes="Temps en minutes entre chaque indice (par défaut: 10)"
+)
 @app_commands.check(est_orga_ou_admin)
-async def destination_ouvrir_etape(interaction: discord.Interaction, etape: int):
+async def destination_ouvrir_etape(interaction: discord.Interaction, etape: int, intervalle_minutes: int = 10):
     SESSION_DESTINATION[interaction.channel_id] = {
         "etape": etape,
+        "intervalle_minutes": intervalle_minutes,
         "active": True,
         "joueurs": {}
     }
@@ -10133,7 +10131,7 @@ async def destination_ouvrir_etape(interaction: discord.Interaction, etape: int)
             f"L'étape **#{etape}** est prête pour ce confessionnal.\n\n"
             "▶️ Utilise `/lancer_destination_x` dès que tu souhaites commencer.\n"
             "⏳ À partir du lancement, tu as **1h30** pour donner ta réponse.\n"
-            "📍 Tu recevras **6 indices ici** (1 toutes les 10 minutes).\n"
+            f"📍 Tu recevras **6 indices ici** (1 toutes les **{intervalle_minutes} min**).\n"
             "📝 Utilise `/repondre_destination` pour valider ta localisation."
         ),
         color=discord.Color.gold()
@@ -10225,7 +10223,7 @@ async def repondre_destination(interaction: discord.Interaction, proposition: st
         ),
         color=discord.Color.green()
     )
-    await interaction.response.send_message(embed=embed_validation)
+    await interaction.response.send_message(embed_validation)
 
 
 @bot.tree.command(name="destination_fermer_etape", description="Ferme l'étape active et affiche les résultats.")
