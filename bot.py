@@ -9950,7 +9950,7 @@ async def slam_valider_mot(interaction: discord.Interaction, numero: int):
 
 
 # ==============================================================================
-# SAUVEGARDE PERSISTANTE (ANTI-CRASH)
+# SAUVEGARDE PERSISTANTE (ANTI-CRASH ET ANTI-DOUBLON)
 # ==============================================================================
 
 FICHIER_SAUVEGARDE = "destination_sessions.json"
@@ -9967,7 +9967,8 @@ def sauvegarder_sessions():
                 str(uid): {
                     "debut": j["debut"].isoformat(),
                     "reponse": j["reponse"],
-                    "temps_ecoule_sec": j["temps_ecoule_sec"]
+                    "temps_ecoule_sec": j["temps_ecoule_sec"],
+                    "indices_envoyes": list(j.get("indices_envoyes", set()))
                 }
                 for uid, j in s["joueurs"].items()
             }
@@ -9998,6 +9999,7 @@ def charger_sessions():
                     "debut": datetime.datetime.fromisoformat(j["debut"]),
                     "reponse": j["reponse"],
                     "temps_ecoule_sec": j["temps_ecoule_sec"],
+                    "indices_envoyes": set(j.get("indices_envoyes", [])),
                     "tache_indices": None
                 }
     except Exception as e:
@@ -10043,7 +10045,7 @@ async def relancer_boucles_indices_apres_crash(bot: commands.Bot):
 
 
 async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: int, etape: int):
-    """Gère l'envoi intelligent des indices en tenant compte du temps réel écoulé."""
+    """Gère l'envoi intelligent des indices sans renvoyer ce qui l'a déjà été."""
     try:
         while True:
             session_salon = SESSION_DESTINATION.get(channel.id)
@@ -10057,7 +10059,6 @@ async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: in
             maintenant = datetime.datetime.now(datetime.timezone.utc)
             temps_ecoule = (maintenant - infos_joueur["debut"]).total_seconds()
 
-            # Si 1h30 écoulée
             if temps_ecoule >= 5400:
                 break
 
@@ -10085,6 +10086,7 @@ async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: in
                     await channel.send(embed=embed)
 
                 indices_envoyes.add(prochain_indice)
+                sauvegarder_sessions()  # Sauvegarder immédiatement l'indice envoyé !
 
             if len(indices_envoyes) >= 6:
                 break
@@ -10098,6 +10100,17 @@ async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: in
 
     except asyncio.CancelledError:
         pass
+
+
+# ==============================================================================
+# ÉVÉNEMENT DU BOT
+# ==============================================================================
+
+@bot.event
+async def on_ready():
+    print(f"✅ Bot connecté sous {bot.user}")
+    await relancer_boucles_indices_apres_crash(bot)
+
 
 # ==============================================================================
 # COMMANDES DU BOT
@@ -10242,7 +10255,7 @@ async def destination_fermer_etape(interaction: discord.Interaction):
             secs = int(data["temps_ecoule_sec"] % 60)
             lignes.append(f"✅ **{nom}** : `{data['reponse']}` *(en {mins}m {secs}s)*")
         else:
-            lignes.append(f"❌ **{nom}** : *Pas de réponse enregistrée*" )
+            lignes.append(f"❌ **{nom}** : *Pas de réponse enregistrée*")
 
     text_desc = "\n".join(lignes) if lignes else "Aucun joueur n'avait lancé l'épreuve."
 
