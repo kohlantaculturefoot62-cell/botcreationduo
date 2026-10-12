@@ -6192,9 +6192,32 @@ async def transcrire_audio_ia(audio_bytes: bytes, mime_type: str, auteur_nom: st
     except Exception as e:
         return f"❌ Erreur lors de l'analyse IA de l'audio : {e}"
 
+def est_orga_ou_admin_ou_spec(interaction: discord.Interaction) -> bool:
+    """Vérifie si l'utilisateur possède le rôle Orga, Admin ou Spectateur, ou s'il a la permission Administrateur."""
+    if not interaction.guild:
+        return False
 
+    # Permissions administrateur serveur Discord
+    if interaction.user.guild_permissions.administrator:
+        return True
+
+    # Noms ou IDs des rôles autorisés (à adapter selon les noms exacts sur ton serveur)
+    ROLES_AUTORISES = {"Orga", "Organisateur", "Admin", "Spectateur", "Spectateurs", "Staff"}
+
+    # Vérification par nom de rôle
+    noms_roles_utilisateur = {role.name for role in interaction.user.roles}
+    if not noms_roles_utilisateur.isdisjoint(ROLES_AUTORISES):
+        return True
+
+    # Alternative : Vérification par ID de rôle si tu préfères utiliser les IDs
+    # IDS_ROLES_AUTORISES = {123456789012345678, 234567890123456789}
+    # ids_roles_utilisateur = {role.id for role in interaction.user.roles}
+    # if not ids_roles_utilisateur.isdisjoint(IDS_ROLES_AUTORISES):
+    #     return True
+
+    return False
 @bot.tree.context_menu(name="Transcrire le vocal")
-@app_commands.check(est_orga_ou_admin)
+@app_commands.check(est_orga_ou_admin_ou_spec)
 async def transcrire_vocal_menu(interaction: discord.Interaction, message: discord.Message):
     """Commande Clic Droit -> Applications -> Transcrire le vocal (Éphémère)."""
     await interaction.response.defer(ephemeral=True)
