@@ -6218,6 +6218,7 @@ def est_orga_ou_admin_ou_spec(interaction: discord.Interaction) -> bool:
     return False
     
 @bot.tree.context_menu(name="Transcrire le vocal")
+@app_commands.check(est_orga_ou_admin_ou_spec)
 async def transcrire_vocal_menu(interaction: discord.Interaction, message: discord.Message):
     """Commande Clic Droit -> Applications -> Transcrire le vocal (Éphémère)."""
     await interaction.response.defer(ephemeral=True)
