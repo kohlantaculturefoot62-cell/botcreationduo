@@ -6319,7 +6319,7 @@ async def synthetiser_multiples_vocaux_ia(pieces_audio: list[dict], nom_salon: s
     nombre_vocaux="Nombre de notes vocales récentes à analyser (ex: 3, 5, 10 - défaut : 5)",
     salon="Optionnel : salon à scanner (par défaut : salon actuel)"
 )
-@app_commands.check(est_orga_ou_admin)
+@app_commands.check(est_orga_ou_admin_ou_spec)
 async def resumer_vocaux(
     interaction: discord.Interaction,
     nombre_vocaux: int = 5,
