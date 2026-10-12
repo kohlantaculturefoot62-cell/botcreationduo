@@ -18,6 +18,14 @@ from google import genai
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import json
+
+import os
+import glob
+import asyncio
+from datetime import datetime, timezone
+import discord
+from discord.ext import commands
+from discord import app_commands
 # ==========================================
 # CONFIGURATION & ENVIRONNEMENT
 # ==========================================
@@ -9944,6 +9952,196 @@ async def slam_valider_mot(interaction: discord.Interaction, numero: int):
     embed.set_image(url="attachment://grille_slam.png")
     await interaction.response.send_message(file=fichier, embed=embed)
 
+
+
+# ==============================================================================
+# CONFIGURATION ET ÉTAT DU JEU
+# ==============================================================================
+
+# Structure de la session :
+# SESSION_DESTINATION = {
+#     channel_id: {
+#         "etape": int,
+#         "active": bool,
+#         "joueurs": {
+#             user_id: {
+#                 "debut": datetime,
+#                 "reponse": str or None,
+#                 "temps_ecoule_sec": float or None,
+#                 "tache_indices": asyncio.Task or None
+#             }
+#         }
+#     }
+# }
+SESSION_DESTINATION = {}
+
+
+def trouver_fichier_indice(etape: int, indice: int) -> str | None:
+    """Cherche un fichier dans le dossier courant selon 'Etape X Indice Y*' (indépendant de l'extension)."""
+    # Cherche 'Etape 2 Indice 3 *.jpeg', '.png', etc. au même niveau que le bot
+    motif = f"Etape {etape} Indice {indice} *.*"
+    fichiers = glob.glob(motif)
+    if fichiers:
+        return fichiers[0]
+    
+    # Motif alternatif sans espace après le chiffre si besoin
+    motif_exact = f"Etape {etape} Indice {indice}.*"
+    fichiers_exacts = glob.glob(motif_exact)
+    return fichiers_exacts[0] if fichiers_exacts else None
+
+
+async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: int, etape: int):
+    """Envoie les 6 indices toutes les 10 minutes directement dans le salon confessionnal."""
+    try:
+        for idx in range(1, 7):
+            session_salon = SESSION_DESTINATION.get(channel.id)
+            if not session_salon or user_id not in session_salon["joueurs"]:
+                break
+
+            infos_joueur = session_salon["joueurs"][user_id]
+
+            # Si le joueur a déjà répondu, on stoppe l'envoi des indices
+            if infos_joueur["reponse"] is not None:
+                break
+
+            fichier_path = trouver_fichier_indice(etape, idx)
+
+            embed = discord.Embed(
+                title=f"🧭 DESTINATION X — ÉTAPE {etape}",
+                description=f"📍 **Indice #{idx} / 6**",
+                color=discord.Color.blue()
+            )
+
+            if fichier_path and os.path.exists(fichier_path):
+                fichier_discord = discord.File(fichier_path, filename=os.path.basename(fichier_path))
+                embed.set_image(url=f"attachment://{os.path.basename(fichier_path)}")
+                await channel.send(embed=embed, file=fichier_discord)
+            else:
+                embed.description += f"\n⚠️ *(Fichier d'indice `Etape {etape} Indice {idx}` introuvable)*"
+                await channel.send(embed=embed)
+
+            # Attendre 10 minutes (600s) avant le prochain indice
+            if idx < 6:
+                await asyncio.sleep(600)
+
+    except asyncio.CancelledError:
+        pass
+
+
+# ==============================================================================
+# COMMANDES DU BOT
+# ==============================================================================
+
+@bot.tree.command(name="destination_ouvrir_etape", description="Ouvre une étape de Destination X dans ce confessionnal.")
+@app_commands.describe(etape="Numéro de l'étape")
+@app_commands.check(est_orga_ou_admin)
+async def destination_ouvrir_etape(interaction: discord.Interaction, etape: int):
+    SESSION_DESTINATION[interaction.channel_id] = {
+        "etape": etape,
+        "active": True,
+        "joueurs": {}
+    }
+
+    embed = discord.Embed(
+        title=f"🚀 DESTINATION X — ÉTAPE {etape} DISPONIBLE",
+        description=(
+            f"L'étape **#{etape}** est prête pour ce confessionnal.\n\n"
+            "▶️ Utilise `/lancer_epreuve` dès que tu souhaites commencer.\n"
+            "⏳ À partir du lancement, tu as **1h30** pour donner ta réponse.\n"
+            "📍 Tu recevras **6 indices ici** (1 toutes les 10 minutes).\n"
+            "📝 Utilise `/repondre_destination` pour valider ta localisation."
+        ),
+        color=discord.Color.gold()
+    )
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="lancer_epreuve", description="Démarre ton épreuve, le chrono de 1h30 et la réception des indices.")
+async def lancer_epreuve(interaction: discord.Interaction):
+    cid = interaction.channel_id
+    if cid not in SESSION_DESTINATION or not SESSION_DESTINATION[cid]["active"]:
+        await interaction.response.send_message("❌ Aucune étape de Destination X n'est active ici.", ephemeral=True)
+        return
+
+    session = SESSION_DESTINATION[cid]
+    uid = interaction.user.id
+
+    if uid in session["joueurs"]:
+        await interaction.response.send_message("⚠️ Tu as déjà lancé ton épreuve pour cette étape !", ephemeral=True)
+        return
+
+    maintenant = datetime.now(timezone.utc)
+
+    session["joueurs"][uid] = {
+        "debut": maintenant,
+        "reponse": None,
+        "temps_ecoule_sec": None,
+        "tache_indices": None
+    }
+
+    await interaction.response.send_message(
+        f"✅ **Épreuve lancée pour l'Étape {session['etape']} !** Le chrono de **1h30** est lancé, voici ton premier indice ci-dessous :"
+    )
+
+    # Lancement de la boucle d'envoi d'indices dans le salon courant
+    tache = asyncio.create_task(
+        boucle_indices_confessionnal(interaction.channel, uid, session["etape"])
+    )
+    session["joueurs"][uid]["tache_indices"] = tache
+
+
+@bot.tree.command(name="repondre_destination", description="Envoie ta proposition finale pour l'étape.")
+@app_commands.describe(proposition="Ta réponse ou localisation finale")
+async def repondre_destination(interaction: discord.Interaction, proposition: str):
+    cid = interaction.channel_id
+    session = SESSION_DESTINATION.get(cid)
+
+    if not session or not session["active"]:
+        await interaction.response.send_message("❌ Aucune étape active ici.", ephemeral=True)
+        return
+
+    uid = interaction.user.id
+    if uid not in session["joueurs"]:
+        await interaction.response.send_message("❌ Tu n'as pas encore lancé ton épreuve avec `/lancer_epreuve`.", ephemeral=True)
+        return
+
+    infos_joueur = session["joueurs"][uid]
+
+    if infos_joueur["reponse"] is not None:
+        await interaction.response.send_message("⚠️ Tu as déjà enregistré ta réponse finale pour cette étape !", ephemeral=True)
+        return
+
+    maintenant = datetime.now(timezone.utc)
+    duree_sec = (maintenant - infos_joueur["debut"]).total_seconds()
+
+    # Vérification de la limite de 1h30 (5400s)
+    if duree_sec > 5400:
+        await interaction.response.send_message(
+            f"❌ **Temps dépassé !** Tu as mis {int(duree_sec // 60)} minutes. Ta réponse ne peut plus être prise en compte.",
+            ephemeral=True
+        )
+        return
+
+    # Enregistrement de la réponse
+    infos_joueur["reponse"] = proposition
+    infos_joueur["temps_ecoule_sec"] = duree_sec
+
+    # Arrêt de la tâche d'envoi d'indices
+    if infos_joueur["tache_indices"]:
+        infos_joueur["tache_indices"].cancel()
+
+    mins = int(duree_sec // 60)
+    secs = int(duree_sec % 60)
+
+    embed_validation = discord.Embed(
+        title="🎯 RÉPONSE ENREGISTRÉE",
+        description=(
+            f"📝 **Proposition :** `{proposition}`\n"
+            f"⏱️ **Temps écoulé :** {mins} min {secs} sec"
+        ),
+        color=discord.Color.green()
+    )
+    await interaction.response.send_message(embed=embed_validation)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
