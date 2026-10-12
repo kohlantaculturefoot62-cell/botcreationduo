@@ -10136,6 +10136,49 @@ async def repondre_destination(interaction: discord.Interaction, proposition: st
         color=discord.Color.green()
     )
     await interaction.response.send_message(embed=embed_validation)
+
+@bot.tree.command(name="destination_fermer_etape", description="Ferme l'étape active et annule tous les envois d'indices en cours.")
+@app_commands.check(est_orga_ou_admin)
+async def destination_fermer_etape(interaction: discord.Interaction):
+    cid = interaction.channel_id
+    if cid not in SESSION_DESTINATION or not SESSION_DESTINATION[cid]["active"]:
+        await interaction.response.send_message("❌ Aucune étape active à fermer dans ce salon.", ephemeral=True)
+        return
+
+    session = SESSION_DESTINATION[cid]
+    session["active"] = False
+
+    # Annulation de tous les timers d'indices en cours pour les joueurs qui n'ont pas encore fini
+    nb_annules = 0
+    for data in session["joueurs"].values():
+        if data["tache_indices"] and not data["tache_indices"].done():
+            data["tache_indices"].cancel()
+            nb_annules += 1
+
+    # Construction du récapitulatif
+    lignes = []
+    for uid, data in session["joueurs"].items():
+        membre = interaction.guild.get_member(uid)
+        nom = membre.display_name if membre else f"<@{uid}>"
+
+        if data["reponse"] is not None:
+            mins = int(data["temps_ecoule_sec"] // 60)
+            secs = int(data["temps_ecoule_sec"] % 60)
+            lignes.append(f"✅ **{nom}** : `{data['reponse']}` *(en {mins}m {secs}s)*")
+        else:
+            lignes.append(f"❌ **{nom}** : *Pas de réponse enregistrée (Étape fermée)*")
+
+    text_desc = "\n".join(lignes) if lignes else "Aucun joueur n'avait lancé l'épreuve."
+
+    embed = discord.Embed(
+        title=f"🔒 DESTINATION X — ÉTAPE {session['etape']} FERMÉE",
+        description=(
+            f"L'étape **#{session['etape']}** est maintenant terminée !\n\n"
+            f"📊 **Bilan des réponses :**\n{text_desc}"
+        ),
+        color=discord.Color.red()
+    )
+    await interaction.response.send_message(embed=embed)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
