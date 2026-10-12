@@ -9720,7 +9720,229 @@ async def on_message(message: discord.Message):
                     await message.channel.send(f"❌ Erreur attribution rôle : {e}")
 
     await bot.process_commands(message)
+GRID_WIDTH = 11
+GRID_HEIGHT = 11
 
+MOTS_SLAM = {
+    1:  {"mot": "BIOCHIMIE", "x": 1, "y": 0,  "dir": "H", "trouve": False},
+    2:  {"mot": "BAK",       "x": 1, "y": 0,  "dir": "V", "trouve": False},
+    3:  {"mot": "CHIEF",     "x": 4, "y": 0,  "dir": "V", "trouve": False},
+    4:  {"mot": "KOZIELLO",  "x": 1, "y": 2,  "dir": "H", "trouve": False},
+    5:  {"mot": "SHEFFIELD", "x": 1, "y": 4,  "dir": "H", "trouve": False},
+    6:  {"mot": "FIRMIN",    "x": 5, "y": 4,  "dir": "V", "trouve": False},
+    7:  {"mot": "SENEGAL",   "x": 1, "y": 4,  "dir": "V", "trouve": False},
+    8:  {"mot": "ROMANO",    "x": 5, "y": 6,  "dir": "H", "trouve": False},
+    9:  {"mot": "COREEN",    "x": 10, "y": 5, "dir": "V", "trouve": False},
+    10: {"mot": "VITESSE",  "x": 4, "y": 8,  "dir": "H", "trouve": False},
+    11: {"mot": "LISBONNE", "x": 1, "y": 10, "dir": "H", "trouve": False},
+}
+# Variable globale de session Slam pour le salon
+SESSION_SLAM = {}
+
+def initialiser_session():
+    return {
+        "mots": {num: data.copy() for num, data in MOTS_SLAM.items()},
+        "lettres_relevees": set(),
+        "lettre_surbrillance": None,
+        "mots_surbrillance": []
+    }
+
+# ==============================================================================
+# GÉNÉRATION DE L'IMAGE PILLOW
+# ==============================================================================
+
+def generer_image_grille_slam(session):
+    cell_size = 50
+    margin = 40
+    img_w = GRID_WIDTH * cell_size + margin * 2
+    img_h = GRID_HEIGHT * cell_size + margin * 2
+
+    img = Image.new("RGB", (img_w, img_h), "#FFFFFF")
+    draw = ImageDraw.Draw(img)
+
+    try:
+        font_letter = ImageFont.truetype("arial.ttf", 26)
+        font_num = ImageFont.truetype("arial.ttf", 14)
+    except IOError:
+        font_letter = ImageFont.load_default()
+        font_num = ImageFont.load_default()
+
+    # Couleurs
+    COLOR_BG_CASE = "#FFFFFF"
+    COLOR_BG_REVEALED = "#F0F0F0"
+    COLOR_BG_HIGHLIGHT = "#FFF176"  # Jaune lumineux pour les mots en surbrillance
+    COLOR_BORDER = "#000000"
+    COLOR_TEXT = "#000000"
+    COLOR_NUM_H = "#FF8C00"  # Orange pour les horizontaux
+    COLOR_NUM_V = "#1E88E5"  # Bleu pour les verticaux
+
+    # 1. Identifier toutes les cases qui font partie du puzzle
+    cases = {}  # (x, y) -> {"lettre": L, "visibles": [bool], "highlight": bool}
+    
+    for num, info in session["mots"].items():
+        m_x, m_y = info["x"], info["y"]
+        mot = info["mot"]
+        est_trouve = info["trouve"]
+        est_en_surbrillance = num in session["mots_surbrillance"]
+
+        for i, char in enumerate(mot):
+            cx = m_x + (i if info["dir"] == "H" else 0)
+            cy = m_y + (i if info["dir"] == "V" else 0)
+            
+            if (cx, cy) not in cases:
+                cases[(cx, cy)] = {"lettre": char, "trouve": False, "surbrillance": False, "releve": False}
+            
+            if est_trouve:
+                cases[(cx, cy)]["trouve"] = True
+            if est_en_surbrillance and not est_trouve:
+                cases[(cx, cy)]["surbrillance"] = True
+            if char in session["lettres_relevees"]:
+                cases[(cx, cy)]["releve"] = True
+
+    # 2. Dessiner le quadrillage des cases actives
+    for (cx, cy), data in cases.items():
+        px = margin + cx * cell_size
+        py = margin + cy * cell_size
+
+        # Déterminer la couleur de fond
+        bg_color = COLOR_BG_CASE
+        if data["surbrillance"]:
+            bg_color = COLOR_BG_HIGHLIGHT
+        elif data["trouve"]:
+            bg_color = COLOR_BG_REVEALED
+
+        # Dessin du rectangle de la case
+        draw.rectangle([px, py, px + cell_size, py + cell_size], fill=bg_color, outline=COLOR_BORDER, width=2)
+
+        # Afficher la lettre si le mot est trouvé OU si la lettre a été révélée
+        if data["trouve"] or data["releve"]:
+            bbox = font_letter.getbbox(data["lettre"])
+            w = bbox[2] - bbox[0]
+            h = bbox[3] - bbox[1]
+            draw.text((px + (cell_size - w) / 2, py + (cell_size - h) / 2 - 3), data["lettre"], fill=COLOR_TEXT, font=font_letter)
+
+    # 3. Dessiner les numéros d'en-tête (Orange = H, Bleu = V)
+    for num, info in session["mots"].items():
+        m_x, m_y = info["x"], info["y"]
+        bg_num = COLOR_NUM_H if info["dir"] == "H" else COLOR_NUM_V
+
+        if info["dir"] == "H":
+            nx = margin + (m_x - 1) * cell_size
+            ny = margin + m_y * cell_size
+        else:
+            nx = margin + m_x * cell_size
+            ny = margin + (m_y - 1) * cell_size
+
+        draw.rectangle([nx, ny, nx + cell_size, ny + cell_size], fill=bg_num)
+        txt = str(num)
+        bbox = font_num.getbbox(txt)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        draw.text((nx + (cell_size - w) / 2, ny + (cell_size - h) / 2 - 2), txt, fill="#FFFFFF", font=font_num)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+# ==============================================================================
+# COMMANDES BOT DISCORD
+# ==============================================================================
+
+@bot.tree.command(name="slam_demarrer", description="Initialise et affiche une nouvelle grille de Slam.")
+@app_commands.check(est_orga_ou_admin)
+async def slam_demarrer(interaction: discord.Interaction):
+    SESSION_SLAM[interaction.channel_id] = initialiser_session()
+    buf = generer_image_grille_slam(SESSION_SLAM[interaction.channel_id])
+    fichier = discord.File(buf, filename="grille_slam.png")
+
+    embed = discord.Embed(
+        title="🧩 LA GRILLE DE SLAM EST PRÊTE",
+        description="Les organisateurs peuvent proposer une lettre ou valider un mot.",
+        color=discord.Color.gold()
+    )
+    embed.set_image(url="attachment://grille_slam.png")
+    await interaction.response.send_message(file=fichier, embed=embed)
+
+
+@bot.tree.command(name="slam_reveler_lettre", description="Révèle une lettre et met en surbrillance les mots concernés non devinés.")
+@app_commands.describe(lettre="La lettre proposée par le candidat (ex: A, E, R...)")
+@app_commands.check(est_orga_ou_admin)
+async def slam_reveler_lettre(interaction: discord.Interaction, lettre: str):
+    cid = interaction.channel_id
+    if cid not in SESSION_SLAM:
+        await interaction.response.send_message("❌ Aucune session Slam active ici. Lance `/slam_demarrer`.", ephemeral=True)
+        return
+
+    session = SESSION_SLAM[cid]
+    lettre = lettre.upper().strip()
+
+    if len(lettre) != 1 or not lettre.isalpha():
+        await interaction.response.send_message("❌ Donne une seule lettre alphabétique.", ephemeral=True)
+        return
+
+    session["lettres_relevees"].add(lettre)
+    session["lettre_surbrillance"] = lettre
+
+    # Trouver les mots non devinés qui contiennent cette lettre
+    mots_touches = []
+    for num, info in session["mots"].items():
+        if not info["trouve"] and lettre in info["mot"]:
+            mots_touches.append(num)
+
+    session["mots_surbrillance"] = mots_touches
+
+    buf = generer_image_grille_slam(session)
+    fichier = discord.File(buf, filename="grille_slam.png")
+
+    txt_mots = ", ".join([f"**#{n}**" for n in mots_touches]) if mots_touches else "Aucun"
+
+    embed = discord.Embed(
+        title=f"🔤 LETTRE PROPOSÉE : **{lettre}**",
+        description=(
+            f"La lettre **{lettre}** a été insérée dans la grille !\n\n"
+            f"💡 **Mots éclairés contenant cette lettre :** {txt_mots}"
+        ),
+        color=discord.Color.yellow()
+    )
+    embed.set_image(url="attachment://grille_slam.png")
+    await interaction.response.send_message(file=fichier, embed=embed)
+
+
+@bot.tree.command(name="slam_valider_mot", description="Valide et découvre un mot trouvé par un candidat.")
+@app_commands.describe(numero="Numéro du mot dans la grille (1 à 11)")
+@app_commands.check(est_orga_ou_admin)
+async def slam_valider_mot(interaction: discord.Interaction, numero: int):
+    cid = interaction.channel_id
+    if cid not in SESSION_SLAM:
+        await interaction.response.send_message("❌ Aucune session Slam active ici.", ephemeral=True)
+        return
+
+    session = SESSION_SLAM[cid]
+    if numero not in session["mots"]:
+        await interaction.response.send_message("❌ Numéro de mot invalide (1 à 11).", ephemeral=True)
+        return
+
+    info_mot = session["mots"][numero]
+    if info_mot["trouve"]:
+        await interaction.response.send_message(f"⚠️ Le mot #{numero} a déjà été trouvé !", ephemeral=True)
+        return
+
+    info_mot["trouve"] = True
+    # Retirer ce mot de la surbrillance s'il y était
+    if numero in session["mots_surbrillance"]:
+        session["mots_surbrillance"].remove(numero)
+
+    buf = generer_image_grille_slam(session)
+    fichier = discord.File(buf, filename="grille_slam.png")
+
+    embed = discord.Embed(
+        title=f"✅ MOT #{numero} TROUVÉ !",
+        description=f"Le mot **{info_mot['mot']}** a été révélé dans la grille !",
+        color=discord.Color.green()
+    )
+    embed.set_image(url="attachment://grille_slam.png")
+    await interaction.response.send_message(file=fichier, embed=embed)
 
 # ==========================================
 # DÉMARRAGE DU BOT
