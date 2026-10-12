@@ -8539,15 +8539,15 @@ async def pregenerer_variantes_equipe_ia(membres: list[discord.Member]) -> dict[
     liste_noms = [f"{m.id}: {m.display_name}" for m in membres]
     prompt = (
         "Tu es un aventurier sur le camp de Koh-Lanta écrivant des bulletins de vote dans l'urne.\n"
-        "Pour chaque candidat, donne une liste de 6 orthographes TRÈS DIVERSIFIÉES :\n"
-        "- 1 ou 2 fois la VRAIE orthographe exacte et propre.\n"
+        "Pour chaque candidat, donne une liste de 10 orthographes TRÈS DIVERSIFIÉES :\n"
+        "- 7 fois la VRAIE orthographe exacte et propre.\n"
         "- 1 variante phonétique simple (ex: Jimmy -> JIMI, Claude -> CLOD).\n"
-        "- 2 variantes bien bancales/cultes de Koh-Lanta (ex: DJIMY, KLODE, TÉHÉYOURA, GREGOAR).\n"
+        "- 1 variantes bien bancales/cultes de Koh-Lanta (ex: DJIMY, KLODE, TÉHÉYOURA, GREGOAR).\n"
         "- 1 variante avec lettre en trop ou doublée (ex: DJIMMY, CLAUDEE).\n"
         "RÈGLE STRICTE : Chaque nom doit rester lisible et reconnaissable au premier coup d'œil.\n"
         "Renvoie STRICTEMENT un JSON valide au format exact suivant sans fioritures ni markdown superflu :\n"
         "{\n"
-        '  "ID_DISCORD": ["VAR1", "VAR2", "VAR3", "VAR4", "VAR5", "VAR6"]\n'
+        '  "ID_DISCORD": ["VAR1", "VAR2", "VAR3", "VAR4", "VAR5", "VAR6","VAR7","VAR8","VAR9","VAR10"]\n'
         "}\n\n"
         "LISTE DES CANDIDATS (ID: Nom) :\n" + "\n".join(liste_noms)
     )
