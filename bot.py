@@ -19,13 +19,7 @@ from google import genai
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import json
 
-import os
 import glob
-import asyncio
-from datetime import datetime, timezone
-import discord
-from discord.ext import commands
-from discord import app_commands
 # ==========================================
 # CONFIGURATION & ENVIRONNEMENT
 # ==========================================
