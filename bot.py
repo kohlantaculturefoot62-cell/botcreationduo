@@ -10289,12 +10289,12 @@ async def destination_fermer_etape(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(
-    name="configurer_permissions_spectateurs",
-    description="Autorise le rôle Spectateur aux commandes uniquement dans ses salons accessibles."
+    name="config_perm_spectateurs",
+    description="Autorise le rôle Spectateur aux commandes dans ses salons accessibles."
 )
 @app_commands.describe(role_spectateur="Le rôle Spectateur du serveur")
 @app_commands.check(est_orga_ou_admin)
-async def configurer_permissions_spectateurs(
+async def config_perm_spectateurs(
     interaction: discord.Interaction, 
     role_spectateur: discord.Role
 ):
