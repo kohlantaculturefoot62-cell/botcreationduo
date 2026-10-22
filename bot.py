@@ -10195,6 +10195,174 @@ async def config_perm_spectateurs(
         f"Les spectateurs peuvent désormais utiliser les commandes d'application uniquement dans les salons qu'ils peuvent voir !",
         ephemeral=True
     )
+
+# ========================================================
+# RÉUNIFICATION : CRÉATION DES DUOS MANQUANTS (PAR RÔLES PERSOS)
+# À coller dans ton bot (avant bot.run), les imports existent déjà.
+# ========================================================
+
+ROLE_CANDIDATS_NAME = "Candidats"
+
+
+def _trouver_role_perso_strict(member: discord.Member) -> discord.Role | None:
+    """Rôle dont le nom == pseudo du membre (le plus fiable)."""
+    noms = {nettoyer_texte(member.display_name), nettoyer_texte(member.name)}
+    for r in member.roles:
+        if not r.is_default() and nettoyer_texte(r.name) in noms:
+            return r
+    return None
+
+
+def _roles_autorises_du_salon(channel: discord.abc.GuildChannel, ids_ignores: set[int]) -> set[int]:
+    """IDs des rôles qui ont accès explicitement au salon (hors @everyone, Orgas, Spectateurs, rôles bots)."""
+    ids = set()
+    for cible, ow in channel.overwrites.items():
+        if not isinstance(cible, discord.Role):
+            continue
+        if cible.is_default() or cible.managed or cible.id in ids_ignores:
+            continue
+        if ow.view_channel is True:
+            ids.add(cible.id)
+    return ids
+
+
+@bot.tree.command(
+    name="completer_duos_manquants",
+    description="Réunification : crée les duos privés manquants entre tous les @Candidats (par rôles persos)."
+)
+@app_commands.describe(
+    nom_categorie="Catégorie où créer les nouveaux duos (une suivante est créée si > 50 salons)",
+    role_candidats="Optionnel : rôle des candidats (par défaut : le rôle nommé « Candidats »)",
+    simulation="True = affiche seulement le rapport, ne crée rien"
+)
+@app_commands.check(est_orga_ou_admin)
+async def completer_duos_manquants(
+    interaction: discord.Interaction,
+    nom_categorie: str = "🤝 DUOS RÉUNIFICATION",
+    role_candidats: discord.Role = None,
+    simulation: bool = False
+):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    # 1. Rôle @Candidats
+    if not role_candidats:
+        cible = nettoyer_texte(ROLE_CANDIDATS_NAME)
+        role_candidats = discord.utils.find(lambda r: nettoyer_texte(r.name) == cible, guild.roles)
+    if not role_candidats:
+        await interaction.followup.send(f"❌ Rôle **{ROLE_CANDIDATS_NAME}** introuvable.", ephemeral=True)
+        return
+
+    # 2. Candidats -> rôle personnel
+    persos: dict[int, discord.Role] = {}   # role_id -> Role
+    sans_role: list[str] = []
+    devines: list[str] = []
+
+    async for member in guild.fetch_members(limit=None):
+        if member.bot or role_candidats not in member.roles:
+            continue
+
+        r = _trouver_role_perso_strict(member)
+        if not r:
+            r = trouver_role_personnel(member, None)
+            if r and r.id != role_candidats.id:
+                devines.append(f"{member.display_name} → {r.name}")
+            else:
+                r = None
+
+        if r:
+            persos[r.id] = r
+        else:
+            sans_role.append(member.display_name)
+
+    if len(persos) < 2:
+        await interaction.followup.send("❌ Moins de 2 rôles personnels trouvés parmi les candidats.", ephemeral=True)
+        return
+
+    # 3. Scan de tous les salons textuels : quels duos existent déjà ?
+    role_orgas = discord.utils.get(guild.roles, name=ROLE_ORGAS_NAME)
+    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
+    ids_ignores = {r.id for r in (role_orgas, role_spectateurs) if r}
+
+    paires_existantes: set[frozenset] = set()
+    for ch in guild.text_channels:
+        ids = _roles_autorises_du_salon(ch, ids_ignores)
+        # Duo privé = EXACTEMENT 2 rôles autorisés, et les deux sont des rôles persos de candidats
+        if len(ids) == 2 and ids <= persos.keys():
+            paires_existantes.add(frozenset(ids))
+
+    # 4. Paires manquantes
+    toutes = list(itertools.combinations(persos.values(), 2))
+    manquantes = [(a, b) for a, b in toutes if frozenset((a.id, b.id)) not in paires_existantes]
+
+    rapport = (
+        f"👥 **Candidats :** {len(persos)} rôles persos\n"
+        f"🔗 **Duos possibles :** {len(toutes)}\n"
+        f"✅ **Déjà existants :** {len(paires_existantes & {frozenset((a.id, b.id)) for a, b in toutes})}\n"
+        f"🆕 **À créer :** {len(manquantes)}"
+    )
+    if sans_role:
+        rapport += f"\n⚠️ **Sans rôle perso (ignorés) :** {', '.join(sans_role)}"
+    if devines:
+        rapport += "\n❓ **Rôle perso deviné (à vérifier) :** " + ", ".join(devines[:10])
+
+    if simulation or not manquantes:
+        titre = "🔍 SIMULATION" if simulation else "ℹ️ Rien à faire"
+        await interaction.followup.send(f"{titre}\n{rapport}", ephemeral=True)
+        return
+
+    await interaction.followup.send(f"⏳ Création en cours...\n{rapport}", ephemeral=True)
+
+    # 5. Catégorie (réutilisée si elle existe, sinon créée) + débordement à 50
+    cible_cat = nettoyer_texte(nom_categorie)
+    categorie = discord.utils.find(lambda c: nettoyer_texte(c.name) == cible_cat, guild.categories)
+    index_cat = 1
+    if not categorie:
+        categorie = await guild.create_category(nom_categorie)
+    nb_dans_cat = len(categorie.channels)
+
+    role_bot = guild.me
+    crees = 0
+    erreurs = []
+
+    for a, b in manquantes:
+        if nb_dans_cat >= 50:
+            index_cat += 1
+            categorie = await guild.create_category(f"{nom_categorie} - {index_cat}")
+            nb_dans_cat = 0
+            await asyncio.sleep(1)
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False, read_messages=False),
+            role_bot: discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True),
+            a: discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True),
+            b: discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True),
+        }
+        if role_spectateurs:
+            overwrites[role_spectateurs] = get_spectateur_overwrites()
+        if role_orgas:
+            overwrites[role_orgas] = discord.PermissionOverwrite(
+                view_channel=True, read_messages=True, read_message_history=True, send_messages=True
+            )
+
+        nom = f"duo-{formater_nom_salon(a.name)}-{formater_nom_salon(b.name)}"[:100]
+        try:
+            await guild.create_text_channel(name=nom, category=categorie, overwrites=overwrites)
+            crees += 1
+            nb_dans_cat += 1
+        except discord.HTTPException as e:
+            erreurs.append(f"{a.name} / {b.name} : {e}")
+            if e.status == 429:
+                await asyncio.sleep(5)
+
+        if crees % 20 == 0 and crees > 0:
+            await interaction.followup.send(f"⏳ {crees}/{len(manquantes)} duos créés...", ephemeral=True)
+        await asyncio.sleep(0.6)
+
+    msg = f"✅ **{crees}/{len(manquantes)} duos créés** (dernière catégorie : **{categorie.name}**)."
+    if erreurs:
+        msg += f"\n❌ {len(erreurs)} erreur(s) :\n" + "\n".join(erreurs[:5])
+    await interaction.followup.send(msg, ephemeral=True)
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
