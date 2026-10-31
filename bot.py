@@ -15,7 +15,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from google import genai
-
+import textwrap
+import urllib.request
+from difflib import SequenceMatcher
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import json
 
@@ -10363,6 +10365,235 @@ async def completer_duos_manquants(
     if erreurs:
         msg += f"\n❌ {len(erreurs)} erreur(s) :\n" + "\n".join(erreurs[:5])
     await interaction.followup.send(msg, ephemeral=True)
+
+# ========================================================
+# TIRAGE AU SORT DES BINÔMES (RÔLE CANDIDAT) — AVEC SUSPENSE
+# ========================================================
+
+_RNG_TIRAGE = random.SystemRandom()
+
+
+def _embed_tirage_binomes(
+    lignes_binomes: list[str],
+    restants: list[discord.Member],
+    focus: str = None,
+    titre: str = "🏺 TIRAGE AU SORT DES BINÔMES — EN COURS",
+    couleur: discord.Color = discord.Color.gold()
+) -> discord.Embed:
+    """Construit l'embed du tirage : binômes déjà formés + focus du moment + urne restante."""
+    desc = ""
+    if focus:
+        desc += f"{focus}\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+    if lignes_binomes:
+        desc += "**📜 Binômes déjà scellés :**\n" + "\n".join(lignes_binomes) + "\n\n"
+
+    if restants:
+        noms = " • ".join(m.display_name for m in restants)
+        desc += f"🏺 **Encore dans l'urne ({len(restants)}) :**\n*{noms}*"
+
+    embed = discord.Embed(title=titre, description=desc[:4000], color=couleur)
+    embed.set_footer(text="Le destin est en marche... • Tirage 100% aléatoire")
+    return embed
+
+
+async def _roulette_nom(
+    message: discord.Message,
+    pool: list[discord.Member],
+    lignes_binomes: list[str],
+    entete_focus: str,
+    facteur: float
+) -> discord.Member:
+    """Fait défiler des noms au hasard en ralentissant, puis s'arrête sur l'élu."""
+    elu = _RNG_TIRAGE.choice(pool)
+    delais = [0.5, 0.6, 0.75, 0.9, 1.1, 1.4]
+
+    precedent = None
+    for d in delais:
+        candidats_leurres = [m for m in pool if m != precedent] or pool
+        leurre = _RNG_TIRAGE.choice(candidats_leurres)
+        precedent = leurre
+        focus = f"{entete_focus}\n\n# 🎰 ▸ {leurre.display_name} ◂"
+        try:
+            await message.edit(embed=_embed_tirage_binomes(lignes_binomes, pool, focus, couleur=discord.Color.orange()))
+        except discord.HTTPException:
+            pass
+        await asyncio.sleep(d * facteur)
+
+    return elu
+
+
+def _infos_binome(m: discord.Member, role_equipe: discord.Role) -> dict:
+    """Format compatible avec /creer_salons_binomes."""
+    return {
+        "member": m,
+        "role": trouver_role_personnel(m, role_equipe),
+        "display_name": m.display_name,
+        "clean_name": formater_nom_salon(m.display_name)
+    }
+
+
+@bot.tree.command(
+    name="tirage_binomes_candidats",
+    description="Tire au sort des binômes uniques parmi tous les candidats, avec animation et suspense."
+)
+@app_commands.describe(
+    role_candidats="Optionnel : rôle des candidats (par défaut : @Candidat)",
+    vitesse="Rythme de l'animation"
+)
+@app_commands.choices(vitesse=[
+    app_commands.Choice(name="🐢 Lent (suspense maximum)", value="lent"),
+    app_commands.Choice(name="🚶 Normal", value="normal"),
+    app_commands.Choice(name="⚡ Rapide", value="rapide")
+])
+@app_commands.check(est_orga_ou_admin)
+async def tirage_binomes_candidats(
+    interaction: discord.Interaction,
+    role_candidats: discord.Role = None,
+    vitesse: app_commands.Choice[str] = None
+):
+    global DERNIERS_BINOMES_TIRES
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    channel = interaction.channel
+
+    # 1. Rôle candidat
+    if not role_candidats:
+        role_candidats = discord.utils.find(
+            lambda r: nettoyer_texte(r.name) in ("candidat", "candidats"),
+            guild.roles
+        )
+    if not role_candidats:
+        await interaction.followup.send("❌ Rôle **@Candidat** introuvable. Précise-le dans l'option `role_candidats`.", ephemeral=True)
+        return
+
+    # 2. Récupération des candidats
+    membres = [m async for m in guild.fetch_members(limit=None) if not m.bot and role_candidats in m.roles]
+    if len(membres) < 2:
+        await interaction.followup.send(f"❌ Seulement {len(membres)} membre(s) avec {role_candidats.mention}, il en faut au moins 2.", ephemeral=True)
+        return
+
+    facteur = {"lent": 1.5, "normal": 1.0, "rapide": 0.5}[vitesse.value if vitesse else "normal"]
+    impair = len(membres) % 2 == 1
+    nb_binomes = len(membres) // 2
+
+    await interaction.followup.send(
+        f"🏺 Tirage lancé : **{len(membres)} candidats** → **{nb_binomes} binômes**"
+        + (" *(+1 trio car nombre impair)*" if impair else ""),
+        ephemeral=True
+    )
+
+    pool = list(membres)
+    _RNG_TIRAGE.shuffle(pool)
+    lignes_binomes: list[str] = []
+    groupes: list[list[discord.Member]] = []
+
+    # 3. Introduction
+    embed_intro = _embed_tirage_binomes(
+        [], pool,
+        focus=(
+            f"## ⚡ LE DESTIN VA LIER LES AVENTURIERS ⚡\n"
+            f"**{len(membres)} candidats** plongent leur nom dans l'urne.\n"
+            f"**{nb_binomes} binômes** vont être formés. Chacun ne sera tiré **qu'une seule fois**.\n\n"
+            "*Que le tirage commence...*"
+        ),
+        titre="🏺 TIRAGE AU SORT DES BINÔMES",
+        couleur=discord.Color.dark_gold()
+    )
+    message = await channel.send(embed=embed_intro)
+    await asyncio.sleep(5 * facteur)
+
+    # 4. Tirage binôme par binôme
+    num = 0
+    while len(pool) >= 2:
+        num += 1
+
+        # Les deux derniers : liés d'office
+        if len(pool) == 2 and not impair:
+            a, b = pool[0], pool[1]
+            focus = (
+                f"### 🎲 BINÔME #{num} — LE DERNIER\n"
+                f"Il ne reste que **deux noms** dans l'urne...\n"
+                "*Le destin a déjà tranché.*"
+            )
+            await message.edit(embed=_embed_tirage_binomes(lignes_binomes, pool, focus, couleur=discord.Color.orange()))
+            await asyncio.sleep(3 * facteur)
+            pool.clear()
+        else:
+            # Premier nom
+            entete = f"### 🎲 BINÔME #{num} / {nb_binomes}\nLa main plonge dans l'urne... **premier nom :**"
+            a = await _roulette_nom(message, pool, lignes_binomes, entete, facteur)
+            pool.remove(a)
+
+            focus = (
+                f"### 🎲 BINÔME #{num} / {nb_binomes}\n"
+                f"# 👤 {a.display_name}\n"
+                f"{a.mention} sera lié(e) à...\n*(roulement de tambour 🥁)*"
+            )
+            await message.edit(embed=_embed_tirage_binomes(lignes_binomes, pool, focus, couleur=discord.Color.orange()))
+            await asyncio.sleep(3 * facteur)
+
+            # Partenaire
+            entete = f"### 🎲 BINÔME #{num} / {nb_binomes}\n👤 **{a.display_name}** sera lié(e) à..."
+            b = await _roulette_nom(message, pool, lignes_binomes, entete, facteur)
+            pool.remove(b)
+
+        # Révélation du binôme
+        groupes.append([a, b])
+        lignes_binomes.append(f"🔗 **Binôme #{num}** : {a.mention} & {b.mention}")
+        focus = (
+            f"### ✅ BINÔME #{num} SCELLÉ !\n"
+            f"# 🔗 {a.display_name} & {b.display_name}"
+        )
+        await message.edit(embed=_embed_tirage_binomes(lignes_binomes, pool, focus, couleur=discord.Color.green()))
+        await asyncio.sleep(4 * facteur)
+
+    # 5. Cas impair : le dernier forme un trio
+    trio = None
+    if impair and pool:
+        dernier = pool.pop()
+        focus = (
+            "### 🔺 TWIST DU DESTIN !\n"
+            f"**{dernier.display_name}** reste seul(e) dans l'urne...\n"
+            "Il/elle va rejoindre un binôme existant pour former un **TRIO** !"
+        )
+        await message.edit(embed=_embed_tirage_binomes(lignes_binomes, [dernier], focus, couleur=discord.Color.purple()))
+        await asyncio.sleep(4 * facteur)
+
+        idx = _RNG_TIRAGE.randrange(len(groupes))
+        groupes[idx].append(dernier)
+        trio = groupes[idx]
+        a, b, c = trio
+        lignes_binomes[idx] = f"🔺 **Trio #{idx + 1}** : {a.mention}, {b.mention} & {c.mention}"
+
+    # 6. Sauvegarde pour /creer_salons_binomes (binômes uniquement)
+    DERNIERS_BINOMES_TIRES = [
+        (_infos_binome(g[0], role_candidats), _infos_binome(g[1], role_candidats))
+        for g in groupes if len(g) == 2
+    ]
+
+    # 7. Verdict final
+    texte_final = "\n".join(lignes_binomes)
+    texte_final += (
+        "\n\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        "👉 *Pour ouvrir les salons privés :* `/creer_salons_binomes`"
+    )
+    if trio:
+        texte_final += "\n🔺 *Le trio est à créer avec* `/creer_trio`."
+
+    embed_final = discord.Embed(
+        title="⚡ DESTINS LIÉS — TIRAGE TERMINÉ ⚡",
+        description=texte_final[:4000],
+        color=discord.Color.green()
+    )
+    embed_final.set_footer(text="Le tirage est irrévocable.")
+    await message.edit(embed=embed_final)
+
+    await interaction.followup.send(
+        f"✅ Tirage terminé : **{len(DERNIERS_BINOMES_TIRES)} binômes** enregistrés"
+        + (" + 1 trio" if trio else "") + ". Tu peux lancer `/creer_salons_binomes`.",
+        ephemeral=True
+    )
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
