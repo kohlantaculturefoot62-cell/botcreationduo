@@ -1539,20 +1539,6 @@ async def forcer_recap_spec(interaction: discord.Interaction):
 
 
 @bot.tree.command(
-    name="resume_spectateurs",
-    description="Génère à la demande le récapitulatif du salon spectateurs (Hors-sujet vs Analyses vs Bêtisier)."
-)
-@app_commands.check(est_orga_ou_admin)
-async def resume_spectateurs_cmd(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    succes, msg = await traiter_resume_spectateurs(interaction.guild)
-    if succes:
-        await interaction.followup.send(f"✅ {msg}", ephemeral=True)
-    else:
-        await interaction.followup.send(f"❌ {msg}", ephemeral=True)
-
-
-@bot.tree.command(
     name="pause_taches",
     description="Met en pause l'envoi automatique du récap du soir et des questions du matin."
 )
@@ -3040,60 +3026,6 @@ async def appliquer_tag_role(guild: discord.Guild, nom_role: str, tag: str) -> d
         "erreurs": erreurs,
         "total": len([m for m in role.members if not m.bot])
     }
-
-
-@bot.tree.command(
-    name="taguer_spectateurs",
-    description="Ajoute automatiquement le préfixe [SPEC] devant le nom de tous les Spectateurs."
-)
-@app_commands.check(est_orga_ou_admin)
-async def taguer_spectateurs(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-
-    resultat = await appliquer_tag_role(
-        guild=interaction.guild,
-        nom_role=ROLE_SPECTATEURS_NAME,
-        tag="[SPEC]"
-    )
-
-    if not resultat["succes"]:
-        await interaction.followup.send(f"❌ {resultat['erreur']}", ephemeral=True)
-        return
-
-    await interaction.followup.send(
-        f"👁️ **Tags Spectateurs appliqués !**\n"
-        f"- ✏️ **{resultat['modifies']}** membre(s) renommé(s)\n"
-        f"- ⏩ **{resultat['deja_faits']}** avaient déjà le tag\n"
-        f"- ⚠️ **{resultat['erreurs']}** ignoré(s) (permissions supérieures au bot)",
-        ephemeral=True
-    )
-
-
-@bot.tree.command(
-    name="taguer_orgas",
-    description="Ajoute automatiquement le préfixe [ORGA] devant le nom de tous les Orgas."
-)
-@app_commands.check(est_orga_ou_admin)
-async def taguer_orgas(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-
-    resultat = await appliquer_tag_role(
-        guild=interaction.guild,
-        nom_role=ROLE_ORGAS_NAME,
-        tag="[ORGA]"
-    )
-
-    if not resultat["succes"]:
-        await interaction.followup.send(f"❌ {resultat['erreur']}", ephemeral=True)
-        return
-
-    await interaction.followup.send(
-        f"🛠️ **Tags Orgas appliqués !**\n"
-        f"- ✏️ **{resultat['modifies']}** membre(s) renommé(s)\n"
-        f"- ⏩ **{resultat['deja_faits']}** avaient déjà le tag\n"
-        f"- ⚠️ **{resultat['erreurs']}** ignoré(s) (permissions supérieures au bot)",
-        ephemeral=True
-    )
 
 
 # ========================================================
@@ -7395,102 +7327,6 @@ async def only_connect(
     vue_mur.message = msg
 
 # ========================================================
-# COMMANDE SLASH TROLL : /collier (BLOC COMPLET)
-# ========================================================
-COLLIERS_ECLATES = [
-    {
-        "nom": "Le Trombone Tordu et sa Ficelle",
-        "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/66/One_red_paperclip.jpg/515px-One_red_paperclip.jpg",
-        "description": "Même pas de quoi attacher deux feuilles de vote."
-    },
-    {
-        "nom": "Le Sac Poubelle Déchiré",
-        "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/52/Black_bin_bag.jpg/640px-Black_bin_bag.jpg",
-        "description": "Idéal pour ramasser ta dignité après le conseil."
-    },
-    {
-        "nom": "Les Pâtes Crues Ficelées",
-        "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Penne_rigate_pasta.jpg/640px-Penne_rigate_pasta.jpg",
-        "description": "Fait main en maternelle, zéro pouvoir au dépouillement."
-    }
-]
-async def generer_trash_collier_ia(pseudo: str, objet_nom: str) -> str:
-    """Génère un taunt satirique et cinglant pour le joueur qui a tenté /collier."""
-    prompt = (
-        "Tu es l'animateur impitoyable et moqueur d'un jeu de survie type Koh-Lanta.\n"
-        f"Le candidat nommé '{pseudo}' vient de taper la commande '/collier' en espérant trouver une immunité secrète.\n"
-        f"À la place, il tombe sur un déchet ridicule : '{objet_nom}'.\n\n"
-        "RÈGLES STRICTES :\n"
-        "1. Taille avec ironie et humour sa naïveté : il pensait vraiment trouver une immunité en spammant une commande Discord ?\n"
-        "2. Reste piquant, satirique et moqueur (ton télé-réalité / orga condescendant mais drôle).\n"
-        "3. Longueur : 2 à 3 phrases percutantes maximum.\n"
-        "4. Pas de guillemets autour du texte."
-    )
-    try:
-        response = await asyncio.to_thread(
-            gemini_client.models.generate_content,
-            model=MODEL_NAME,
-            contents=prompt,
-            config={"temperature": 1.1}
-        )
-        return response.text.strip().replace('"', '')
-    except Exception:
-        return (
-            f"Tu croyais vraiment qu'un collier d'immunité allait tomber du ciel en tapant une commande slash, {pseudo} ? "
-            f"Garde précieusement ce déchet autour du cou, ça t'évitera de chercher des excuses quand ton nom sortira de l'urne."
-        )
-
-def a_acces_collier(interaction: discord.Interaction) -> bool:
-    """Vérifie si le membre est admin/orga OU s'il possède le rôle 'Eleas'."""
-    if est_orga_ou_admin(interaction):
-        return True
-
-    if isinstance(interaction.user, discord.Member):
-        return any(role.name.lower() == "eleas" for role in interaction.user.roles)
-
-    return False
-
-@bot.tree.command(
-    name="collier",
-    description="Fouille les buissons pour tenter de trouver un collier d'immunité..."
-)
-async def collier(interaction: discord.Interaction):
-    # Restriction : Admin / Orga OU rôle Eleas
-    if not a_acces_collier(interaction):
-        await interaction.response.send_message(
-            "⛔ Les buissons restent désespérément calmes... Cette commande ne t'est pas destinée.",
-            ephemeral=True
-        )
-        return
-
-    # Si autorisé, affichage public dans le chat
-    await interaction.response.defer(ephemeral=True)
-
-    objet = random.choice(COLLIERS_ECLATES)
-    pseudo = interaction.user.display_name
-
-    texte_trash = await generer_trash_collier_ia(pseudo, objet["nom"])
-
-    embed = discord.Embed(
-        title=f"📿 INCROYABLE TROUVAILLE POUR {pseudo.upper()} !",
-        description=(
-            f"# {objet['nom']}\n"
-            f"*{objet['description']}*\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{texte_trash}\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        ),
-        color=discord.Color.from_rgb(139, 69, 19)
-    )
-    embed.set_image(url=objet["image"])
-    embed.set_footer(text="Effet : Annule 0 vote • Augmente de 200% les chances de te faire tej au conseil")
-
-    await interaction.followup.send(
-        content=f"👀 {interaction.user.mention} a fouillé le camp...",
-        embed=embed
-    )
-
-# ========================================================
 # MODULE : PRÉPARATIF CONSEIL (RÉCAPS SEMAINE + ANALYSE 24H)
 # ========================================================
 
@@ -7665,84 +7501,6 @@ async def preparatif_conseil_cmd(interaction: discord.Interaction, nom_tribu: st
         f"✅ Dossier du conseil généré dans <#{CHAN_PREPARATIF_CONSEIL_ID}> !",
         ephemeral=True
     )
-# ========================================================
-# COMMANDES DE FORCE & TEST (PRÉPARATIF CONSEIL)
-# ========================================================
-
-@bot.tree.command(
-    name="forcer_preparatif_conseil",
-    description="[TEST/FORCE] Lance immédiatement la routine du lundi 20h pour le conseil."
-)
-@app_commands.describe(
-    nom_tribu="Nom de la tribu concernée (par défaut : Tribu au Conseil)",
-    ignorer_verrou="Si True, bypass le verrou de date pour forcer même si déjà exécuté aujourd'hui"
-)
-@app_commands.check(est_orga_ou_admin)
-async def forcer_preparatif_conseil(
-    interaction: discord.Interaction, 
-    nom_tribu: str = "Tribu au Conseil",
-    ignorer_verrou: bool = True
-):
-    """Force manuellement l'exécution de la routine du lundi 20h00."""
-    global DERNIER_LUNDI_CONSEIL
-    await interaction.response.defer(ephemeral=True)
-
-    try:
-        if ignorer_verrou:
-            DERNIER_LUNDI_CONSEIL = None
-
-        await interaction.followup.send(
-            f"⏳ Déclenchement forcé du préparatif conseil pour **{nom_tribu}**...\n"
-            f"Lecture des archives 7j et analyse des dernières 24h en cours.",
-            ephemeral=True
-        )
-
-        await executer_preparatif_conseil(guild=interaction.guild, nom_tribu=nom_tribu)
-
-        await interaction.channel.send(
-            f"✅ **[TEST/ORGA]** Le dossier du conseil a été généré avec succès dans <#{CHAN_PREPARATIF_CONSEIL_ID}> !"
-        )
-    except Exception as e:
-        await interaction.followup.send(f"❌ Erreur lors du forçage : {e}", ephemeral=True)
-
-
-@bot.tree.command(
-    name="tester_recup_conseil",
-    description="[TEST/DEBUG] Vérifie le volume de texte récupéré (archives 7j + 24h) sans appeler Gemini."
-)
-@app_commands.check(est_orga_ou_admin)
-async def tester_recup_conseil(interaction: discord.Interaction):
-    """Permet de vérifier en 2 secondes si le bot lit bien le salon récap et les salons de jeu."""
-    await interaction.response.defer(ephemeral=True)
-
-    archives = await recuperer_recaps_journaliers_archives(interaction.guild, jours=7)
-    activite_24h = await recuperer_discussions_recentes_24h(interaction.guild)
-
-    nb_caracteres_archives = len(archives)
-    nb_caracteres_24h = len(activite_24h)
-
-    embed = discord.Embed(
-        title="🔍 Diagnostic Récupération Données Conseil",
-        color=discord.Color.blue()
-    )
-    embed.add_field(
-        name="📚 Archives 7j (RECAP_CHANNEL_ID)",
-        value=f"**{nb_caracteres_archives}** caractères récupérés\n*(Présence de récaps : {'Oui' if archives else 'Non'})*",
-        inline=False
-    )
-    embed.add_field(
-        name="⚡ Salons scannés (Dernières 24h)",
-        value=f"**{nb_caracteres_24h}** caractères récupérés\n*(Présence d'activité : {'Oui' if activite_24h else 'Non'})*",
-        inline=False
-    )
-
-    if not archives:
-        embed.description = "⚠️ **Attention :** Aucun message trouvé dans `RECAP_CHANNEL_ID` sur les 7 derniers jours."
-    else:
-        embed.description = "✅ Données prêtes à être ingérées par Gemini."
-
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
 # ========================================================
 # MODULE : DÉPOUILLEMENT AU TEMPO KOH-LANTA (FICHIERS JPEG)
 # ========================================================
@@ -8340,12 +8098,12 @@ async def devoiler_vote_assurance(interaction: discord.Interaction, candidat: di
             embed_echec = discord.Embed(
                 title="❌ ASSURANCE INUTILE...",
                 description=(
-                    f" critical {joueur_assure.mention} n'est pas arrivé(e) en tête du conseil.\n\n"
+                    f"🛡️ {joueur_assure.mention} n'est pas arrivé(e) en tête du conseil.\n\n"
                     f"☠️️ **{elimine.mention}** termine 1er avec **{top_score} votes** et est éliminé(e) !"
                 ),
                 color=discord.Color.red()
             )
-            await interaction.channel.send(embed=echec if 'echec' in locals() else embed_echec)
+            await interaction.channel.send(embed=embed_echec)
             await asyncio.sleep(2)
             await terminer_et_bruler(interaction.channel, elimine)
 
@@ -8932,24 +8690,6 @@ async def on_message(message: discord.Message):
                         color=discord.Color.teal()
                     )
                     await message.reply(embed=embed_decodeur, mention_author=False)
-
-    # 6. MODULE ASSISTANCE RECHERCHE SPORTIVE
-    if message.channel.id in SESSIONS_RECHERCHE_ACTIVES:
-        session = SESSIONS_RECHERCHE_ACTIVES[message.channel.id]
-        if message.author.id == session.get("candidat_id"):
-            texte_q = message.content.strip()
-            if len(texte_q) >= 4:
-                salon_orgas = bot.get_channel(SALON_REMARQUES_QUESTIONS_ID)
-                if salon_orgas:
-                    asyncio.create_task(
-                        traiter_suggestion_orga(
-                            channel_src=message.channel,
-                            salon_dest=salon_orgas,
-                            candidat=message.author,
-                            joueur_mystere=session.get("joueur"),
-                            question=texte_q
-                        )
-                    )
 
     # 7. MODULE DRAFT / COMPOSITION DES ÉQUIPES
     if ETAT_COMPOSITION.get("actif") and message.channel.id == ETAT_COMPOSITION.get("channel_id"):
@@ -9768,234 +9508,645 @@ async def completer_duos_manquants(
     await interaction.followup.send(msg, ephemeral=True)
 
 # ========================================================
-# TIRAGE AU SORT DES BINÔMES (RÔLE CANDIDAT) — AVEC SUSPENSE
+# ESCAPE GAME : LA BOÎTE À CHAUSSURES (ATTENTION : contient les solutions)
+# Images objet_1.png ... objet_9.png dans le même dossier que bot.py
 # ========================================================
+from pathlib import Path
 
-_RNG_TIRAGE = random.SystemRandom()
+# ====================================================================== RÉGLAGES
+BOITE_NB_EQUIPES = 6
+BOITE_DUREE = 60 * 60          # durée totale (secondes)
+BOITE_SEUIL_CARTE = 40 * 60    # si aucun dépôt à ce moment : objet 9
+BOITE_COOLDOWN = 2 * 60        # attente après une mauvaise réponse
+BOITE_NOM_CATEGORIE = "📦 LA BOÎTE À CHAUSSURES"
+BOITE_PREFIXE_ROLE = "Boîte Équipe"
+
+BOITE_BASE = Path(__file__).resolve().parent
+BOITE_STATE_FILE = BOITE_BASE / "boite_state.json"
+BOITE_OBJETS_DIR = BOITE_BASE   # objet_1.png ... objet_9.png à côté de bot.py
+
+BOITE_ENIGMES = {
+    1: "Quarante ans avant que les cartons existent, je fus le premier à qui l'on montra la sortie dans un Mondial.",
+    2: "J'ai gardé la même cage pendant un quart de siècle, et j'ai arrêté un penalty à quarante-cinq ans, sur la terre des tsars.",
+    3: "On m'a confié la première fête sans oser l'appeler Coupe du monde, car l'on n'y jouait que quatre-vingts minutes.",
+    4: "J'ai encaissé un penalty avant même d'avoir touché le ballon, et j'ai quand même soulevé la coupe chez moi.",
+    5: "Mon prix a fait de moi le premier million, mais celui qui m'a vendu jurait que je valais 999 999.",
+    6: "Mon championnat a disparu, mon pays aussi d'une certaine façon, et pourtant j'ai soulevé une coupe d'Europe.",
+    7: "Onze secondes m'ont suffi, dans le seul match d'un Mondial qui ne sert qu'à départager deux déçus.",
+    8: "Sept fois roi d'Amérique du Sud, un record que personne n'a jamais égalé. On me surnomme d'ailleurs le Roi des Coupes.",
+}
+
+# Réponses acceptées : l'un des mots-clés suffit (accents, casse et ponctuation ignorés)
+BOITE_REPONSES = {
+    1: ["galindo"],
+    2: ["hadary", "hadari"],
+    3: ["chine", "china"],
+    4: ["rfa", "allemagne", "west germany", "germany", "allemagne de l ouest"],
+    5: ["francis"],
+    6: ["magdebourg", "magdeburg"],
+    7: ["sukur", "hakan"],
+    8: ["independiente"],
+}
+
+# Réponses refusées même si elles contiennent un mot-clé accepté
+BOITE_REFUS = {
+    4: ["rda", "ddr", "east germany", "allemagne de l est", "democratique"],
+}
+
+# Texte de secours si l'image boite_objets/objet_N.png est absente
+BOITE_OBJETS = {
+    1: ("Un bout de billet", "L'encre a bavé. Il ne reste qu'une seule ligne lisible.\n\n**Sa, ..05. Anstoß 15.30 Uhr**"),
+    2: ("Une facture d'imprimeur",
+        "Druckerei Hoffmann & Sohn\nRechnung Nr. 2214\nDatum : 12.05.1992\n"
+        "400 T-Shirts, Aufdruck « MEISTER 92 », weiß, Gr. S-XXL ....... 3 840,00 DM\n"
+        "Auftrag storniert am 18.05.1992\nStornogebühr 30 % ....... 1 152,00 DM"),
+    3: ("Une page de carnet de journaliste",
+        "38.   ST\n15.30\n61' 1:0\n65' 1:1 A.K.\n82' 2:1\n"
+        "76' B. sur W. dans la surface. B. ne siffle pas.\n"
+        "Le banc se lève. Tribune debout, tout le stade a vu.\nMeister\n25 000, guichets fermés"),
+    4: ("Une page d'agenda",
+        "Samstag\n15.30 Abfahrt Bus 7.00 Uhr\n20.00 Empfang\n\nSonntag\nMutter anrufen\n\nMontag\nnichts"),
+    5: ("Une lettre à la fédération",
+        "Deutscher Fußball-Bund\nSchiedsrichter-Ausschuss\nMitglied Nr. 1899\n\nMessieurs,\n"
+        "J'étais dans le bloc visiteurs samedi dernier. Vingt-cinq mille personnes ont vu la même chose "
+        "que moi à la 76e minute. Une seule ne l'a pas vue, et c'est celle qui portait le sifflet.\n"
+        "Je ne demande pas que l'on rejoue quoi que ce soit. Je demande que quelqu'un, chez vous, écrive "
+        "noir sur blanc ce qui s'est passé dans cette surface de réparation.\n"
+        "J'ai cinquante-quatre ans. J'attends celle-ci depuis 1959.\nSignature illisible"),
+    6: ("Une note d'hôtel",
+        "Hotel Am Strom\nWarnemünde\nGruppe, 42 Personen\nAnreise : Sa. — Abreise : So.\n"
+        "21 Doppelzimmer ....... 1 890,00 DM\nFrühstück 42 Pers. ....... 336,00 DM\n"
+        "Sektempfang, bestellt ....... 420,00 DM\n"
+        "Vermerk : Zimmer nicht belegt. Abreise Sa. 19.00 Uhr. Sektempfang nicht abgenommen. Keine Erstattung."),
+    7: ("Un sous-bock",
+        "Rond, gondolé par l'humidité, une auréole de bière a mangé un coin. "
+        "Au dos, quatre mots au feutre, tracés d'un seul geste.\n\n**Lebbe geht weider**"),
+    8: ("Un bon de traiteur",
+        "Agrafé à un bouchon de mousseux et à un bout de muselet tordu.\n\n"
+        "Party-Service Wagner\nLieferung : Sa., 15.00 Uhr\nOrt : Parkplatz Ostseestadion, Reisebus\n"
+        "60 Fl. Sekt, gekühlt ....... 540,00 DM\n100 Sektgläser, Leihgabe ....... 80,00 DM\n"
+        "Rücknahme Gläser : So. — 100 Stück, unbenutzt."),
+    9: ("Une carte postale", "Postée de Rostock le lundi suivant. Deux mots au dos :\n\n**« nie wieder »**"),
+}
+
+BOITE_SOLUTION = (
+    "Samedi 16 mai 1992, Ostseestadion de Rostock.\n"
+    "Hansa Rostock 2 - 1 Eintracht Francfort.\n"
+    "38e et dernière journée, 25 000 spectateurs, guichets fermés.\n"
+    "La boîte appartient à un supporter de Francfort."
+)
+
+# ====================================================================== ÉTAT
 
 
-def _embed_tirage_binomes(
-    lignes_binomes: list[str],
-    restants: list[discord.Member],
-    focus: str = None,
-    titre: str = "🏺 TIRAGE AU SORT DES BINÔMES — EN COURS",
-    couleur: discord.Color = discord.Color.gold()
-) -> discord.Embed:
-    """Construit l'embed du tirage : binômes déjà formés + focus du moment + urne restante."""
-    desc = ""
-    if focus:
-        desc += f"{focus}\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-    if lignes_binomes:
-        desc += "**📜 Binômes déjà scellés :**\n" + "\n".join(lignes_binomes) + "\n\n"
-
-    if restants:
-        noms = " • ".join(m.display_name for m in restants)
-        desc += f"🏺 **Encore dans l'urne ({len(restants)}) :**\n*{noms}*"
-
-    embed = discord.Embed(title=titre, description=desc[:4000], color=couleur)
-    embed.set_footer(text="Le destin est en marche... • Tirage 100% aléatoire")
-    return embed
+def boite_new_state():
+    return {"start": None, "ended": False, "carte_sent": False,
+            "orga_channel": None, "category": None, "teams": {}}
 
 
-async def _roulette_nom(
-    message: discord.Message,
-    pool: list[discord.Member],
-    lignes_binomes: list[str],
-    entete_focus: str,
-    facteur: float
-) -> discord.Member:
-    """Fait défiler des noms au hasard en ralentissant, puis s'arrête sur l'élu."""
-    elu = _RNG_TIRAGE.choice(pool)
-    delais = [0.5, 0.6, 0.75, 0.9, 1.1, 1.4]
+def boite_load_state():
+    """Charge l'état ; repart de zéro si le fichier est absent ou corrompu."""
+    base = boite_new_state()
+    try:
+        data = json.loads(BOITE_STATE_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            base.update(data)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return base
 
-    precedent = None
-    for d in delais:
-        candidats_leurres = [m for m in pool if m != precedent] or pool
-        leurre = _RNG_TIRAGE.choice(candidats_leurres)
-        precedent = leurre
-        focus = f"{entete_focus}\n\n# 🎰 ▸ {leurre.display_name} ◂"
+
+boite_state = boite_load_state()
+
+
+def boite_save_state():
+    tmp = BOITE_STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(boite_state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(BOITE_STATE_FILE)  # écriture atomique : pas de fichier à moitié écrit en cas de crash
+
+
+def boite_team_of_channel(channel_id):
+    for n, t in boite_state["teams"].items():
+        if t["channel"] == channel_id:
+            return n, t
+    return None, None
+
+
+# ====================================================================== OUTILS
+def boite_norm(text: str) -> str:
+    text = unicodedata.normalize("NFD", (text or "").lower())
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return f" {text.strip()} "
+
+
+def boite_contient(texte_norm: str, mot: str) -> bool:
+    """Mot entier, ou version collée (« west germany » ↔ « westgermany ») pour les mots longs."""
+    m = boite_norm(mot)
+    if m in texte_norm:
+        return True
+    colle = m.replace(" ", "")
+    return len(colle) > 4 and colle in texte_norm.replace(" ", "")
+
+
+def boite_reponse_ok(num: int, texte: str) -> bool:
+    t = boite_norm(texte)
+    if any(boite_norm(r) in t for r in BOITE_REFUS.get(num, [])):
+        return False
+    return any(boite_contient(t, k) for k in BOITE_REPONSES[num])
+
+
+def boite_fmt_duree(sec: float) -> str:
+    sec = max(0, int(sec))
+    return f"{sec // 60:02d}:{sec % 60:02d}"
+
+
+def boite_restant():
+    return None if not boite_state["start"] else BOITE_DUREE - (time.time() - boite_state["start"])
+
+
+def boite_temps_ecoule() -> bool:
+    r = boite_restant()
+    return boite_state["ended"] or (r is not None and r <= 0)
+
+
+def boite_corriger_fiche(f: dict) -> dict:
+    toks = boite_norm(f["date"]).split()
+    jour = "16" in toks
+    mois = any(m in toks for m in ("mai", "05", "5", "may"))
+    annee = any(a in toks for a in ("1992", "92"))
+    d = 2 if (jour and mois and annee) else 0
+
+    s = 1 if "ostsee" in boite_norm(f["stade"]).replace(" ", "") else 0
+
+    eq = boite_norm(f["equipes"])
+    fra = any(k in eq for k in ("francfort", "frankfurt", "eintracht"))
+    e = 2 if ("rostock" in eq and fra) else 0
+
+    chiffres = re.findall(r"\d+", f["score"])
+    sc = 1 if chiffres in (["2", "1"], ["1", "2"]) else 0
+
+    sup = boite_norm(f["supporter"])
+    b = 1 if (any(k in sup for k in ("francfort", "frankfurt", "eintracht")) and "rostock" not in sup) else 0
+
+    return {"date": d, "stade": s, "equipes": e, "score": sc, "bonus": b, "total": d + s + e + sc + b}
+
+
+async def boite_get_channel(channel_id):
+    """Renvoie le salon ou None (ne lève jamais d'erreur)."""
+    if not channel_id:
+        return None
+    ch = bot.get_channel(channel_id)
+    if ch is None:
         try:
-            await message.edit(embed=_embed_tirage_binomes(lignes_binomes, pool, focus, couleur=discord.Color.orange()))
+            ch = await bot.fetch_channel(channel_id)
         except discord.HTTPException:
-            pass
-        await asyncio.sleep(d * facteur)
-
-    return elu
+            return None
+    return ch
 
 
-def _infos_binome(m: discord.Member, role_equipe: discord.Role) -> dict:
-    """Format compatible avec /creer_salons_binomes."""
-    return {
-        "member": m,
-        "role": trouver_role_personnel(m, role_equipe),
-        "display_name": m.display_name,
-        "clean_name": formater_nom_salon(m.display_name)
-    }
-
-
-@bot.tree.command(
-    name="tirage_binomes_candidats",
-    description="Tire au sort des binômes uniques parmi tous les candidats, avec animation et suspense."
-)
-@app_commands.describe(
-    role_candidats="Optionnel : rôle des candidats (par défaut : @Candidat)",
-    vitesse="Rythme de l'animation"
-)
-@app_commands.choices(vitesse=[
-    app_commands.Choice(name="🐢 Lent (suspense maximum)", value="lent"),
-    app_commands.Choice(name="🚶 Normal", value="normal"),
-    app_commands.Choice(name="⚡ Rapide", value="rapide")
-])
-@app_commands.check(est_orga_ou_admin)
-async def tirage_binomes_candidats(
-    interaction: discord.Interaction,
-    role_candidats: discord.Role = None,
-    vitesse: app_commands.Choice[str] = None
-):
-    global DERNIERS_BINOMES_TIRES
-    await interaction.response.defer(ephemeral=True)
-    guild = interaction.guild
-    channel = interaction.channel
-
-    # 1. Rôle candidat
-    if not role_candidats:
-        role_candidats = discord.utils.find(
-            lambda r: nettoyer_texte(r.name) in ("candidat", "candidats"),
-            guild.roles
-        )
-    if not role_candidats:
-        await interaction.followup.send("❌ Rôle **@Candidat** introuvable. Précise-le dans l'option `role_candidats`.", ephemeral=True)
+async def boite_envoyer_objet(channel, n: int):
+    if channel is None:
         return
+    titre, texte = BOITE_OBJETS[n]
+    embed = discord.Embed(title=f"Objet {n}. {titre}", description=texte, color=0xB08D57)
+    img = BOITE_OBJETS_DIR / f"objet_{n}.png"
+    if img.exists():
+        embed.set_image(url=f"attachment://{img.name}")
+        await channel.send(embed=embed, file=discord.File(img, filename=img.name))
+    else:
+        await channel.send(embed=embed)
 
-    # 2. Récupération des candidats
-    membres = [m async for m in guild.fetch_members(limit=None) if not m.bot and role_candidats in m.roles]
-    if len(membres) < 2:
-        await interaction.followup.send(f"❌ Seulement {len(membres)} membre(s) avec {role_candidats.mention}, il en faut au moins 2.", ephemeral=True)
-        return
 
-    facteur = {"lent": 1.5, "normal": 1.0, "rapide": 0.5}[vitesse.value if vitesse else "normal"]
-    impair = len(membres) % 2 == 1
-    nb_binomes = len(membres) // 2
+async def boite_envoyer(channel_id, contenu: str):
+    ch = await boite_get_channel(channel_id)
+    if ch:
+        try:
+            await ch.send(contenu[:2000])
+        except discord.HTTPException as e:
+            print(f"[boite] envoi impossible dans {channel_id} : {e!r}")
 
-    await interaction.followup.send(
-        f"🏺 Tirage lancé : **{len(membres)} candidats** → **{nb_binomes} binômes**"
-        + (" *(+1 trio car nombre impair)*" if impair else ""),
-        ephemeral=True
-    )
 
-    pool = list(membres)
-    _RNG_TIRAGE.shuffle(pool)
-    lignes_binomes: list[str] = []
-    groupes: list[list[discord.Member]] = []
+async def boite_log_orga(message: str):
+    await boite_envoyer(boite_state["orga_channel"], message)
 
-    # 3. Introduction
-    embed_intro = _embed_tirage_binomes(
-        [], pool,
-        focus=(
-            f"## ⚡ LE DESTIN VA LIER LES AVENTURIERS ⚡\n"
-            f"**{len(membres)} candidats** plongent leur nom dans l'urne.\n"
-            f"**{nb_binomes} binômes** vont être formés. Chacun ne sera tiré **qu'une seule fois**.\n\n"
-            "*Que le tirage commence...*"
-        ),
-        titre="🏺 TIRAGE AU SORT DES BINÔMES",
-        couleur=discord.Color.dark_gold()
-    )
-    message = await channel.send(embed=embed_intro)
-    await asyncio.sleep(5 * facteur)
 
-    # 4. Tirage binôme par binôme
-    num = 0
-    while len(pool) >= 2:
-        num += 1
+def boite_calculer_classement():
+    lignes = []
+    for n, t in boite_state["teams"].items():
+        f = t.get("fiche")
+        lignes.append((n, f["points"]["total"] if f else 0, f["ts"] if f else float("inf"), f))
+    lignes.sort(key=lambda x: (-x[1], x[2]))
+    return lignes
 
-        # Les deux derniers : liés d'office
-        if len(pool) == 2 and not impair:
-            a, b = pool[0], pool[1]
-            focus = (
-                f"### 🎲 BINÔME #{num} — LE DERNIER\n"
-                f"Il ne reste que **deux noms** dans l'urne...\n"
-                "*Le destin a déjà tranché.*"
+
+def boite_texte_classement():
+    out = ["**🏆 Classement : La boîte à chaussures**"]
+    for rang, (n, pts, ts, f) in enumerate(boite_calculer_classement(), 1):
+        if f:
+            p = f["points"]
+            out.append(
+                f"{rang}. Équipe {n} : **{pts}/7** (date {p['date']}, stade {p['stade']}, équipes {p['equipes']}, "
+                f"score {p['score']}, bonus {p['bonus']}) déposé à {boite_fmt_duree(ts - boite_state['start'])}"
             )
-            await message.edit(embed=_embed_tirage_binomes(lignes_binomes, pool, focus, couleur=discord.Color.orange()))
-            await asyncio.sleep(3 * facteur)
-            pool.clear()
         else:
-            # Premier nom
-            entete = f"### 🎲 BINÔME #{num} / {nb_binomes}\nLa main plonge dans l'urne... **premier nom :**"
-            a = await _roulette_nom(message, pool, lignes_binomes, entete, facteur)
-            pool.remove(a)
+            out.append(f"{rang}. Équipe {n} : aucune fiche déposée (0)")
+    return "\n".join(out)
 
-            focus = (
-                f"### 🎲 BINÔME #{num} / {nb_binomes}\n"
-                f"# 👤 {a.display_name}\n"
-                f"{a.mention} sera lié(e) à...\n*(roulement de tambour 🥁)*"
+
+def boite_est_orga(interaction: discord.Interaction) -> bool:
+    """Admin du serveur ou rôle Orgas (même règle que le bot principal)."""
+    if not interaction.guild:
+        return False
+    if interaction.user.guild_permissions.administrator:
+        return True
+    role = discord.utils.get(interaction.guild.roles, name=ROLE_ORGAS_NAME)
+    return bool(role and role in interaction.user.roles)
+
+
+def boite_contexte(inter: discord.Interaction):
+    n, t = boite_team_of_channel(inter.channel_id)
+    if not t:
+        return None, None, "Utilise cette commande dans le salon de ton équipe."
+    if not boite_state["start"]:
+        return None, None, "L'épreuve n'a pas encore commencé."
+    if boite_temps_ecoule():
+        return None, None, "Le temps est écoulé."
+    if t.get("fiche"):
+        return None, None, "Votre fiche est déposée, c'est fini pour vous."
+    return n, t, None
+
+
+# ====================================================================== FICHE
+class BoiteConfirmation(discord.ui.View):
+    def __init__(self, equipe, fiche):
+        super().__init__(timeout=180)
+        self.equipe, self.fiche = equipe, fiche
+
+    @discord.ui.button(label="Envoyer définitivement", style=discord.ButtonStyle.danger)
+    async def ok(self, inter: discord.Interaction, button: discord.ui.Button):
+        t = boite_state["teams"].get(self.equipe)
+        if not t or t.get("fiche") or boite_temps_ecoule():
+            await inter.response.edit_message(content="Dépôt impossible (déjà déposé ou temps écoulé).", view=None)
+            self.stop()
+            return
+        ts = time.time()
+        pts = boite_corriger_fiche(self.fiche)
+        t["fiche"] = {**self.fiche, "ts": ts, "points": pts, "par": inter.user.display_name}
+        boite_state["carte_sent"] = True  # un dépôt a eu lieu : la carte postale n'est plus nécessaire
+        boite_save_state()
+        await inter.response.edit_message(content="📨 Fiche envoyée.", view=None)
+        await inter.channel.send(
+            f"📨 **Fiche déposée** à {boite_fmt_duree(ts - boite_state['start'])}. C'est fini pour vous, merci d'avoir joué !"
+        )
+        f = self.fiche
+        await boite_log_orga(
+            f"📨 **Équipe {self.equipe}** dépose à {boite_fmt_duree(ts - boite_state['start'])} (par {inter.user.display_name})\n"
+            f"Date : {f['date']} | Stade : {f['stade']} | Équipes : {f['equipes']} | Score : {f['score']} | Supporter : {f['supporter']}\n"
+            f"Correction auto : **{pts['total']}/7** (date {pts['date']}, stade {pts['stade']}, équipes {pts['equipes']}, "
+            f"score {pts['score']}, bonus {pts['bonus']})"
+        )
+        self.stop()
+
+    @discord.ui.button(label="Je continue de chercher", style=discord.ButtonStyle.secondary)
+    async def non(self, inter: discord.Interaction, button: discord.ui.Button):
+        await inter.response.edit_message(content="Dépôt annulé, vous pouvez continuer.", view=None)
+        self.stop()
+
+
+class BoiteFicheModal(discord.ui.Modal, title="Fiche finale"):
+    date = discord.ui.TextInput(label="Date exacte du match", placeholder="JJ/MM/AAAA", max_length=40)
+    stade = discord.ui.TextInput(label="Stade", max_length=100)
+    equipes = discord.ui.TextInput(label="Les deux équipes", placeholder="Équipe A - Équipe B", max_length=150)
+    score = discord.ui.TextInput(label="Score", placeholder="X - Y", max_length=20)
+    supporter = discord.ui.TextInput(label="Le supporter soutenait quelle équipe ?", max_length=100)
+
+    async def on_submit(self, inter: discord.Interaction):
+        n, t, erreur = boite_contexte(inter)
+        if erreur:
+            await inter.response.send_message(erreur, ephemeral=True)
+            return
+        fiche = {"date": str(self.date), "stade": str(self.stade), "equipes": str(self.equipes),
+                 "score": str(self.score), "supporter": str(self.supporter)}
+        recap = (
+            "**Relisez bien, le dépôt est unique et définitif.**\n"
+            f"Date : {fiche['date']}\nStade : {fiche['stade']}\nÉquipes : {fiche['equipes']}\n"
+            f"Score : {fiche['score']}\nSupporter : {fiche['supporter']}"
+        )
+        await inter.response.send_message(recap, view=BoiteConfirmation(n, fiche), ephemeral=True)
+
+
+# ====================================================================== COG
+class BoiteCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    async def cog_load(self):
+        if not self.tick.is_running():
+            self.tick.start()
+
+    async def cog_unload(self):
+        self.tick.cancel()
+
+    # ---------------------------------------------------------- minuterie
+    @tasks.loop(seconds=5)
+    async def tick(self):
+        if not boite_state["start"] or boite_state["ended"]:
+            return
+        try:
+            ecoule = time.time() - boite_state["start"]
+
+            if not boite_state["carte_sent"] and ecoule >= BOITE_SEUIL_CARTE:
+                boite_state["carte_sent"] = True
+                boite_save_state()
+                if not any(t.get("fiche") for t in boite_state["teams"].values()):
+                    for t in boite_state["teams"].values():
+                        ch = await boite_get_channel(t["channel"])
+                        if not ch:
+                            continue
+                        try:
+                            await ch.send("📬 **40 minutes sans aucun dépôt. Un neuvième objet vient d'arriver...**")
+                            await boite_envoyer_objet(ch, 9)
+                        except discord.HTTPException as e:
+                            print(f"[boite] objet 9 non envoyé : {e!r}")
+                    await boite_log_orga("📬 Objet 9 (carte postale) envoyé à toutes les équipes.")
+
+            if ecoule >= BOITE_DUREE:
+                boite_state["ended"] = True
+                boite_save_state()
+                for t in boite_state["teams"].values():
+                    if t.get("fiche"):
+                        await boite_envoyer(t["channel"], "⏱️ Temps écoulé. Votre fiche est bien déposée.")
+                    else:
+                        await boite_envoyer(t["channel"], "⏱️ **Temps écoulé.** Vous n'avez pas déposé de fiche.")
+                await boite_log_orga(boite_texte_classement())
+                await boite_log_orga("**Solution**\n" + BOITE_SOLUTION)
+        except Exception as e:  # ne jamais laisser la boucle mourir
+            print(f"[boite] erreur tick : {e!r}")
+
+    @tick.before_loop
+    async def avant_tick(self):
+        await self.bot.wait_until_ready()
+
+    # ---------------------------------------------------------- ORGAS
+    @app_commands.command(name="boite_setup", description="(Orga) Boîte à chaussures : crée la catégorie, les rôles et les salons")
+    @app_commands.describe(nb_equipes="Nombre d'équipes (6 par défaut)")
+    @app_commands.check(boite_est_orga)
+    async def boite_setup(self, inter: discord.Interaction, nb_equipes: app_commands.Range[int, 1, 15] = BOITE_NB_EQUIPES):
+        if boite_state["teams"]:
+            await inter.response.send_message(
+                "Déjà configuré. `/boite_reset` remet la partie à zéro, `/boite_supprimer` retire tout.", ephemeral=True
             )
-            await message.edit(embed=_embed_tirage_binomes(lignes_binomes, pool, focus, couleur=discord.Color.orange()))
-            await asyncio.sleep(3 * facteur)
+            return
+        await inter.response.defer(ephemeral=True)
+        g = inter.guild
+        role_orgas = discord.utils.get(g.roles, name=ROLE_ORGAS_NAME)
+        role_spec = discord.utils.get(g.roles, name=ROLE_SPECTATEURS_NAME)
 
-            # Partenaire
-            entete = f"### 🎲 BINÔME #{num} / {nb_binomes}\n👤 **{a.display_name}** sera lié(e) à..."
-            b = await _roulette_nom(message, pool, lignes_binomes, entete, facteur)
-            pool.remove(b)
+        def base_overwrites():
+            ow = {
+                g.default_role: discord.PermissionOverwrite(view_channel=False),
+                g.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True,
+                                                  embed_links=True, read_message_history=True),
+            }
+            if role_orgas:
+                ow[role_orgas] = discord.PermissionOverwrite(view_channel=True, send_messages=True,
+                                                             read_message_history=True)
+            return ow
 
-        # Révélation du binôme
-        groupes.append([a, b])
-        lignes_binomes.append(f"🔗 **Binôme #{num}** : {a.mention} & {b.mention}")
-        focus = (
-            f"### ✅ BINÔME #{num} SCELLÉ !\n"
-            f"# 🔗 {a.display_name} & {b.display_name}"
+        cat = await g.create_category(BOITE_NOM_CATEGORIE, overwrites=base_overwrites())
+        boite_state["category"] = cat.id
+
+        orga = await g.create_text_channel("boite-orga", category=cat, overwrites=base_overwrites())
+        boite_state["orga_channel"] = orga.id
+
+        for n in range(1, nb_equipes + 1):
+            role = await g.create_role(name=f"{BOITE_PREFIXE_ROLE} {n}", reason="Escape game boîte à chaussures")
+            ow = base_overwrites()
+            ow[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True,
+                                                   read_message_history=True, use_application_commands=True)
+            if role_spec:
+                ow[role_spec] = discord.PermissionOverwrite(view_channel=True, read_message_history=True,
+                                                            send_messages=False, add_reactions=False)
+            ch = await g.create_text_channel(f"boite-equipe-{n}", category=cat, overwrites=ow)
+            boite_state["teams"][str(n)] = {"channel": ch.id, "role": role.id, "solved": {}, "locked_until": 0, "fiche": None}
+            boite_save_state()
+
+        await inter.followup.send(
+            f"✅ {nb_equipes} équipes créées dans « {BOITE_NOM_CATEGORIE} ».\n"
+            "Donne les rôles avec `/boite_assigner`, puis lance avec `/boite_lancer`.\n"
+            f"Le salon {orga.mention} reçoit les dépôts, le classement et la solution.",
+            ephemeral=True,
         )
-        await message.edit(embed=_embed_tirage_binomes(lignes_binomes, pool, focus, couleur=discord.Color.green()))
-        await asyncio.sleep(4 * facteur)
 
-    # 5. Cas impair : le dernier forme un trio
-    trio = None
-    if impair and pool:
-        dernier = pool.pop()
-        focus = (
-            "### 🔺 TWIST DU DESTIN !\n"
-            f"**{dernier.display_name}** reste seul(e) dans l'urne...\n"
-            "Il/elle va rejoindre un binôme existant pour former un **TRIO** !"
+    @app_commands.command(name="boite_assigner", description="(Orga) Boîte à chaussures : place des joueurs dans une équipe")
+    @app_commands.describe(equipe="Numéro d'équipe", joueur_1="Joueur", joueur_2="Joueur (optionnel)",
+                           joueur_3="Joueur (optionnel)", joueur_4="Joueur (optionnel)", joueur_5="Joueur (optionnel)")
+    @app_commands.check(boite_est_orga)
+    async def boite_assigner(self, inter: discord.Interaction, equipe: app_commands.Range[int, 1, 15],
+                             joueur_1: discord.Member, joueur_2: discord.Member = None, joueur_3: discord.Member = None,
+                             joueur_4: discord.Member = None, joueur_5: discord.Member = None):
+        t = boite_state["teams"].get(str(equipe))
+        if not t:
+            await inter.response.send_message("Équipe inconnue. Fais d'abord `/boite_setup`.", ephemeral=True)
+            return
+        role = inter.guild.get_role(t["role"])
+        if not role:
+            await inter.response.send_message("Le rôle de cette équipe a disparu.", ephemeral=True)
+            return
+        await inter.response.defer(ephemeral=True)
+
+        autres_roles = [inter.guild.get_role(x["role"]) for k, x in boite_state["teams"].items() if k != str(equipe)]
+        autres_roles = [r for r in autres_roles if r]
+
+        joueurs = {j.id: j for j in (joueur_1, joueur_2, joueur_3, joueur_4, joueur_5) if j and not j.bot}
+        ok, ko = [], []
+        for j in joueurs.values():
+            try:
+                a_retirer = [r for r in autres_roles if r in j.roles]
+                if a_retirer:
+                    await j.remove_roles(*a_retirer, reason="Changement d'équipe boîte")
+                await j.add_roles(role, reason="Escape game boîte à chaussures")
+                ok.append(j.mention)
+            except discord.HTTPException as e:
+                ko.append(f"{j.display_name} ({e.status})")
+
+        msg = f"✅ Équipe {equipe} : {', '.join(ok) or 'personne'}"
+        if ko:
+            msg += f"\n❌ Échec : {', '.join(ko)} (vérifie que le rôle du bot est au-dessus de « {role.name} »)"
+        await inter.followup.send(msg, ephemeral=True)
+
+    @app_commands.command(name="boite_lancer", description="(Orga) Boîte à chaussures : démarre l'épreuve")
+    @app_commands.check(boite_est_orga)
+    async def boite_lancer(self, inter: discord.Interaction):
+        if not boite_state["teams"]:
+            await inter.response.send_message("Fais d'abord `/boite_setup`.", ephemeral=True)
+            return
+        if boite_state["start"]:
+            await inter.response.send_message("L'épreuve est déjà lancée. `/boite_reset` pour recommencer.", ephemeral=True)
+            return
+
+        vides = []
+        for n, t in boite_state["teams"].items():
+            role = inter.guild.get_role(t["role"])
+            if not role or not [m for m in role.members if not m.bot]:
+                vides.append(n)
+
+        boite_state["start"] = time.time()
+        boite_state["ended"] = False
+        boite_state["carte_sent"] = False
+        boite_save_state()
+
+        fin = int(boite_state["start"] + BOITE_DUREE)
+        msg = "🚀 C'est parti !"
+        if vides:
+            msg += f"\n⚠️ Équipe(s) sans joueur : {', '.join(vides)}"
+        await inter.response.send_message(msg, ephemeral=True)
+
+        intro = (
+            "📦 **LA BOÎTE À CHAUSSURES**\n"
+            "Un vieux supporter est mort. Dans son grenier, une boîte à chaussures avec huit objets, "
+            "tous du même après-midi de football. Retrouvez quel match il est allé voir.\n\n"
+            "• `/boite_enigmes` : liste des énigmes\n"
+            f"• `/boite_repondre` : ouvrir un objet (erreur = {BOITE_COOLDOWN // 60} min d'attente pour toute l'équipe)\n"
+            "• `/boite_fiche` : déposer votre fiche finale (un seul dépôt, définitif)\n"
+            "• `/boite_temps` : temps restant\n\n"
+            f"Fin de l'épreuve <t:{fin}:R> (à <t:{fin}:T>). Internet est autorisé. Bonne chance !"
         )
-        await message.edit(embed=_embed_tirage_binomes(lignes_binomes, [dernier], focus, couleur=discord.Color.purple()))
-        await asyncio.sleep(4 * facteur)
+        for t in boite_state["teams"].values():
+            await boite_envoyer(t["channel"], intro)
+        await boite_log_orga(f"⏱️ Chrono lancé. Fin à <t:{fin}:T>.")
 
-        idx = _RNG_TIRAGE.randrange(len(groupes))
-        groupes[idx].append(dernier)
-        trio = groupes[idx]
-        a, b, c = trio
-        lignes_binomes[idx] = f"🔺 **Trio #{idx + 1}** : {a.mention}, {b.mention} & {c.mention}"
+    @app_commands.command(name="boite_classement", description="(Orga) Boîte à chaussures : classement et fiches")
+    @app_commands.check(boite_est_orga)
+    async def boite_classement(self, inter: discord.Interaction):
+        if not boite_state["teams"]:
+            await inter.response.send_message("Aucune partie configurée.", ephemeral=True)
+            return
+        avancement = "\n".join(
+            f"Équipe {n} : {len(t['solved'])}/9 objets ouverts" for n, t in boite_state["teams"].items()
+        )
+        await inter.response.send_message((boite_texte_classement() + "\n\n**Avancement**\n" + avancement)[:2000], ephemeral=True)
 
-    # 6. Sauvegarde pour /creer_salons_binomes (binômes uniquement)
-    DERNIERS_BINOMES_TIRES = [
-        (_infos_binome(g[0], role_candidats), _infos_binome(g[1], role_candidats))
-        for g in groupes if len(g) == 2
-    ]
+    @app_commands.command(name="boite_forcer", description="(Orga) Boîte à chaussures : débloque un objet pour une équipe")
+    @app_commands.describe(equipe="Numéro d'équipe", numero="Numéro de l'objet (1 à 9)")
+    @app_commands.check(boite_est_orga)
+    async def boite_forcer(self, inter: discord.Interaction, equipe: int, numero: app_commands.Range[int, 1, 9]):
+        t = boite_state["teams"].get(str(equipe))
+        if not t:
+            await inter.response.send_message("Équipe inconnue.", ephemeral=True)
+            return
+        t["solved"][str(numero)] = time.time()
+        boite_save_state()
+        await inter.response.send_message(f"Objet {numero} envoyé à l'équipe {equipe}.", ephemeral=True)
+        await boite_envoyer_objet(await boite_get_channel(t["channel"]), numero)
 
-    # 7. Verdict final
-    texte_final = "\n".join(lignes_binomes)
-    texte_final += (
-        "\n\n━━━━━━━━━━━━━━━━━━━━━━\n"
-        "👉 *Pour ouvrir les salons privés :* `/creer_salons_binomes`"
-    )
-    if trio:
-        texte_final += "\n🔺 *Le trio est à créer avec* `/creer_trio`."
+    @app_commands.command(name="boite_reset", description="(Orga) Boîte à chaussures : remet la partie à zéro (garde salons et rôles)")
+    @app_commands.check(boite_est_orga)
+    async def boite_reset(self, inter: discord.Interaction):
+        for t in boite_state["teams"].values():
+            t.update({"solved": {}, "locked_until": 0, "fiche": None})
+        boite_state.update({"start": None, "ended": False, "carte_sent": False})
+        boite_save_state()
+        await inter.response.send_message("Partie remise à zéro.", ephemeral=True)
 
-    embed_final = discord.Embed(
-        title="⚡ DESTINS LIÉS — TIRAGE TERMINÉ ⚡",
-        description=texte_final[:4000],
-        color=discord.Color.green()
-    )
-    embed_final.set_footer(text="Le tirage est irrévocable.")
-    await message.edit(embed=embed_final)
+    @app_commands.command(name="boite_supprimer", description="(Orga) Boîte à chaussures : supprime catégorie, salons et rôles")
+    @app_commands.check(boite_est_orga)
+    async def boite_supprimer(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+        g = inter.guild
+        erreurs = 0
+        for t in boite_state["teams"].values():
+            for obj in (g.get_channel(t["channel"]), g.get_role(t["role"])):
+                if obj:
+                    try:
+                        await obj.delete(reason="Fin escape game boîte")
+                    except discord.HTTPException:
+                        erreurs += 1
+        for cid in (boite_state["orga_channel"], boite_state["category"]):
+            obj = g.get_channel(cid) if cid else None
+            if obj:
+                try:
+                    await obj.delete(reason="Fin escape game boîte")
+                except discord.HTTPException:
+                    erreurs += 1
+        boite_state.clear()
+        boite_state.update(boite_new_state())
+        boite_save_state()
+        await inter.followup.send(
+            "🗑️ Tout est supprimé." + (f" ({erreurs} élément(s) n'ont pas pu être supprimés)" if erreurs else ""),
+            ephemeral=True,
+        )
 
-    await interaction.followup.send(
-        f"✅ Tirage terminé : **{len(DERNIERS_BINOMES_TIRES)} binômes** enregistrés"
-        + (" + 1 trio" if trio else "") + ". Tu peux lancer `/creer_salons_binomes`.",
-        ephemeral=True
-    )
+    # ---------------------------------------------------------- JOUEURS
+    @app_commands.command(name="boite_temps", description="Boîte à chaussures : temps restant")
+    async def boite_temps(self, inter: discord.Interaction):
+        r = boite_restant()
+        if r is None:
+            await inter.response.send_message("L'épreuve n'a pas commencé.", ephemeral=True)
+        elif r <= 0:
+            await inter.response.send_message("⏱️ Le temps est écoulé.", ephemeral=True)
+        else:
+            await inter.response.send_message(f"⏱️ Il reste **{boite_fmt_duree(r)}**.")
+
+    @app_commands.command(name="boite_enigmes", description="Boîte à chaussures : liste des énigmes et leur état")
+    async def boite_enigmes(self, inter: discord.Interaction):
+        n, t = boite_team_of_channel(inter.channel_id)
+        if not t:
+            await inter.response.send_message("Utilise cette commande dans le salon de ton équipe.", ephemeral=True)
+            return
+        if not boite_state["start"]:
+            await inter.response.send_message("L'épreuve n'a pas encore commencé.", ephemeral=True)
+            return
+        lignes = [f"{'✅' if str(i) in t['solved'] else '🔒'} **{i}.** {txt}" for i, txt in BOITE_ENIGMES.items()]
+        await inter.response.send_message("\n\n".join(lignes)[:2000])
+
+    @app_commands.command(name="boite_repondre", description="Boîte à chaussures : répondre à une énigme")
+    @app_commands.describe(numero="Numéro de l'énigme (1 à 8)", reponse="Votre réponse")
+    async def boite_repondre(self, inter: discord.Interaction, numero: app_commands.Range[int, 1, 8], reponse: str):
+        n, t, erreur = boite_contexte(inter)
+        if erreur:
+            await inter.response.send_message(erreur, ephemeral=True)
+            return
+        if str(numero) in t["solved"]:
+            await inter.response.send_message("Cet objet est déjà ouvert.", ephemeral=True)
+            return
+        attente = t["locked_until"] - time.time()
+        if attente > 0:
+            await inter.response.send_message(f"⏳ Patientez encore **{boite_fmt_duree(attente)}** avant de retenter.", ephemeral=True)
+            return
+
+        if boite_reponse_ok(numero, reponse):
+            t["solved"][str(numero)] = time.time()
+            boite_save_state()
+            await inter.response.send_message(f"✅ Bonne réponse à l'énigme {numero} ! Voici l'objet.")
+            await boite_envoyer_objet(inter.channel, numero)
+            await boite_log_orga(f"🔓 Équipe {n} ouvre l'objet {numero} ({inter.user.display_name} : « {reponse[:100]} »)")
+        else:
+            t["locked_until"] = time.time() + BOITE_COOLDOWN
+            boite_save_state()
+            await inter.response.send_message(
+                f"❌ « {reponse[:100]} » : ce n'est pas ça. Vous pourrez retenter dans {BOITE_COOLDOWN // 60} minutes."
+            )
+            await boite_log_orga(f"❌ Équipe {n}, énigme {numero} : « {reponse[:100]} » ({inter.user.display_name})")
+
+    @app_commands.command(name="boite_fiche", description="Boîte à chaussures : déposer votre fiche finale (un seul dépôt)")
+    async def boite_fiche(self, inter: discord.Interaction):
+        n, t, erreur = boite_contexte(inter)
+        if erreur:
+            await inter.response.send_message(erreur, ephemeral=True)
+            return
+        await inter.response.send_modal(BoiteFicheModal())
+
+
+
+
 # ==========================================
 # DÉMARRAGE DU BOT
 # ==========================================
+async def _setup_hook():
+    await bot.add_cog(BoiteCog(bot))   # escape game « La boîte à chaussures »
+
+bot.setup_hook = _setup_hook
+
 bot.run(TOKEN)
