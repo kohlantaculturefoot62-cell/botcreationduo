@@ -1189,35 +1189,6 @@ async def supprimer_categorie(interaction: discord.Interaction, nom_categorie: s
     await category.delete(reason="Nettoyage")
     await interaction.followup.send(f"🗑️ Catégorie **{nom_categorie}** et ses **{total_channels} salons** supprimés !", ephemeral=True)
 
-
-@bot.tree.command(name="purger_equipe_duos", description="Supprime toutes les catégories commençant par ce nom.")
-@app_commands.describe(prefixe="Début du nom des catégories (ex: Duos Rouge)")
-@app_commands.check(est_orga_ou_admin)
-async def purger_equipe_duos(interaction: discord.Interaction, prefixe: str):
-    await interaction.response.defer(ephemeral=True)
-    guild = interaction.guild
-
-    clean_pref = nettoyer_texte(prefixe)
-    categories_to_delete = [c for c in guild.categories if nettoyer_texte(c.name).startswith(clean_pref)]
-    if not categories_to_delete:
-        await interaction.followup.send(f"❌ Aucune catégorie ne commence par **{prefixe}**.", ephemeral=True)
-        return
-
-    total_channels = 0
-    for cat in categories_to_delete:
-        for ch in cat.channels:
-            try:
-                await ch.delete(reason="Purge")
-                total_channels += 1
-                await asyncio.sleep(0.4)
-            except Exception:
-                pass
-        await cat.delete(reason="Purge")
-        await asyncio.sleep(0.5)
-
-    await interaction.followup.send(f"🗑️ Nettoyage : **{len(categories_to_delete)} catégories** et **{total_channels} salons** supprimés !", ephemeral=True)
-
-
 @bot.tree.command(
     name="effacer_salon",
     description="Supprime tous les messages d'un salon (clone et recrée le salon à neuf avec les mêmes permissions)."
@@ -1326,57 +1297,6 @@ async def ajouter_spectateurs_salon(interaction: discord.Interaction, salon: dis
             )
         else:
             await interaction.followup.send(f"❌ Erreur Discord : {e}", ephemeral=True)
-
-
-@bot.tree.command(
-    name="ajouter_spectateurs_categorie",
-    description="Donne l'accès Spectateurs strict à tous les salons d'une catégorie."
-)
-@app_commands.describe(nom_categorie="Nom de la catégorie cible (ex: ⛺ CAMPS ou DUO ROUGE)")
-@app_commands.check(est_orga_ou_admin)
-async def ajouter_spectateurs_categorie(interaction: discord.Interaction, nom_categorie: str):
-    await interaction.response.defer(ephemeral=True)
-    guild = interaction.guild
-
-    role_spectateurs = discord.utils.get(guild.roles, name=ROLE_SPECTATEURS_NAME)
-    if not role_spectateurs:
-        await interaction.followup.send(f"❌ Rôle **{ROLE_SPECTATEURS_NAME}** introuvable sur le serveur.", ephemeral=True)
-        return
-
-    target_clean = nettoyer_texte(nom_categorie)
-    category = discord.utils.find(lambda c: nettoyer_texte(c.name) == target_clean, guild.categories)
-
-    if not category:
-        await interaction.followup.send(f"❌ Catégorie **{nom_categorie}** introuvable.", ephemeral=True)
-        return
-
-    channels_list = [ch for ch in category.channels if isinstance(ch, discord.TextChannel)]
-    if not channels_list:
-        await interaction.followup.send(f"ℹ️ Aucun salon textuel trouvé dans **{category.name}**.", ephemeral=True)
-        return
-
-    overwrites = get_spectateur_overwrites()
-    mis_a_jour = 0
-
-    for ch in channels_list:
-        try:
-            await ch.set_permissions(
-                role_spectateurs, 
-                overwrite=overwrites, 
-                reason=f"Accès spectateurs par lot ({interaction.user.display_name})"
-            )
-            mis_a_jour += 1
-            await asyncio.sleep(1.0)
-        except discord.HTTPException as e:
-            if e.status == 429:
-                await asyncio.sleep(5.0)
-            else:
-                pass
-
-    await interaction.followup.send(
-        f"👁️ Accès **Spectateurs** appliqué sur **{mis_a_jour}/{len(channels_list)} salon(s)** de **{category.name}** !",
-        ephemeral=True
-    )
 
 
 # ==========================================
@@ -1867,87 +1787,6 @@ async def desactiver_conseil(interaction: discord.Interaction, role_equipe: disc
         f"- Leurs accès aux salons duos, binômes et discussions privées sont rouverts.",
         ephemeral=True
     )
-
-
-# ========================================================
-# 13. CHRONOMÈTRES, QUESTION FLASH ET ANTI-TRICHE
-# ========================================================
-
-@bot.tree.command(
-    name="poser_question_flash",
-    description="Pose une seule question flash ultra-lisible avec chrono dynamique Discord."
-)
-@app_commands.describe(
-    question="La question à poser au candidat",
-    secondes="Temps limite en secondes (ex: 15)"
-)
-@app_commands.check(est_orga_ou_admin)
-async def poser_question_flash(
-    interaction: discord.Interaction,
-    question: str,
-    secondes: int = 15
-):
-    channel = interaction.channel
-    now = datetime.datetime.now(datetime.timezone.utc)
-    fin_timestamp = int((now + datetime.timedelta(seconds=secondes)).timestamp())
-
-    embed_question = discord.Embed(
-        title="⚡ QUESTION FLASH",
-        description=(
-            f"**{question}**\n\n"
-            f"⏳ **Fin du chrono :** <t:{fin_timestamp}:R> *(à <t:{fin_timestamp}:T>)*"
-        ),
-        color=discord.Color.from_rgb(255, 69, 0)
-    )
-
-    await interaction.response.send_message(embed=embed_question)
-    original_msg = await interaction.original_response()
-
-    def check(m: discord.Message):
-        return m.channel.id == channel.id and not m.author.bot
-
-    debut_time = datetime.datetime.now()
-
-    try:
-        reponse_msg = await bot.wait_for("message", timeout=secondes, check=check)
-        temps_pris = round((datetime.datetime.now() - debut_time).total_seconds(), 2)
-
-        embed_fige = discord.Embed(
-            title="⚡ QUESTION FLASH",
-            description=(
-                f"**{question}**\n\n"
-                f"⏱️ **Répondu en `{temps_pris}s`**"
-            ),
-            color=discord.Color.green()
-        )
-        await original_msg.edit(embed=embed_fige)
-
-        embed_reponse = discord.Embed(
-            title="✅ RÉPONSE VALIDÉE",
-            description=(
-                f"💬 **Réponse :** `{reponse_msg.content}`\n"
-                f"⚡ **Temps :** `{temps_pris}s`"
-            ),
-            color=discord.Color.green()
-        )
-        await channel.send(embed=embed_reponse)
-
-    except asyncio.TimeoutError:
-        embed_timeout_fige = discord.Embed(
-            title="⚡ QUESTION FLASH",
-            description=(
-                f"**{question}**\n\n"
-                f"🛑 **TEMPS ÉCOULÉ**"
-            ),
-            color=discord.Color.dark_red()
-        )
-        await original_msg.edit(embed=embed_timeout_fige)
-
-        embed_fin = discord.Embed(
-            title="🛑 TEMPS ÉCOULÉ !",
-            color=discord.Color.dark_red()
-        )
-        await channel.send(embed=embed_fin)
 
 
 @bot.tree.command(
