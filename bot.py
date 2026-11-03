@@ -9843,8 +9843,8 @@ def boite_new_state():
     return {"orga_channel": None, "category": None, "demo_channel": None, "teams": {}}
 
 
-def boite_new_team(channel_id, role_id):
-    return {"channel": channel_id, "role": role_id, "tuto": False,
+def boite_new_team(channel_id, role_id, salon_existant=False):
+    return {"channel": channel_id, "role": role_id, "tuto": False, "salon_existant": salon_existant,
             "start": None, "ended": False, "carte_sent": False,
             "solved": {}, "locked_until": 0, "fiche": None}
 
@@ -10151,13 +10151,13 @@ async def boite_lancer_depuis_salon(interaction: discord.Interaction):
             f"L'équipe {n} a déjà joué. Pour la faire rejouer : `/boite_reset equipe:{n}`, puis relance.", ephemeral=True)
         return
 
-    role = interaction.guild.get_role(t["role"]) if t["role"] else None
+    role = interaction.guild.get_role(t["role"]) if t.get("role") else None
     joueurs = [m for m in role.members if not m.bot] if role else []
     await boite_demarrer(interaction.channel, t)
-    msg = f"🚀 Partie de l'équipe {n} lancée ({len(joueurs)} joueur(s))."
+    msg = f"🚀 Partie de l'équipe {n} lancée" + ("." if t.get("salon_existant") else f" ({len(joueurs)} joueur(s)).")
     if tuto_remplace:
         msg += "\nLe tutoriel en cours a été arrêté."
-    if not joueurs:
+    if not joueurs and not t.get("salon_existant"):
         msg += "\n⚠️ Personne n'a le rôle de cette équipe : utilise `/boite_assigner`."
     await interaction.response.send_message(msg, ephemeral=True)
     fin = int(t["start"] + BOITE_DUREE)
@@ -10288,49 +10288,91 @@ class BoiteCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     # ---------------------------------------------------------- ORGAS
-    @app_commands.command(name="boite_setup", description="(Orga) Boîte à chaussures : crée les salons et rôles (relance-la pour ajouter des équipes)")
-    @app_commands.describe(nb_equipes="Nombre total d'équipes voulu (6 par défaut)")
+    @app_commands.command(name="boite_setup", description="(Orga) Boîte à chaussures : crée les salons d'équipe, ou utilise ce salon comme salon d'équipe")
+    @app_commands.describe(
+        nb_equipes="Nombre total d'équipes voulu (6 par défaut). Relance pour en ajouter ou recréer celles supprimées",
+        ce_salon="Utiliser CE salon (déjà existant) comme salon d'une équipe, sans créer de salon ni de rôle"
+    )
     @app_commands.check(est_orga_ou_admin)
-    async def boite_setup(self, inter: discord.Interaction, nb_equipes: app_commands.Range[int, 1, 20] = BOITE_NB_EQUIPES):
+    async def boite_setup(self, inter: discord.Interaction,
+                          nb_equipes: app_commands.Range[int, 1, 20] = BOITE_NB_EQUIPES, ce_salon: bool = False):
         await inter.response.defer(ephemeral=True)
         g = inter.guild
         role_spec = discord.utils.get(g.roles, name=ROLE_SPECTATEURS_NAME)
 
-        cat = g.get_channel(boite_state["category"]) if boite_state["category"] else None
-        if not cat:
-            cat = await g.create_category(BOITE_NOM_CATEGORIE, overwrites=boite_overwrites_base(g))
-            boite_state["category"] = cat.id
+        try:
+            cat = g.get_channel(boite_state["category"]) if boite_state["category"] else None
+            if not cat:
+                cat = await g.create_category(BOITE_NOM_CATEGORIE, overwrites=boite_overwrites_base(g))
+                boite_state["category"] = cat.id
 
-        orga = g.get_channel(boite_state["orga_channel"]) if boite_state["orga_channel"] else None
-        if not orga:
-            orga = await g.create_text_channel("boite-orga", category=cat, overwrites=boite_overwrites_base(g))
-            boite_state["orga_channel"] = orga.id
-        boite_save_state()
+            orga = g.get_channel(boite_state["orga_channel"]) if boite_state["orga_channel"] else None
+            if not orga:
+                orga = await g.create_text_channel("boite-orga", category=cat, overwrites=boite_overwrites_base(g))
+                boite_state["orga_channel"] = orga.id
+            boite_save_state()
+        except discord.Forbidden:
+            await inter.followup.send("❌ Le bot n'a pas le droit **Gérer les salons**. Donne-le-lui dans les rôles du serveur.", ephemeral=True)
+            return
 
-        crees = []
+        # --- Mode « ce salon » : un salon existant devient le salon d'une équipe
+        if ce_salon:
+            n_exist, t_exist = boite_team_of_channel(inter.channel_id)
+            if t_exist:
+                await inter.followup.send(f"Ce salon est déjà celui de l'équipe {n_exist}.", ephemeral=True)
+                return
+            n = 1
+            while str(n) in boite_state["teams"] and g.get_channel(boite_state["teams"][str(n)]["channel"]):
+                n += 1
+            boite_state["teams"][str(n)] = boite_new_team(inter.channel_id, None, salon_existant=True)
+            boite_save_state()
+            await inter.followup.send(
+                f"✅ Ce salon est maintenant le salon de l'**équipe {n}**. Tous ceux qui voient ce salon jouent pour cette équipe "
+                "(pas besoin de `/boite_assigner`).\n"
+                "• `/boite_demo` ici pour le tutoriel\n• `/lancer_epreuve` ici (sans option) pour la vraie partie\n"
+                f"Le suivi orga arrive dans {orga.mention}.",
+                ephemeral=True,
+            )
+            return
+
+        # --- Mode normal : création des salons et rôles manquants
+        crees, erreurs = [], []
         for n in range(1, nb_equipes + 1):
-            if str(n) in boite_state["teams"]:
+            t = boite_state["teams"].get(str(n))
+            if t and g.get_channel(t["channel"]):
+                continue  # l'équipe existe et son salon aussi
+            if t and t.get("salon_existant"):
+                continue  # salon existant supprimé à la main : on ne le recrée pas
+            try:
+                role = g.get_role(t["role"]) if t and t.get("role") else None
+                if not role:
+                    role = await g.create_role(name=f"{BOITE_PREFIXE_ROLE} {n}", reason="Escape game boîte à chaussures")
+                ow = boite_overwrites_base(g)
+                ow[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True,
+                                                       read_message_history=True, use_application_commands=True)
+                if role_spec:
+                    ow[role_spec] = discord.PermissionOverwrite(view_channel=True, read_message_history=True,
+                                                                send_messages=False, add_reactions=False)
+                ch = await g.create_text_channel(f"boite-equipe-{n}", category=cat, overwrites=ow)
+            except discord.Forbidden:
+                erreurs.append(f"équipe {n}")
                 continue
-            role = await g.create_role(name=f"{BOITE_PREFIXE_ROLE} {n}", reason="Escape game boîte à chaussures")
-            ow = boite_overwrites_base(g)
-            ow[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True,
-                                                   read_message_history=True, use_application_commands=True)
-            if role_spec:
-                ow[role_spec] = discord.PermissionOverwrite(view_channel=True, read_message_history=True,
-                                                            send_messages=False, add_reactions=False)
-            ch = await g.create_text_channel(f"boite-equipe-{n}", category=cat, overwrites=ow)
+            except discord.HTTPException as e:
+                erreurs.append(f"équipe {n} ({e.status})")
+                continue
             boite_state["teams"][str(n)] = boite_new_team(ch.id, role.id)
             boite_save_state()
             crees.append(ch.mention)
 
-        await inter.followup.send(
-            (f"✅ Créé(s) : {', '.join(crees)}\n" if crees else "Rien à créer, tout existe déjà.\n")
-            + "1. `/boite_assigner` pour mettre les joueurs dans leur équipe.\n"
-            "2. `/boite_demo` dans le salon d'une équipe pour lui montrer le fonctionnement.\n"
-            "3. Le jour J, va dans le salon de l'équipe et tape `/lancer_epreuve` (sans option).\n"
-            f"Le salon {orga.mention} reçoit les réponses, dépôts, le classement et la solution.",
-            ephemeral=True,
-        )
+        msg = (f"✅ Créé(s) : {', '.join(crees)}\n" if crees else "Rien à créer, tous les salons d'équipe existent déjà.\n")
+        if erreurs:
+            msg += (f"❌ Impossible de créer : {', '.join(erreurs)}. Vérifie que le bot a les droits **Gérer les rôles** "
+                    "et **Gérer les salons**, et que son rôle est assez haut dans la liste.\n")
+        msg += ("1. `/boite_assigner` pour mettre les joueurs dans leur équipe.\n"
+                "2. `/boite_demo` dans le salon d'une équipe pour lui montrer le fonctionnement.\n"
+                "3. Le jour J, va dans le salon de l'équipe et tape `/lancer_epreuve` (sans option).\n"
+                f"Le salon {orga.mention} reçoit les réponses, dépôts, le classement et la solution.")
+        await inter.followup.send(msg, ephemeral=True)
 
     @app_commands.command(name="boite_assigner", description="(Orga) Boîte à chaussures : place des joueurs dans une équipe")
     @app_commands.describe(equipe="Numéro d'équipe", joueur_1="Joueur", joueur_2="Joueur (optionnel)",
@@ -10343,9 +10385,14 @@ class BoiteCog(commands.Cog):
         if not t:
             await inter.response.send_message("Équipe inconnue. Lance `/boite_setup` avec assez d'équipes.", ephemeral=True)
             return
-        role = inter.guild.get_role(t["role"])
+        if t.get("salon_existant"):
+            await inter.response.send_message(
+                f"L'équipe {equipe} joue dans un salon existant : tous ceux qui voient ce salon jouent, rien à assigner.",
+                ephemeral=True)
+            return
+        role = inter.guild.get_role(t["role"]) if t.get("role") else None
         if not role:
-            await inter.response.send_message("Le rôle de cette équipe a disparu.", ephemeral=True)
+            await inter.response.send_message("Le rôle de cette équipe a disparu : relance `/boite_setup` pour le recréer.", ephemeral=True)
             return
         await inter.response.defer(ephemeral=True)
 
@@ -10451,7 +10498,8 @@ class BoiteCog(commands.Cog):
         erreurs = 0
         objets = []
         for t in boite_state["teams"].values():
-            objets.append(g.get_channel(t["channel"]))
+            if not t.get("salon_existant"):   # un salon qui existait avant le jeu n'est jamais supprimé
+                objets.append(g.get_channel(t["channel"]))
             if t.get("role"):
                 objets.append(g.get_role(t["role"]))
         for cid in (boite_state["demo_channel"], boite_state["orga_channel"], boite_state["category"]):
