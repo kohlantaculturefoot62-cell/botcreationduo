@@ -9234,7 +9234,7 @@ def _destination_titre(etape: str) -> str:
     forcer="Passer à cette étape même si le candidat n'a pas fini la précédente"
 )
 @app_commands.choices(etape=DESTINATION_CHOIX_ETAPES)
-@app_commands.check(est_orga_ou_admin)
+#@app_commands.check(est_orga_ou_admin)
 async def destination_ouvrir_etape(
     interaction: discord.Interaction,
     etape: app_commands.Choice[str],
