@@ -2179,6 +2179,11 @@ async def lancer_epreuve(
     nom_categorie: str = None,
     mode_affichage: app_commands.Choice[str] = None
 ):
+    # Escape game « La boîte à chaussures » : tapé sans option dans un salon boite-equipe-N
+    if not candidat and not salon_cible and not nom_categorie and boite_team_of_channel(interaction.channel_id)[1]:
+        await boite_lancer_depuis_salon(interaction)
+        return
+
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
@@ -9510,21 +9515,30 @@ async def completer_duos_manquants(
 # ========================================================
 # ESCAPE GAME : LA BOÎTE À CHAUSSURES (ATTENTION : contient les solutions)
 # Images objet_1.png ... objet_9.png dans le même dossier que bot.py
+#
+# Chaque équipe a son propre chrono : on la lance quand on veut, le jour qu'on veut,
+# en tapant /lancer_epreuve (sans option) dans son salon boite-equipe-N.
+# /boite_demo ouvre un salon tutoriel avec une mini-partie d'entraînement.
 # ========================================================
 from pathlib import Path
 
-# ====================================================================== RÉGLAGES
+# ---------------------------------------------------------------- RÉGLAGES
 BOITE_NB_EQUIPES = 6
-BOITE_DUREE = 60 * 60          # durée totale (secondes)
-BOITE_SEUIL_CARTE = 40 * 60    # si aucun dépôt à ce moment : objet 9
+BOITE_DUREE = 60 * 60          # durée d'une partie (secondes)
+BOITE_SEUIL_CARTE = 40 * 60    # sans dépôt de l'équipe à ce moment : objet 9
 BOITE_COOLDOWN = 2 * 60        # attente après une mauvaise réponse
+BOITE_DEMO_DUREE = 10 * 60     # durée du tutoriel
+BOITE_DEMO_COOLDOWN = 15       # attente après une mauvaise réponse (tutoriel)
 BOITE_NOM_CATEGORIE = "📦 LA BOÎTE À CHAUSSURES"
 BOITE_PREFIXE_ROLE = "Boîte Équipe"
+BOITE_NOM_SALON_DEMO = "boite-tutoriel"
+BOITE_CLE_DEMO = "demo"
 
 BOITE_BASE = Path(__file__).resolve().parent
 BOITE_STATE_FILE = BOITE_BASE / "boite_state.json"
 BOITE_OBJETS_DIR = BOITE_BASE   # objet_1.png ... objet_9.png à côté de bot.py
 
+# ---------------------------------------------------------------- CONTENU : VRAIE PARTIE
 BOITE_ENIGMES = {
     1: "Quarante ans avant que les cartons existent, je fus le premier à qui l'on montra la sortie dans un Mondial.",
     2: "J'ai gardé la même cage pendant un quart de siècle, et j'ai arrêté un penalty à quarante-cinq ans, sur la terre des tsars.",
@@ -9553,7 +9567,7 @@ BOITE_REFUS = {
     4: ["rda", "ddr", "east germany", "allemagne de l est", "democratique"],
 }
 
-# Texte de secours si l'image boite_objets/objet_N.png est absente
+# Texte de secours si l'image objet_N.png est absente
 BOITE_OBJETS = {
     1: ("Un bout de billet", "L'encre a bavé. Il ne reste qu'une seule ligne lisible.\n\n**Sa, ..05. Anstoß 15.30 Uhr**"),
     2: ("Une facture d'imprimeur",
@@ -9596,23 +9610,70 @@ BOITE_SOLUTION = (
     "La boîte appartient à un supporter de Francfort."
 )
 
-# ====================================================================== ÉTAT
+# Clés de correction de la fiche finale
+BOITE_CORRIGE = {
+    "jour": "16", "mois": ["mai", "05", "5", "may"], "annee": ["1992", "92"],
+    "stade": ["ostsee"],
+    "equipe_a": ["rostock", "hansa"], "equipe_b": ["francfort", "frankfurt", "eintracht"],
+    "score": ("2", "1"),
+    "supporter_ok": ["francfort", "frankfurt", "eintracht"], "supporter_ko": ["rostock", "hansa"],
+}
 
+# ---------------------------------------------------------------- CONTENU : TUTORIEL
+BOITE_DEMO_ENIGMES = {
+    1: "Je suis le pays qui a remporté la toute première Coupe du monde, en 1930, à domicile.",
+    2: "Je suis la ville où se trouve le Stade de France.",
+}
+BOITE_DEMO_REPONSES = {
+    1: ["uruguay"],
+    2: ["saint denis", "st denis"],
+}
+BOITE_DEMO_OBJETS = {
+    1: ("Un ticket déchiré",
+        "Coupe du Monde de la FIFA, FINALE\nDimanche 12 juillet 1998, 21h00\nStade de France\nTribune Nord, rang 14"),
+    2: ("Une coupure de journal",
+        "« Deux têtes de Zidane, puis Petit au bout du temps additionnel. Le Brésil n'a rien vu venir. »\n"
+        "Dans la marge, griffonné au stylo : **3 - 0**\n"
+        "Une écharpe bleu-blanc-rouge était glissée dans le journal."),
+}
+BOITE_DEMO_SOLUTION = (
+    "Dimanche 12 juillet 1998, Stade de France (Saint-Denis).\n"
+    "France 3 - 0 Brésil, finale de la Coupe du monde.\n"
+    "La boîte appartient à un supporter de l'équipe de France."
+)
+BOITE_DEMO_CORRIGE = {
+    "jour": "12", "mois": ["juillet", "07", "7", "july"], "annee": ["1998", "98"],
+    "stade": ["stadedefrance", "saintdenis"],
+    "equipe_a": ["france"], "equipe_b": ["bresil", "brazil"],
+    "score": ("3", "0"),
+    "supporter_ok": ["france"], "supporter_ko": ["bresil", "brazil"],
+}
 
+# ---------------------------------------------------------------- ÉTAT (une partie par équipe)
 def boite_new_state():
-    return {"start": None, "ended": False, "carte_sent": False,
-            "orga_channel": None, "category": None, "teams": {}}
+    return {"orga_channel": None, "category": None, "demo_channel": None, "teams": {}}
+
+
+def boite_new_team(channel_id, role_id, demo=False):
+    return {"channel": channel_id, "role": role_id, "demo": demo,
+            "start": None, "ended": False, "carte_sent": False,
+            "solved": {}, "locked_until": 0, "fiche": None}
 
 
 def boite_load_state():
-    """Charge l'état ; repart de zéro si le fichier est absent ou corrompu."""
+    """Charge l'état ; repart de zéro si le fichier est absent ou corrompu. Compatible ancienne version."""
     base = boite_new_state()
     try:
         data = json.loads(BOITE_STATE_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict):
-            base.update(data)
+            for k in base:
+                if k in data:
+                    base[k] = data[k]
     except (FileNotFoundError, json.JSONDecodeError):
         pass
+    for t in base["teams"].values():
+        for k, v in boite_new_team(None, None).items():
+            t.setdefault(k, v)
     return base
 
 
@@ -9622,7 +9683,7 @@ boite_state = boite_load_state()
 def boite_save_state():
     tmp = BOITE_STATE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(boite_state, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(BOITE_STATE_FILE)  # écriture atomique : pas de fichier à moitié écrit en cas de crash
+    tmp.replace(BOITE_STATE_FILE)  # écriture atomique
 
 
 def boite_team_of_channel(channel_id):
@@ -9632,7 +9693,32 @@ def boite_team_of_channel(channel_id):
     return None, None
 
 
-# ====================================================================== OUTILS
+def boite_vraies_equipes():
+    return {n: t for n, t in boite_state["teams"].items() if not t.get("demo")}
+
+
+def boite_nom_equipe(n, t):
+    return "Tutoriel" if t.get("demo") else f"Équipe {n}"
+
+
+# Données selon le mode (vraie partie ou tutoriel)
+def boite_enigmes(t):
+    return BOITE_DEMO_ENIGMES if t.get("demo") else BOITE_ENIGMES
+
+
+def boite_objets(t):
+    return BOITE_DEMO_OBJETS if t.get("demo") else BOITE_OBJETS
+
+
+def boite_duree(t):
+    return BOITE_DEMO_DUREE if t.get("demo") else BOITE_DUREE
+
+
+def boite_cooldown(t):
+    return BOITE_DEMO_COOLDOWN if t.get("demo") else BOITE_COOLDOWN
+
+
+# ---------------------------------------------------------------- OUTILS
 def boite_norm(text: str) -> str:
     text = unicodedata.normalize("NFD", (text or "").lower())
     text = "".join(c for c in text if unicodedata.category(c) != "Mn")
@@ -9649,11 +9735,15 @@ def boite_contient(texte_norm: str, mot: str) -> bool:
     return len(colle) > 4 and colle in texte_norm.replace(" ", "")
 
 
-def boite_reponse_ok(num: int, texte: str) -> bool:
-    t = boite_norm(texte)
-    if any(boite_norm(r) in t for r in BOITE_REFUS.get(num, [])):
+def boite_reponse_ok(t: dict, num: int, texte: str) -> bool:
+    reponses = BOITE_DEMO_REPONSES if t.get("demo") else BOITE_REPONSES
+    refus = {} if t.get("demo") else BOITE_REFUS
+    if num not in reponses:
         return False
-    return any(boite_contient(t, k) for k in BOITE_REPONSES[num])
+    tn = boite_norm(texte)
+    if any(boite_norm(r) in tn for r in refus.get(num, [])):
+        return False
+    return any(boite_contient(tn, k) for k in reponses[num])
 
 
 def boite_fmt_duree(sec: float) -> str:
@@ -9661,35 +9751,37 @@ def boite_fmt_duree(sec: float) -> str:
     return f"{sec // 60:02d}:{sec % 60:02d}"
 
 
-def boite_restant():
-    return None if not boite_state["start"] else BOITE_DUREE - (time.time() - boite_state["start"])
+def boite_restant(t):
+    return None if not t["start"] else boite_duree(t) - (time.time() - t["start"])
 
 
-def boite_temps_ecoule() -> bool:
-    r = boite_restant()
-    return boite_state["ended"] or (r is not None and r <= 0)
+def boite_temps_ecoule(t) -> bool:
+    r = boite_restant(t)
+    return t["ended"] or (r is not None and r <= 0)
 
 
-def boite_corriger_fiche(f: dict) -> dict:
+def boite_corriger_fiche(f: dict, demo=False) -> dict:
+    c = BOITE_DEMO_CORRIGE if demo else BOITE_CORRIGE
     toks = boite_norm(f["date"]).split()
-    jour = "16" in toks
-    mois = any(m in toks for m in ("mai", "05", "5", "may"))
-    annee = any(a in toks for a in ("1992", "92"))
-    d = 2 if (jour and mois and annee) else 0
+    d = 2 if (c["jour"] in toks and any(m in toks for m in c["mois"]) and any(a in toks for a in c["annee"])) else 0
 
-    s = 1 if "ostsee" in boite_norm(f["stade"]).replace(" ", "") else 0
+    stade = boite_norm(f["stade"]).replace(" ", "")
+    s = 1 if any(k in stade for k in c["stade"]) else 0
 
     eq = boite_norm(f["equipes"])
-    fra = any(k in eq for k in ("francfort", "frankfurt", "eintracht"))
-    e = 2 if ("rostock" in eq and fra) else 0
+    a = any(boite_contient(eq, k) for k in c["equipe_a"])
+    b_ = any(boite_contient(eq, k) for k in c["equipe_b"])
+    e = 2 if (a and b_) else 0
 
     chiffres = re.findall(r"\d+", f["score"])
-    sc = 1 if chiffres in (["2", "1"], ["1", "2"]) else 0
+    x, y = c["score"]
+    sc = 1 if chiffres in ([x, y], [y, x]) else 0
 
     sup = boite_norm(f["supporter"])
-    b = 1 if (any(k in sup for k in ("francfort", "frankfurt", "eintracht")) and "rostock" not in sup) else 0
+    bonus = 1 if (any(boite_contient(sup, k) for k in c["supporter_ok"])
+                  and not any(boite_contient(sup, k) for k in c["supporter_ko"])) else 0
 
-    return {"date": d, "stade": s, "equipes": e, "score": sc, "bonus": b, "total": d + s + e + sc + b}
+    return {"date": d, "stade": s, "equipes": e, "score": sc, "bonus": bonus, "total": d + s + e + sc + bonus}
 
 
 async def boite_get_channel(channel_id):
@@ -9705,13 +9797,13 @@ async def boite_get_channel(channel_id):
     return ch
 
 
-async def boite_envoyer_objet(channel, n: int):
+async def boite_envoyer_objet(channel, t: dict, n: int):
     if channel is None:
         return
-    titre, texte = BOITE_OBJETS[n]
+    titre, texte = boite_objets(t)[n]
     embed = discord.Embed(title=f"Objet {n}. {titre}", description=texte, color=0xB08D57)
     img = BOITE_OBJETS_DIR / f"objet_{n}.png"
-    if img.exists():
+    if not t.get("demo") and img.exists():
         embed.set_image(url=f"attachment://{img.name}")
         await channel.send(embed=embed, file=discord.File(img, filename=img.name))
     else:
@@ -9731,53 +9823,145 @@ async def boite_log_orga(message: str):
     await boite_envoyer(boite_state["orga_channel"], message)
 
 
-def boite_calculer_classement():
-    lignes = []
-    for n, t in boite_state["teams"].items():
-        f = t.get("fiche")
-        lignes.append((n, f["points"]["total"] if f else 0, f["ts"] if f else float("inf"), f))
-    lignes.sort(key=lambda x: (-x[1], x[2]))
-    return lignes
+def boite_statut(t):
+    if t.get("fiche"):
+        return "fiche"
+    if not t["start"]:
+        return "pas joué"
+    return "terminé" if boite_temps_ecoule(t) else "en cours"
 
 
 def boite_texte_classement():
-    out = ["**🏆 Classement : La boîte à chaussures**"]
-    for rang, (n, pts, ts, f) in enumerate(boite_calculer_classement(), 1):
+    lignes = []
+    for n, t in boite_vraies_equipes().items():
+        f = t.get("fiche")
+        pts = f["points"]["total"] if f else -1
+        duree = (f["ts"] - t["start"]) if f else float("inf")
+        lignes.append((pts, duree, n, t))
+    lignes.sort(key=lambda x: (-x[0], x[1]))
+
+    out = ["**🏆 Classement : La boîte à chaussures** (temps compté depuis le lancement de chaque équipe)"]
+    rang = 0
+    for pts, duree, n, t in lignes:
+        f = t.get("fiche")
         if f:
+            rang += 1
             p = f["points"]
+            jour = datetime.datetime.fromtimestamp(t["start"]).strftime("%d/%m")
             out.append(
-                f"{rang}. Équipe {n} : **{pts}/7** (date {p['date']}, stade {p['stade']}, équipes {p['equipes']}, "
-                f"score {p['score']}, bonus {p['bonus']}) déposé à {boite_fmt_duree(ts - boite_state['start'])}"
+                f"{rang}. Équipe {n} : **{p['total']}/7** en {boite_fmt_duree(duree)} (joué le {jour}) "
+                f"· date {p['date']}, stade {p['stade']}, équipes {p['equipes']}, score {p['score']}, bonus {p['bonus']}"
             )
-        else:
-            out.append(f"{rang}. Équipe {n} : aucune fiche déposée (0)")
+    for pts, duree, n, t in lignes:
+        if not t.get("fiche"):
+            statut = boite_statut(t)
+            libelle = {"pas joué": "pas encore jouée", "en cours": "partie en cours",
+                       "terminé": "terminée sans fiche (0)"}[statut]
+            out.append(f"– Équipe {n} : {libelle} · {len(t['solved'])} objet(s) ouvert(s)")
     return "\n".join(out)
-
-
-def boite_est_orga(interaction: discord.Interaction) -> bool:
-    """Admin du serveur ou rôle Orgas (même règle que le bot principal)."""
-    if not interaction.guild:
-        return False
-    if interaction.user.guild_permissions.administrator:
-        return True
-    role = discord.utils.get(interaction.guild.roles, name=ROLE_ORGAS_NAME)
-    return bool(role and role in interaction.user.roles)
 
 
 def boite_contexte(inter: discord.Interaction):
     n, t = boite_team_of_channel(inter.channel_id)
     if not t:
         return None, None, "Utilise cette commande dans le salon de ton équipe."
-    if not boite_state["start"]:
-        return None, None, "L'épreuve n'a pas encore commencé."
-    if boite_temps_ecoule():
+    if not t["start"]:
+        return None, None, "Votre partie n'a pas encore commencé. Un orga la lancera dans ce salon."
+    if boite_temps_ecoule(t):
         return None, None, "Le temps est écoulé."
     if t.get("fiche"):
         return None, None, "Votre fiche est déposée, c'est fini pour vous."
     return n, t, None
 
 
-# ====================================================================== FICHE
+def boite_overwrites_base(g: discord.Guild):
+    ow = {
+        g.default_role: discord.PermissionOverwrite(view_channel=False),
+        g.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True,
+                                          embed_links=True, read_message_history=True),
+    }
+    role_orgas = discord.utils.get(g.roles, name=ROLE_ORGAS_NAME)
+    if role_orgas:
+        ow[role_orgas] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+    return ow
+
+
+def boite_equipe_depuis(inter: discord.Interaction, equipe):
+    """Numéro donné, sinon l'équipe du salon actuel."""
+    if equipe is not None:
+        return str(equipe), boite_state["teams"].get(str(equipe))
+    n, t = boite_team_of_channel(inter.channel_id)
+    if t and not t.get("demo"):
+        return n, t
+    return None, None
+
+
+# ---------------------------------------------------------------- LANCEMENT D'UNE ÉQUIPE
+def boite_texte_intro(t) -> str:
+    fin = int(t["start"] + boite_duree(t))
+    if t.get("demo"):
+        return (
+            "🎓 **TUTORIEL : LA BOÎTE À CHAUSSURES**\n"
+            "C'est un entraînement : les énigmes sont faciles et rien ne compte. Le but est d'apprendre les commandes.\n\n"
+            "**1.** Tapez `/boite_enigmes` pour voir les énigmes.\n"
+            "**2.** Tapez `/boite_repondre`, choisissez `numero: 1` et écrivez votre réponse.\n"
+            f"   ↳ Essayez une **mauvaise** réponse exprès : toute l'équipe est bloquée {BOITE_DEMO_COOLDOWN} secondes "
+            f"(dans la vraie partie : {BOITE_COOLDOWN // 60} minutes).\n"
+            "   ↳ Une bonne réponse fait apparaître un **objet**. Lisez-le bien, les indices sont dedans.\n"
+            "**3.** Faites pareil avec l'énigme 2.\n"
+            "**4.** Avec les objets, trouvez le match et tapez `/boite_fiche` pour remplir la fiche finale.\n"
+            "   ↳ Le dépôt est **unique et définitif** : un bouton vous demande de confirmer.\n"
+            "**5.** `/boite_temps` donne le temps restant.\n\n"
+            "Dans la vraie partie : 8 énigmes, 1 heure, Internet autorisé, et un 9e objet surprise peut arriver.\n"
+            f"Fin du tutoriel <t:{fin}:R>."
+        )
+    return (
+        "📦 **LA BOÎTE À CHAUSSURES**\n"
+        "Un vieux supporter est mort. Dans son grenier, une boîte à chaussures avec huit objets, "
+        "tous du même après-midi de football. Retrouvez quel match il est allé voir.\n\n"
+        "• `/boite_enigmes` : liste des énigmes\n"
+        f"• `/boite_repondre` : ouvrir un objet (erreur = {BOITE_COOLDOWN // 60} min d'attente pour toute l'équipe)\n"
+        "• `/boite_fiche` : déposer votre fiche finale (un seul dépôt, définitif)\n"
+        "• `/boite_temps` : temps restant\n\n"
+        f"Fin de votre partie <t:{fin}:R> (à <t:{fin}:T>). Internet est autorisé. Bonne chance !"
+    )
+
+
+async def boite_demarrer(channel, t: dict):
+    t.update({"start": time.time(), "ended": False, "carte_sent": False,
+              "solved": {}, "locked_until": 0, "fiche": None})
+    boite_save_state()
+    await channel.send(boite_texte_intro(t))
+
+
+async def boite_lancer_depuis_salon(interaction: discord.Interaction):
+    """Appelé par /lancer_epreuve dans un salon boite-equipe-N : lance la partie de cette équipe."""
+    n, t = boite_team_of_channel(interaction.channel_id)
+    if t.get("demo"):
+        await interaction.response.send_message("Ici c'est le tutoriel : relance-le avec `/boite_demo`.", ephemeral=True)
+        return
+    if t["start"] and not boite_temps_ecoule(t) and not t.get("fiche"):
+        r = boite_restant(t)
+        await interaction.response.send_message(
+            f"La partie de l'équipe {n} est déjà en cours (reste {boite_fmt_duree(r)}).", ephemeral=True)
+        return
+    if t["start"]:
+        await interaction.response.send_message(
+            f"L'équipe {n} a déjà joué. Pour la faire rejouer : `/boite_reset equipe:{n}`, puis relance.", ephemeral=True)
+        return
+
+    role = interaction.guild.get_role(t["role"]) if t["role"] else None
+    joueurs = [m for m in role.members if not m.bot] if role else []
+    await boite_demarrer(interaction.channel, t)
+    msg = f"🚀 Partie de l'équipe {n} lancée ({len(joueurs)} joueur(s))."
+    if not joueurs:
+        msg += "\n⚠️ Personne n'a le rôle de cette équipe : utilise `/boite_assigner`."
+    await interaction.response.send_message(msg, ephemeral=True)
+    fin = int(t["start"] + BOITE_DUREE)
+    await boite_log_orga(f"⏱️ **Équipe {n}** lancée par {interaction.user.display_name}. Fin à <t:{fin}:T>.")
+
+
+# ---------------------------------------------------------------- FICHE
 class BoiteConfirmation(discord.ui.View):
     def __init__(self, equipe, fiche):
         super().__init__(timeout=180)
@@ -9786,22 +9970,31 @@ class BoiteConfirmation(discord.ui.View):
     @discord.ui.button(label="Envoyer définitivement", style=discord.ButtonStyle.danger)
     async def ok(self, inter: discord.Interaction, button: discord.ui.Button):
         t = boite_state["teams"].get(self.equipe)
-        if not t or t.get("fiche") or boite_temps_ecoule():
+        if not t or t.get("fiche") or not t["start"] or boite_temps_ecoule(t):
             await inter.response.edit_message(content="Dépôt impossible (déjà déposé ou temps écoulé).", view=None)
             self.stop()
             return
         ts = time.time()
-        pts = boite_corriger_fiche(self.fiche)
+        pts = boite_corriger_fiche(self.fiche, demo=t.get("demo"))
         t["fiche"] = {**self.fiche, "ts": ts, "points": pts, "par": inter.user.display_name}
-        boite_state["carte_sent"] = True  # un dépôt a eu lieu : la carte postale n'est plus nécessaire
+        t["carte_sent"] = True
         boite_save_state()
+        duree = boite_fmt_duree(ts - t["start"])
         await inter.response.edit_message(content="📨 Fiche envoyée.", view=None)
-        await inter.channel.send(
-            f"📨 **Fiche déposée** à {boite_fmt_duree(ts - boite_state['start'])}. C'est fini pour vous, merci d'avoir joué !"
-        )
+
+        if t.get("demo"):
+            await inter.channel.send(
+                f"📨 **Fiche déposée** en {duree}. Score d'entraînement : **{pts['total']}/7** "
+                f"(date {pts['date']}/2, stade {pts['stade']}/1, équipes {pts['equipes']}/2, score {pts['score']}/1, "
+                f"bonus supporter {pts['bonus']}/1).\n\n**Solution du tutoriel**\n{BOITE_DEMO_SOLUTION}\n\n"
+                "Vous êtes prêts pour la vraie partie !"
+            )
+            return
+
+        await inter.channel.send(f"📨 **Fiche déposée** en {duree}. C'est fini pour vous, merci d'avoir joué !")
         f = self.fiche
         await boite_log_orga(
-            f"📨 **Équipe {self.equipe}** dépose à {boite_fmt_duree(ts - boite_state['start'])} (par {inter.user.display_name})\n"
+            f"📨 **Équipe {self.equipe}** dépose en {duree} (par {inter.user.display_name})\n"
             f"Date : {f['date']} | Stade : {f['stade']} | Équipes : {f['equipes']} | Score : {f['score']} | Supporter : {f['supporter']}\n"
             f"Correction auto : **{pts['total']}/7** (date {pts['date']}, stade {pts['stade']}, équipes {pts['equipes']}, "
             f"score {pts['score']}, bonus {pts['bonus']})"
@@ -9836,10 +10029,10 @@ class BoiteFicheModal(discord.ui.Modal, title="Fiche finale"):
         await inter.response.send_message(recap, view=BoiteConfirmation(n, fiche), ephemeral=True)
 
 
-# ====================================================================== COG
+# ---------------------------------------------------------------- COG
 class BoiteCog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
+    def __init__(self, bot_: commands.Bot):
+        self.bot = bot_
 
     async def cog_load(self):
         if not self.tick.is_running():
@@ -9848,107 +10041,99 @@ class BoiteCog(commands.Cog):
     async def cog_unload(self):
         self.tick.cancel()
 
-    # ---------------------------------------------------------- minuterie
+    # ---------------------------------------------------------- minuterie (chaque équipe à son rythme)
     @tasks.loop(seconds=5)
     async def tick(self):
-        if not boite_state["start"] or boite_state["ended"]:
-            return
-        try:
-            ecoule = time.time() - boite_state["start"]
+        for n, t in list(boite_state["teams"].items()):
+            if not t["start"] or t["ended"]:
+                continue
+            try:
+                ecoule = time.time() - t["start"]
 
-            if not boite_state["carte_sent"] and ecoule >= BOITE_SEUIL_CARTE:
-                boite_state["carte_sent"] = True
-                boite_save_state()
-                if not any(t.get("fiche") for t in boite_state["teams"].values()):
-                    for t in boite_state["teams"].values():
+                if not t.get("demo") and not t["carte_sent"] and ecoule >= BOITE_SEUIL_CARTE:
+                    t["carte_sent"] = True
+                    boite_save_state()
+                    if not t.get("fiche"):
                         ch = await boite_get_channel(t["channel"])
-                        if not ch:
-                            continue
-                        try:
-                            await ch.send("📬 **40 minutes sans aucun dépôt. Un neuvième objet vient d'arriver...**")
-                            await boite_envoyer_objet(ch, 9)
-                        except discord.HTTPException as e:
-                            print(f"[boite] objet 9 non envoyé : {e!r}")
-                    await boite_log_orga("📬 Objet 9 (carte postale) envoyé à toutes les équipes.")
+                        if ch:
+                            await ch.send("📬 **40 minutes sans dépôt. Un neuvième objet vient d'arriver...**")
+                            await boite_envoyer_objet(ch, t, 9)
+                        await boite_log_orga(f"📬 Objet 9 (carte postale) envoyé à l'équipe {n}.")
 
-            if ecoule >= BOITE_DUREE:
-                boite_state["ended"] = True
-                boite_save_state()
-                for t in boite_state["teams"].values():
+                if ecoule >= boite_duree(t):
+                    t["ended"] = True
+                    boite_save_state()
+                    if t.get("demo"):
+                        if not t.get("fiche"):
+                            await boite_envoyer(t["channel"], "⏱️ **Fin du tutoriel.**\n\n**Solution**\n" + BOITE_DEMO_SOLUTION)
+                        continue
                     if t.get("fiche"):
                         await boite_envoyer(t["channel"], "⏱️ Temps écoulé. Votre fiche est bien déposée.")
                     else:
                         await boite_envoyer(t["channel"], "⏱️ **Temps écoulé.** Vous n'avez pas déposé de fiche.")
-                await boite_log_orga(boite_texte_classement())
-                await boite_log_orga("**Solution**\n" + BOITE_SOLUTION)
-        except Exception as e:  # ne jamais laisser la boucle mourir
-            print(f"[boite] erreur tick : {e!r}")
+                    await boite_log_orga(f"🏁 **Équipe {n}** a terminé.\n\n" + boite_texte_classement())
+            except Exception as e:  # ne jamais laisser la boucle mourir
+                print(f"[boite] erreur tick équipe {n} : {e!r}")
 
     @tick.before_loop
     async def avant_tick(self):
         await self.bot.wait_until_ready()
 
     # ---------------------------------------------------------- ORGAS
-    @app_commands.command(name="boite_setup", description="(Orga) Boîte à chaussures : crée la catégorie, les rôles et les salons")
-    @app_commands.describe(nb_equipes="Nombre d'équipes (6 par défaut)")
-    @app_commands.check(boite_est_orga)
-    async def boite_setup(self, inter: discord.Interaction, nb_equipes: app_commands.Range[int, 1, 15] = BOITE_NB_EQUIPES):
-        if boite_state["teams"]:
-            await inter.response.send_message(
-                "Déjà configuré. `/boite_reset` remet la partie à zéro, `/boite_supprimer` retire tout.", ephemeral=True
-            )
-            return
+    @app_commands.command(name="boite_setup", description="(Orga) Boîte à chaussures : crée les salons et rôles (relance-la pour ajouter des équipes)")
+    @app_commands.describe(nb_equipes="Nombre total d'équipes voulu (6 par défaut)")
+    @app_commands.check(est_orga_ou_admin)
+    async def boite_setup(self, inter: discord.Interaction, nb_equipes: app_commands.Range[int, 1, 20] = BOITE_NB_EQUIPES):
         await inter.response.defer(ephemeral=True)
         g = inter.guild
-        role_orgas = discord.utils.get(g.roles, name=ROLE_ORGAS_NAME)
         role_spec = discord.utils.get(g.roles, name=ROLE_SPECTATEURS_NAME)
 
-        def base_overwrites():
-            ow = {
-                g.default_role: discord.PermissionOverwrite(view_channel=False),
-                g.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True,
-                                                  embed_links=True, read_message_history=True),
-            }
-            if role_orgas:
-                ow[role_orgas] = discord.PermissionOverwrite(view_channel=True, send_messages=True,
-                                                             read_message_history=True)
-            return ow
+        cat = g.get_channel(boite_state["category"]) if boite_state["category"] else None
+        if not cat:
+            cat = await g.create_category(BOITE_NOM_CATEGORIE, overwrites=boite_overwrites_base(g))
+            boite_state["category"] = cat.id
 
-        cat = await g.create_category(BOITE_NOM_CATEGORIE, overwrites=base_overwrites())
-        boite_state["category"] = cat.id
+        orga = g.get_channel(boite_state["orga_channel"]) if boite_state["orga_channel"] else None
+        if not orga:
+            orga = await g.create_text_channel("boite-orga", category=cat, overwrites=boite_overwrites_base(g))
+            boite_state["orga_channel"] = orga.id
+        boite_save_state()
 
-        orga = await g.create_text_channel("boite-orga", category=cat, overwrites=base_overwrites())
-        boite_state["orga_channel"] = orga.id
-
+        crees = []
         for n in range(1, nb_equipes + 1):
+            if str(n) in boite_state["teams"]:
+                continue
             role = await g.create_role(name=f"{BOITE_PREFIXE_ROLE} {n}", reason="Escape game boîte à chaussures")
-            ow = base_overwrites()
+            ow = boite_overwrites_base(g)
             ow[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True,
                                                    read_message_history=True, use_application_commands=True)
             if role_spec:
                 ow[role_spec] = discord.PermissionOverwrite(view_channel=True, read_message_history=True,
                                                             send_messages=False, add_reactions=False)
             ch = await g.create_text_channel(f"boite-equipe-{n}", category=cat, overwrites=ow)
-            boite_state["teams"][str(n)] = {"channel": ch.id, "role": role.id, "solved": {}, "locked_until": 0, "fiche": None}
+            boite_state["teams"][str(n)] = boite_new_team(ch.id, role.id)
             boite_save_state()
+            crees.append(ch.mention)
 
         await inter.followup.send(
-            f"✅ {nb_equipes} équipes créées dans « {BOITE_NOM_CATEGORIE} ».\n"
-            "Donne les rôles avec `/boite_assigner`, puis lance avec `/boite_lancer`.\n"
-            f"Le salon {orga.mention} reçoit les dépôts, le classement et la solution.",
+            (f"✅ Créé(s) : {', '.join(crees)}\n" if crees else "Rien à créer, tout existe déjà.\n")
+            + "1. `/boite_assigner` pour mettre les joueurs dans leur équipe.\n"
+            "2. `/boite_demo` pour leur montrer le fonctionnement.\n"
+            "3. Le jour J, va dans le salon de l'équipe et tape `/lancer_epreuve` (sans option).\n"
+            f"Le salon {orga.mention} reçoit les réponses, dépôts, le classement et la solution.",
             ephemeral=True,
         )
 
     @app_commands.command(name="boite_assigner", description="(Orga) Boîte à chaussures : place des joueurs dans une équipe")
     @app_commands.describe(equipe="Numéro d'équipe", joueur_1="Joueur", joueur_2="Joueur (optionnel)",
                            joueur_3="Joueur (optionnel)", joueur_4="Joueur (optionnel)", joueur_5="Joueur (optionnel)")
-    @app_commands.check(boite_est_orga)
-    async def boite_assigner(self, inter: discord.Interaction, equipe: app_commands.Range[int, 1, 15],
+    @app_commands.check(est_orga_ou_admin)
+    async def boite_assigner(self, inter: discord.Interaction, equipe: app_commands.Range[int, 1, 20],
                              joueur_1: discord.Member, joueur_2: discord.Member = None, joueur_3: discord.Member = None,
                              joueur_4: discord.Member = None, joueur_5: discord.Member = None):
         t = boite_state["teams"].get(str(equipe))
         if not t:
-            await inter.response.send_message("Équipe inconnue. Fais d'abord `/boite_setup`.", ephemeral=True)
+            await inter.response.send_message("Équipe inconnue. Lance `/boite_setup` avec assez d'équipes.", ephemeral=True)
             return
         role = inter.guild.get_role(t["role"])
         if not role:
@@ -9956,7 +10141,7 @@ class BoiteCog(commands.Cog):
             return
         await inter.response.defer(ephemeral=True)
 
-        autres_roles = [inter.guild.get_role(x["role"]) for k, x in boite_state["teams"].items() if k != str(equipe)]
+        autres_roles = [inter.guild.get_role(x["role"]) for k, x in boite_vraies_equipes().items() if k != str(equipe)]
         autres_roles = [r for r in autres_roles if r]
 
         joueurs = {j.id: j for j in (joueur_1, joueur_2, joueur_3, joueur_4, joueur_5) if j and not j.bot}
@@ -9976,96 +10161,109 @@ class BoiteCog(commands.Cog):
             msg += f"\n❌ Échec : {', '.join(ko)} (vérifie que le rôle du bot est au-dessus de « {role.name} »)"
         await inter.followup.send(msg, ephemeral=True)
 
-    @app_commands.command(name="boite_lancer", description="(Orga) Boîte à chaussures : démarre l'épreuve")
-    @app_commands.check(boite_est_orga)
-    async def boite_lancer(self, inter: discord.Interaction):
-        if not boite_state["teams"]:
+    @app_commands.command(name="boite_demo", description="(Orga) Boîte à chaussures : lance (ou relance) le tutoriel d'entraînement")
+    @app_commands.describe(arreter="Mettre fin au tutoriel en cours")
+    @app_commands.check(est_orga_ou_admin)
+    async def boite_demo(self, inter: discord.Interaction, arreter: bool = False):
+        g = inter.guild
+        t = boite_state["teams"].get(BOITE_CLE_DEMO)
+
+        if arreter:
+            if t and t["start"] and not t["ended"]:
+                t["ended"] = True
+                boite_save_state()
+                await boite_envoyer(t["channel"], "🛑 Tutoriel arrêté par un orga.\n\n**Solution**\n" + BOITE_DEMO_SOLUTION)
+            await inter.response.send_message("Tutoriel arrêté.", ephemeral=True)
+            return
+
+        if not boite_state["category"] or not g.get_channel(boite_state["category"]):
             await inter.response.send_message("Fais d'abord `/boite_setup`.", ephemeral=True)
             return
-        if boite_state["start"]:
-            await inter.response.send_message("L'épreuve est déjà lancée. `/boite_reset` pour recommencer.", ephemeral=True)
-            return
+        await inter.response.defer(ephemeral=True)
 
-        vides = []
-        for n, t in boite_state["teams"].items():
-            role = inter.guild.get_role(t["role"])
-            if not role or not [m for m in role.members if not m.bot]:
-                vides.append(n)
+        # Tous les joueurs de toutes les équipes peuvent écrire dans le tutoriel
+        ow = boite_overwrites_base(g)
+        for x in boite_vraies_equipes().values():
+            r = g.get_role(x["role"]) if x["role"] else None
+            if r:
+                ow[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True,
+                                                    read_message_history=True, use_application_commands=True)
+        role_spec = discord.utils.get(g.roles, name=ROLE_SPECTATEURS_NAME)
+        if role_spec:
+            ow[role_spec] = discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=False)
 
-        boite_state["start"] = time.time()
-        boite_state["ended"] = False
-        boite_state["carte_sent"] = False
-        boite_save_state()
+        ch = g.get_channel(boite_state["demo_channel"]) if boite_state["demo_channel"] else None
+        if ch:
+            await ch.edit(overwrites=ow)
+        else:
+            ch = await g.create_text_channel(BOITE_NOM_SALON_DEMO, category=g.get_channel(boite_state["category"]),
+                                             overwrites=ow, position=0)
+            boite_state["demo_channel"] = ch.id
 
-        fin = int(boite_state["start"] + BOITE_DUREE)
-        msg = "🚀 C'est parti !"
-        if vides:
-            msg += f"\n⚠️ Équipe(s) sans joueur : {', '.join(vides)}"
-        await inter.response.send_message(msg, ephemeral=True)
+        t = boite_new_team(ch.id, None, demo=True)
+        boite_state["teams"][BOITE_CLE_DEMO] = t
+        await ch.send("━━━━━━━━━━━━━━━━━━━━━━")
+        await boite_demarrer(ch, t)
+        await inter.followup.send(f"🎓 Tutoriel lancé dans {ch.mention} ({BOITE_DEMO_DUREE // 60} min).", ephemeral=True)
 
-        intro = (
-            "📦 **LA BOÎTE À CHAUSSURES**\n"
-            "Un vieux supporter est mort. Dans son grenier, une boîte à chaussures avec huit objets, "
-            "tous du même après-midi de football. Retrouvez quel match il est allé voir.\n\n"
-            "• `/boite_enigmes` : liste des énigmes\n"
-            f"• `/boite_repondre` : ouvrir un objet (erreur = {BOITE_COOLDOWN // 60} min d'attente pour toute l'équipe)\n"
-            "• `/boite_fiche` : déposer votre fiche finale (un seul dépôt, définitif)\n"
-            "• `/boite_temps` : temps restant\n\n"
-            f"Fin de l'épreuve <t:{fin}:R> (à <t:{fin}:T>). Internet est autorisé. Bonne chance !"
-        )
-        for t in boite_state["teams"].values():
-            await boite_envoyer(t["channel"], intro)
-        await boite_log_orga(f"⏱️ Chrono lancé. Fin à <t:{fin}:T>.")
-
-    @app_commands.command(name="boite_classement", description="(Orga) Boîte à chaussures : classement et fiches")
-    @app_commands.check(boite_est_orga)
+    @app_commands.command(name="boite_classement", description="(Orga) Boîte à chaussures : classement et avancement de toutes les équipes")
+    @app_commands.check(est_orga_ou_admin)
     async def boite_classement(self, inter: discord.Interaction):
-        if not boite_state["teams"]:
-            await inter.response.send_message("Aucune partie configurée.", ephemeral=True)
+        if not boite_vraies_equipes():
+            await inter.response.send_message("Aucune équipe configurée.", ephemeral=True)
             return
-        avancement = "\n".join(
-            f"Équipe {n} : {len(t['solved'])}/9 objets ouverts" for n, t in boite_state["teams"].items()
-        )
-        await inter.response.send_message((boite_texte_classement() + "\n\n**Avancement**\n" + avancement)[:2000], ephemeral=True)
+        await inter.response.send_message(boite_texte_classement()[:2000], ephemeral=True)
 
     @app_commands.command(name="boite_forcer", description="(Orga) Boîte à chaussures : débloque un objet pour une équipe")
-    @app_commands.describe(equipe="Numéro d'équipe", numero="Numéro de l'objet (1 à 9)")
-    @app_commands.check(boite_est_orga)
-    async def boite_forcer(self, inter: discord.Interaction, equipe: int, numero: app_commands.Range[int, 1, 9]):
-        t = boite_state["teams"].get(str(equipe))
+    @app_commands.describe(numero="Numéro de l'objet (1 à 9)", equipe="Numéro d'équipe (par défaut : celle du salon)")
+    @app_commands.check(est_orga_ou_admin)
+    async def boite_forcer(self, inter: discord.Interaction, numero: app_commands.Range[int, 1, 9], equipe: int = None):
+        n, t = boite_equipe_depuis(inter, equipe)
         if not t:
-            await inter.response.send_message("Équipe inconnue.", ephemeral=True)
+            await inter.response.send_message("Équipe inconnue : précise `equipe` ou tape la commande dans son salon.", ephemeral=True)
             return
         t["solved"][str(numero)] = time.time()
         boite_save_state()
-        await inter.response.send_message(f"Objet {numero} envoyé à l'équipe {equipe}.", ephemeral=True)
-        await boite_envoyer_objet(await boite_get_channel(t["channel"]), numero)
+        await inter.response.send_message(f"Objet {numero} envoyé à l'équipe {n}.", ephemeral=True)
+        await boite_envoyer_objet(await boite_get_channel(t["channel"]), t, numero)
 
-    @app_commands.command(name="boite_reset", description="(Orga) Boîte à chaussures : remet la partie à zéro (garde salons et rôles)")
-    @app_commands.check(boite_est_orga)
-    async def boite_reset(self, inter: discord.Interaction):
-        for t in boite_state["teams"].values():
-            t.update({"solved": {}, "locked_until": 0, "fiche": None})
-        boite_state.update({"start": None, "ended": False, "carte_sent": False})
+    @app_commands.command(name="boite_reset", description="(Orga) Boîte à chaussures : remet une équipe (ou toutes) à zéro")
+    @app_commands.describe(equipe="Numéro d'équipe (par défaut : celle du salon)", toutes="Remettre TOUTES les équipes à zéro")
+    @app_commands.check(est_orga_ou_admin)
+    async def boite_reset(self, inter: discord.Interaction, equipe: int = None, toutes: bool = False):
+        if toutes:
+            cibles = boite_vraies_equipes()
+        else:
+            n, t = boite_equipe_depuis(inter, equipe)
+            cibles = {n: t} if t else {}
+        if not cibles:
+            await inter.response.send_message(
+                "Précise `equipe`, tape la commande dans le salon de l'équipe, ou coche `toutes`.", ephemeral=True)
+            return
+        for t in cibles.values():
+            t.update({"start": None, "ended": False, "carte_sent": False,
+                      "solved": {}, "locked_until": 0, "fiche": None})
         boite_save_state()
-        await inter.response.send_message("Partie remise à zéro.", ephemeral=True)
+        await inter.response.send_message(
+            f"Remis à zéro : équipe(s) {', '.join(cibles)}. Relance avec `/lancer_epreuve` dans leur salon.", ephemeral=True)
 
     @app_commands.command(name="boite_supprimer", description="(Orga) Boîte à chaussures : supprime catégorie, salons et rôles")
-    @app_commands.check(boite_est_orga)
+    @app_commands.check(est_orga_ou_admin)
     async def boite_supprimer(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
         g = inter.guild
         erreurs = 0
+        objets = []
         for t in boite_state["teams"].values():
-            for obj in (g.get_channel(t["channel"]), g.get_role(t["role"])):
-                if obj:
-                    try:
-                        await obj.delete(reason="Fin escape game boîte")
-                    except discord.HTTPException:
-                        erreurs += 1
-        for cid in (boite_state["orga_channel"], boite_state["category"]):
-            obj = g.get_channel(cid) if cid else None
-            if obj:
+            objets.append(g.get_channel(t["channel"]))
+            if t.get("role"):
+                objets.append(g.get_role(t["role"]))
+        for cid in (boite_state["demo_channel"], boite_state["orga_channel"], boite_state["category"]):
+            objets.append(g.get_channel(cid) if cid else None)
+        vus = set()
+        for obj in objets:
+            if obj and obj.id not in vus:
+                vus.add(obj.id)
                 try:
                     await obj.delete(reason="Fin escape game boîte")
                 except discord.HTTPException:
@@ -10081,10 +10279,14 @@ class BoiteCog(commands.Cog):
     # ---------------------------------------------------------- JOUEURS
     @app_commands.command(name="boite_temps", description="Boîte à chaussures : temps restant")
     async def boite_temps(self, inter: discord.Interaction):
-        r = boite_restant()
+        n, t = boite_team_of_channel(inter.channel_id)
+        if not t:
+            await inter.response.send_message("Utilise cette commande dans le salon de ton équipe.", ephemeral=True)
+            return
+        r = boite_restant(t)
         if r is None:
-            await inter.response.send_message("L'épreuve n'a pas commencé.", ephemeral=True)
-        elif r <= 0:
+            await inter.response.send_message("Votre partie n'a pas commencé.", ephemeral=True)
+        elif r <= 0 or t["ended"]:
             await inter.response.send_message("⏱️ Le temps est écoulé.", ephemeral=True)
         else:
             await inter.response.send_message(f"⏱️ Il reste **{boite_fmt_duree(r)}**.")
@@ -10095,10 +10297,10 @@ class BoiteCog(commands.Cog):
         if not t:
             await inter.response.send_message("Utilise cette commande dans le salon de ton équipe.", ephemeral=True)
             return
-        if not boite_state["start"]:
-            await inter.response.send_message("L'épreuve n'a pas encore commencé.", ephemeral=True)
+        if not t["start"]:
+            await inter.response.send_message("Votre partie n'a pas encore commencé.", ephemeral=True)
             return
-        lignes = [f"{'✅' if str(i) in t['solved'] else '🔒'} **{i}.** {txt}" for i, txt in BOITE_ENIGMES.items()]
+        lignes = [f"{'✅' if str(i) in t['solved'] else '🔒'} **{i}.** {txt}" for i, txt in boite_enigmes(t).items()]
         await inter.response.send_message("\n\n".join(lignes)[:2000])
 
     @app_commands.command(name="boite_repondre", description="Boîte à chaussures : répondre à une énigme")
@@ -10108,6 +10310,9 @@ class BoiteCog(commands.Cog):
         if erreur:
             await inter.response.send_message(erreur, ephemeral=True)
             return
+        if numero not in boite_enigmes(t):
+            await inter.response.send_message(f"Il n'y a pas d'énigme {numero} ici.", ephemeral=True)
+            return
         if str(numero) in t["solved"]:
             await inter.response.send_message("Cet objet est déjà ouvert.", ephemeral=True)
             return
@@ -10116,19 +10321,24 @@ class BoiteCog(commands.Cog):
             await inter.response.send_message(f"⏳ Patientez encore **{boite_fmt_duree(attente)}** avant de retenter.", ephemeral=True)
             return
 
-        if boite_reponse_ok(numero, reponse):
+        nom = boite_nom_equipe(n, t)
+        if boite_reponse_ok(t, numero, reponse):
             t["solved"][str(numero)] = time.time()
             boite_save_state()
             await inter.response.send_message(f"✅ Bonne réponse à l'énigme {numero} ! Voici l'objet.")
-            await boite_envoyer_objet(inter.channel, numero)
-            await boite_log_orga(f"🔓 Équipe {n} ouvre l'objet {numero} ({inter.user.display_name} : « {reponse[:100]} »)")
+            await boite_envoyer_objet(inter.channel, t, numero)
+            if not t.get("demo"):
+                await boite_log_orga(f"🔓 {nom} ouvre l'objet {numero} ({inter.user.display_name} : « {reponse[:100]} »)")
         else:
-            t["locked_until"] = time.time() + BOITE_COOLDOWN
+            cd = boite_cooldown(t)
+            t["locked_until"] = time.time() + cd
             boite_save_state()
+            attente_txt = f"{cd} secondes" if cd < 60 else f"{cd // 60} minutes"
             await inter.response.send_message(
-                f"❌ « {reponse[:100]} » : ce n'est pas ça. Vous pourrez retenter dans {BOITE_COOLDOWN // 60} minutes."
+                f"❌ « {reponse[:100]} » : ce n'est pas ça. Toute l'équipe pourra retenter dans {attente_txt}."
             )
-            await boite_log_orga(f"❌ Équipe {n}, énigme {numero} : « {reponse[:100]} » ({inter.user.display_name})")
+            if not t.get("demo"):
+                await boite_log_orga(f"❌ {nom}, énigme {numero} : « {reponse[:100]} » ({inter.user.display_name})")
 
     @app_commands.command(name="boite_fiche", description="Boîte à chaussures : déposer votre fiche finale (un seul dépôt)")
     async def boite_fiche(self, inter: discord.Interaction):
@@ -10137,8 +10347,6 @@ class BoiteCog(commands.Cog):
             await inter.response.send_message(erreur, ephemeral=True)
             return
         await inter.response.send_modal(BoiteFicheModal())
-
-
 
 
 # ==========================================
