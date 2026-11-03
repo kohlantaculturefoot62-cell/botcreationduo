@@ -8958,6 +8958,8 @@ async def slam_valider_mot(interaction: discord.Interaction, numero: int):
 # ==============================================================================
 
 FICHIER_SAUVEGARDE = "destination_sessions.json"
+DESTINATION_DUREE_SEC = 60 * 60       # temps max pour répondre (1h)
+DESTINATION_INTERVALLE_MIN = 5        # minutes entre deux indices
 SESSION_DESTINATION = {}
 
 def sauvegarder_sessions():
@@ -8966,7 +8968,7 @@ def sauvegarder_sessions():
     for cid, s in SESSION_DESTINATION.items():
         data[str(cid)] = {
             "etape": s["etape"],
-            "intervalle_minutes": s.get("intervalle_minutes", 10),
+            "intervalle_minutes": s.get("intervalle_minutes", DESTINATION_INTERVALLE_MIN),
             "active": s["active"],
             "joueurs": {
                 str(uid): {
@@ -8995,7 +8997,7 @@ def charger_sessions():
             cid = int(cid_str)
             SESSION_DESTINATION[cid] = {
                 "etape": s["etape"],
-                "intervalle_minutes": s.get("intervalle_minutes", 10),
+                "intervalle_minutes": s.get("intervalle_minutes", DESTINATION_INTERVALLE_MIN),
                 "active": s["active"],
                 "joueurs": {}
             }
@@ -9043,7 +9045,7 @@ async def relancer_boucles_indices_apres_crash(bot: commands.Bot):
         for uid, j in s["joueurs"].items():
             if j["reponse"] is None:
                 duree_actuelle = (maintenant - j["debut"]).total_seconds()
-                if duree_actuelle < 5400:  # Moins de 1h30
+                if duree_actuelle < DESTINATION_DUREE_SEC:
                     if j.get("tache_indices") is None or j["tache_indices"].done():
                         tache = asyncio.create_task(
                             boucle_indices_confessionnal(channel, uid, s["etape"])
@@ -9065,15 +9067,15 @@ async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: in
 
             indices_envoyes = infos_joueur.setdefault("indices_envoyes", set())
 
-            # Durée de l'intervalle configuré pour cette étape (par défaut 10 minutes = 600s)
-            intervalle_sec = session_salon.get("intervalle_minutes", 10) * 60
+            # Durée de l'intervalle configuré pour cette étape
+            intervalle_sec = session_salon.get("intervalle_minutes", DESTINATION_INTERVALLE_MIN) * 60
 
             # Calcul du moment exact où l'indice 'idx' doit tomber
             temps_cible_sec = (idx - 1) * intervalle_sec
             maintenant = datetime.datetime.now(datetime.timezone.utc)
             temps_ecoule = (maintenant - infos_joueur["debut"]).total_seconds()
 
-            if temps_ecoule >= 5400:  # Limite 1h30
+            if temps_ecoule >= DESTINATION_DUREE_SEC:
                 break
 
             # Si le temps n'est pas encore venu pour cet indice, on attend la différence exacte
@@ -9096,8 +9098,13 @@ async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: in
                 )
 
                 if fichier_path and os.path.exists(fichier_path):
-                    fichier_discord = discord.File(fichier_path, filename=os.path.basename(fichier_path))
-                    embed.set_image(url=f"attachment://{os.path.basename(fichier_path)}")
+                    nom_fichier = os.path.basename(fichier_path)
+                    fichier_discord = discord.File(fichier_path, filename=nom_fichier)
+                    if nom_fichier.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+                        embed.set_image(url=f"attachment://{nom_fichier}")
+                    else:
+                        # .html, .pdf, .mp3, .mp4... : envoyé en pièce jointe à ouvrir
+                        embed.description += "\n📎 *Ouvre le fichier joint ci-dessous.*"
                     await channel.send(embed=embed, file=fichier_discord)
                 else:
                     embed.description += f"\n⚠️ *(Fichier d'indice `Etape {etape} Indice {idx}` introuvable)*"
@@ -9117,10 +9124,10 @@ async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: in
 @bot.tree.command(name="destination_ouvrir_etape", description="Ouvre une étape de Destination X dans ce confessionnal.")
 @app_commands.describe(
     etape="Numéro de l'étape",
-    intervalle_minutes="Temps en minutes entre chaque indice (par défaut: 10)"
+    intervalle_minutes="Temps en minutes entre chaque indice (par défaut: 5)"
 )
 @app_commands.check(est_orga_ou_admin)
-async def destination_ouvrir_etape(interaction: discord.Interaction, etape: int, intervalle_minutes: int = 10):
+async def destination_ouvrir_etape(interaction: discord.Interaction, etape: int, intervalle_minutes: int = DESTINATION_INTERVALLE_MIN):
     SESSION_DESTINATION[interaction.channel_id] = {
         "etape": etape,
         "intervalle_minutes": intervalle_minutes,
@@ -9134,7 +9141,7 @@ async def destination_ouvrir_etape(interaction: discord.Interaction, etape: int,
         description=(
             f"L'étape **#{etape}** est prête pour ce confessionnal.\n\n"
             "▶️ Utilise `/lancer_destination_x` dès que tu souhaites commencer.\n"
-            "⏳ À partir du lancement, tu as **1h30** pour donner ta réponse.\n"
+            "⏳ À partir du lancement, tu as **1h** pour donner ta réponse.\n"
             f"📍 Tu recevras **6 indices ici** (1 toutes les **{intervalle_minutes} min**).\n"
             "📝 Utilise `/repondre_destination` pour valider ta localisation."
         ),
@@ -9143,7 +9150,7 @@ async def destination_ouvrir_etape(interaction: discord.Interaction, etape: int,
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="lancer_destination_x", description="Démarre ton épreuve, le chrono de 1h30 et la réception des indices.")
+@bot.tree.command(name="lancer_destination_x", description="Démarre ton épreuve, le chrono de 1h et la réception des indices.")
 async def lancer_destination_x(interaction: discord.Interaction):
     cid = interaction.channel_id
     if cid not in SESSION_DESTINATION or not SESSION_DESTINATION[cid]["active"]:
@@ -9169,7 +9176,7 @@ async def lancer_destination_x(interaction: discord.Interaction):
     sauvegarder_sessions()
 
     await interaction.response.send_message(
-        f"✅ **Épreuve lancée pour l'Étape {session['etape']} !** Le chrono de **1h30** tourne. Voici ton premier indice ci-dessous :"
+        f"✅ **Épreuve lancée pour l'Étape {session['etape']} !** Le chrono de **1h** tourne. Voici ton premier indice ci-dessous :"
     )
 
     tache = asyncio.create_task(
@@ -9202,7 +9209,7 @@ async def repondre_destination(interaction: discord.Interaction, proposition: st
     maintenant = datetime.datetime.now(datetime.timezone.utc)
     duree_sec = (maintenant - infos_joueur["debut"]).total_seconds()
 
-    if duree_sec > 5400:
+    if duree_sec > DESTINATION_DUREE_SEC:
         await interaction.response.send_message(
             f"❌ **Temps dépassé !** Tu as mis {int(duree_sec // 60)} minutes. Ta réponse ne peut plus être prise en compte.",
             ephemeral=True
@@ -9227,7 +9234,7 @@ async def repondre_destination(interaction: discord.Interaction, proposition: st
         ),
         color=discord.Color.green()
     )
-    await interaction.response.send_message(embed_validation)
+    await interaction.response.send_message(embed=embed_validation)
 
 
 @bot.tree.command(name="destination_fermer_etape", description="Ferme l'étape active dans TOUS les confessionnaux et affiche le bilan global.")
