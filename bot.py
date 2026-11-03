@@ -8954,19 +8954,46 @@ async def slam_valider_mot(interaction: discord.Interaction, numero: int):
 
 
 # ==============================================================================
-# SAUVEGARDE PERSISTANTE (ANTI-CRASH ET ANTI-DOUBLON)
+# DESTINATION X : SAUVEGARDE PERSISTANTE (ANTI-CRASH ET ANTI-DOUBLON)
+#
+# Les étapes sont des noms libres : "1", "2", "3", "Finale 1", "Finale 2"...
+# Fichiers d'indices (dans le dossier du bot) : "Etape 1 Indice 1.png" ou "Finale 1 Indice 1.png"
+# (majuscules indifférentes, une suite après le numéro est permise : "Finale 1 Indice 3 Rome.jpg").
+# Chaque confessionnal avance à son rythme : un candidat peut être en Finale 1 pendant
+# qu'un autre est en Finale 2. Chaque étape jouée est gardée pour le bilan.
 # ==============================================================================
-
 FICHIER_SAUVEGARDE = "destination_sessions.json"
 DESTINATION_DUREE_SEC = 60 * 60       # temps max pour répondre (1h)
 DESTINATION_INTERVALLE_MIN = 5        # minutes entre deux indices
+DESTINATION_NB_INDICES = 6
+
+# Une session par (salon, étape) : clé "salon_id|etape normalisée"
 SESSION_DESTINATION = {}
+# Étape en cours dans chaque salon : {salon_id: clé}
+DESTINATION_ACTIVE = {}
+
+
+def destination_nom_etape(etape) -> str:
+    """'finale  1' -> 'Finale 1' ; '2' -> '2'."""
+    nom = " ".join(str(etape).split())
+    return nom[:1].upper() + nom[1:] if nom else nom
+
+
+def destination_cle(cid: int, etape) -> str:
+    return f"{cid}|{destination_nom_etape(etape).lower()}"
+
+
+def destination_session_du_salon(cid: int):
+    cle = DESTINATION_ACTIVE.get(cid)
+    return SESSION_DESTINATION.get(cle) if cle else None
+
 
 def sauvegarder_sessions():
     """Sauvegarde l'état actuel des sessions dans un fichier JSON."""
-    data = {}
-    for cid, s in SESSION_DESTINATION.items():
-        data[str(cid)] = {
+    data = {"version": 2, "actives": {str(cid): cle for cid, cle in DESTINATION_ACTIVE.items()}, "etapes": {}}
+    for cle, s in SESSION_DESTINATION.items():
+        data["etapes"][cle] = {
+            "salon": s["salon"],
             "etape": s["etape"],
             "intervalle_minutes": s.get("intervalle_minutes", DESTINATION_INTERVALLE_MIN),
             "active": s["active"],
@@ -8975,58 +9002,125 @@ def sauvegarder_sessions():
                     "debut": j["debut"].isoformat(),
                     "reponse": j["reponse"],
                     "temps_ecoule_sec": j["temps_ecoule_sec"],
-                    "indices_envoyes": list(j.get("indices_envoyes", set()))
+                    "indices_envoyes": sorted(j.get("indices_envoyes", set()))
                 }
                 for uid, j in s["joueurs"].items()
             }
         }
-    with open(FICHIER_SAUVEGARDE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+    tmp = FICHIER_SAUVEGARDE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+    os.replace(tmp, FICHIER_SAUVEGARDE)
+
+
+def _destination_joueurs_depuis_json(joueurs: dict) -> dict:
+    return {
+        int(uid_str): {
+            "debut": datetime.datetime.fromisoformat(j["debut"]),
+            "reponse": j["reponse"],
+            "temps_ecoule_sec": j["temps_ecoule_sec"],
+            "indices_envoyes": set(j.get("indices_envoyes", [])),
+            "tache_indices": None
+        }
+        for uid_str, j in joueurs.items()
+    }
 
 
 def charger_sessions():
-    """Charge les sessions sauvegardées au démarrage du bot."""
+    """Charge les sessions sauvegardées au démarrage du bot (compatible ancien format)."""
     if not os.path.exists(FICHIER_SAUVEGARDE):
         return
-
     try:
         with open(FICHIER_SAUVEGARDE, "r", encoding="utf-8") as f:
             data = json.load(f)
 
+        if data.get("version") == 2:
+            for cle, s in data.get("etapes", {}).items():
+                SESSION_DESTINATION[cle] = {
+                    "salon": s["salon"],
+                    "etape": s["etape"],
+                    "intervalle_minutes": s.get("intervalle_minutes", DESTINATION_INTERVALLE_MIN),
+                    "active": s["active"],
+                    "joueurs": _destination_joueurs_depuis_json(s.get("joueurs", {}))
+                }
+            for cid_str, cle in data.get("actives", {}).items():
+                if cle in SESSION_DESTINATION:
+                    DESTINATION_ACTIVE[int(cid_str)] = cle
+            return
+
+        # Ancien format : {salon_id: {"etape": 1, ...}}
         for cid_str, s in data.items():
             cid = int(cid_str)
-            SESSION_DESTINATION[cid] = {
-                "etape": s["etape"],
+            cle = destination_cle(cid, s["etape"])
+            SESSION_DESTINATION[cle] = {
+                "salon": cid,
+                "etape": destination_nom_etape(s["etape"]),
                 "intervalle_minutes": s.get("intervalle_minutes", DESTINATION_INTERVALLE_MIN),
                 "active": s["active"],
-                "joueurs": {}
+                "joueurs": _destination_joueurs_depuis_json(s.get("joueurs", {}))
             }
-            for uid_str, j in s["joueurs"].items():
-                uid = int(uid_str)
-                SESSION_DESTINATION[cid]["joueurs"][uid] = {
-                    "debut": datetime.datetime.fromisoformat(j["debut"]),
-                    "reponse": j["reponse"],
-                    "temps_ecoule_sec": j["temps_ecoule_sec"],
-                    "indices_envoyes": set(j.get("indices_envoyes", [])),
-                    "tache_indices": None
-                }
+            DESTINATION_ACTIVE[cid] = cle
     except Exception as e:
-        print(f"⚠️ Erreur lors du chargement de la sauvegarde : {e}")
+        print(f"⚠️ Erreur lors du chargement de la sauvegarde Destination X : {e}")
 
 
 # ==============================================================================
 # GESTION DES INDICES & RÉSILIENCE
 # ==============================================================================
 
-def trouver_fichier_indice(etape: int, indice: int) -> str | None:
-    motif = f"Etape {etape} Indice {indice} *.*"
-    fichiers = glob.glob(motif)
-    if fichiers:
-        return fichiers[0]
-    
-    motif_exact = f"Etape {etape} Indice {indice}.*"
-    fichiers_exacts = glob.glob(motif_exact)
-    return fichiers_exacts[0] if fichiers_exacts else None
+def _destination_dossiers():
+    dossiers = [os.getcwd()]
+    try:
+        d = os.path.dirname(os.path.abspath(__file__))
+        if d not in dossiers:
+            dossiers.append(d)
+    except NameError:
+        pass
+    return dossiers
+
+
+def trouver_fichier_indice(etape, indice: int) -> str | None:
+    """Cherche 'Etape <etape> Indice <n>.*' ou '<etape> Indice <n>.*' (majuscules indifférentes)."""
+    nom = re.escape(destination_nom_etape(etape))
+    motif = re.compile(rf"^(?:etape\s+)?{nom}\s+indice\s+{indice}(?:\s+.*)?\.[a-z0-9]+$", re.IGNORECASE)
+    for dossier in _destination_dossiers():
+        try:
+            fichiers = sorted(os.listdir(dossier))
+        except OSError:
+            continue
+        for f in fichiers:
+            if motif.match(f) and not f.endswith(".tmp"):
+                return os.path.join(dossier, f)
+    return None
+
+
+def destination_etapes_disponibles() -> list[str]:
+    """Noms d'étapes trouvés d'après les fichiers 'xxx Indice 1.*' présents."""
+    motif = re.compile(r"^(?:etape\s+)?(.+?)\s+indice\s+1(?:\s+.*)?\.[a-z0-9]+$", re.IGNORECASE)
+    noms = {}
+    for dossier in _destination_dossiers():
+        try:
+            for f in os.listdir(dossier):
+                m = motif.match(f)
+                if m:
+                    n = destination_nom_etape(m.group(1))
+                    noms.setdefault(n.lower(), n)
+        except OSError:
+            continue
+
+    def tri(n):
+        return (0, int(n), "") if n.isdigit() else (1, 0, n.lower())
+    return sorted(noms.values(), key=tri)
+
+
+async def autocomplete_etape_destination(interaction: discord.Interaction, current: str):
+    connues = destination_etapes_disponibles()
+    for s in SESSION_DESTINATION.values():
+        if s["etape"] not in connues:
+            connues.append(s["etape"])
+    cur = current.lower().strip()
+    return [app_commands.Choice(name=f"Étape {n}" if n.isdigit() else n, value=n)
+            for n in connues if cur in n.lower()][:25]
 
 
 async def relancer_boucles_indices_apres_crash(bot: commands.Bot):
@@ -9034,66 +9128,53 @@ async def relancer_boucles_indices_apres_crash(bot: commands.Bot):
     charger_sessions()
     maintenant = datetime.datetime.now(datetime.timezone.utc)
 
-    for cid, s in SESSION_DESTINATION.items():
+    for cle, s in SESSION_DESTINATION.items():
         if not s["active"]:
             continue
-
-        channel = bot.get_channel(cid)
+        channel = bot.get_channel(s["salon"])
         if not channel:
             continue
-
         for uid, j in s["joueurs"].items():
-            if j["reponse"] is None:
-                duree_actuelle = (maintenant - j["debut"]).total_seconds()
-                if duree_actuelle < DESTINATION_DUREE_SEC:
-                    if j.get("tache_indices") is None or j["tache_indices"].done():
-                        tache = asyncio.create_task(
-                            boucle_indices_confessionnal(channel, uid, s["etape"])
-                        )
-                        j["tache_indices"] = tache
+            if j["reponse"] is None and (maintenant - j["debut"]).total_seconds() < DESTINATION_DUREE_SEC:
+                if j.get("tache_indices") is None or j["tache_indices"].done():
+                    j["tache_indices"] = asyncio.create_task(boucle_indices_confessionnal(channel, uid, cle))
 
 
-async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: int, etape: int):
+async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: int, cle: str):
     """Parcourt les indices de 1 à 6 et attend le moment exact défini par l'intervalle."""
     try:
-        for idx in range(1, 7):
-            session_salon = SESSION_DESTINATION.get(channel.id)
-            if not session_salon or not session_salon["active"] or user_id not in session_salon["joueurs"]:
+        for idx in range(1, DESTINATION_NB_INDICES + 1):
+            session = SESSION_DESTINATION.get(cle)
+            if not session or not session["active"] or user_id not in session["joueurs"]:
                 break
 
-            infos_joueur = session_salon["joueurs"][user_id]
+            infos_joueur = session["joueurs"][user_id]
             if infos_joueur["reponse"] is not None:
                 break
 
             indices_envoyes = infos_joueur.setdefault("indices_envoyes", set())
-
-            # Durée de l'intervalle configuré pour cette étape
-            intervalle_sec = session_salon.get("intervalle_minutes", DESTINATION_INTERVALLE_MIN) * 60
-
-            # Calcul du moment exact où l'indice 'idx' doit tomber
+            intervalle_sec = session.get("intervalle_minutes", DESTINATION_INTERVALLE_MIN) * 60
             temps_cible_sec = (idx - 1) * intervalle_sec
-            maintenant = datetime.datetime.now(datetime.timezone.utc)
-            temps_ecoule = (maintenant - infos_joueur["debut"]).total_seconds()
+            temps_ecoule = (datetime.datetime.now(datetime.timezone.utc) - infos_joueur["debut"]).total_seconds()
 
             if temps_ecoule >= DESTINATION_DUREE_SEC:
                 break
 
-            # Si le temps n'est pas encore venu pour cet indice, on attend la différence exacte
             if temps_ecoule < temps_cible_sec:
-                attente = temps_cible_sec - temps_ecoule
-                await asyncio.sleep(attente)
+                await asyncio.sleep(temps_cible_sec - temps_ecoule)
 
             # Re-vérifier après l'attente
-            if infos_joueur["reponse"] is not None:
+            session = SESSION_DESTINATION.get(cle)
+            if not session or not session["active"] or infos_joueur["reponse"] is not None:
                 break
 
-            # Envoyer l'indice s'il n'a jamais été envoyé
             if idx not in indices_envoyes:
+                etape = session["etape"]
                 fichier_path = trouver_fichier_indice(etape, idx)
-
+                titre_etape = f"ÉTAPE {etape}" if etape.isdigit() else etape.upper()
                 embed = discord.Embed(
-                    title=f"🧭 DESTINATION X — ÉTAPE {etape}",
-                    description=f"📍 **Indice #{idx} / 6**",
+                    title=f"🧭 DESTINATION X — {titre_etape}",
+                    description=f"📍 **Indice #{idx} / {DESTINATION_NB_INDICES}**",
                     color=discord.Color.blue()
                 )
 
@@ -9107,7 +9188,7 @@ async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: in
                         embed.description += "\n📎 *Ouvre le fichier joint ci-dessous.*"
                     await channel.send(embed=embed, file=fichier_discord)
                 else:
-                    embed.description += f"\n⚠️ *(Fichier d'indice `Etape {etape} Indice {idx}` introuvable)*"
+                    embed.description += f"\n⚠️ *(Fichier d'indice `{etape} Indice {idx}` introuvable)*"
                     await channel.send(embed=embed)
 
                 indices_envoyes.add(idx)
@@ -9117,57 +9198,106 @@ async def boucle_indices_confessionnal(channel: discord.TextChannel, user_id: in
         pass
 
 
+def _destination_titre(etape: str) -> str:
+    return f"ÉTAPE {etape}" if etape.isdigit() else etape.upper()
+
+
 # ==============================================================================
 # COMMANDES DU BOT
 # ==============================================================================
 
-@bot.tree.command(name="destination_ouvrir_etape", description="Ouvre une étape de Destination X dans ce confessionnal.")
+@bot.tree.command(name="destination_ouvrir_etape", description="Ouvre une étape de Destination X dans ce confessionnal (ex : 1, 2, 3, Finale 1).")
 @app_commands.describe(
-    etape="Numéro de l'étape",
-    intervalle_minutes="Temps en minutes entre chaque indice (par défaut: 5)"
+    etape="Nom de l'étape : 1, 2, 3, Finale 1, Finale 2...",
+    intervalle_minutes="Temps en minutes entre chaque indice (par défaut : 5)",
+    forcer="Passer à cette étape même si le candidat n'a pas fini la précédente"
 )
+@app_commands.autocomplete(etape=autocomplete_etape_destination)
 @app_commands.check(est_orga_ou_admin)
-async def destination_ouvrir_etape(interaction: discord.Interaction, etape: int, intervalle_minutes: int = DESTINATION_INTERVALLE_MIN):
-    SESSION_DESTINATION[interaction.channel_id] = {
-        "etape": etape,
-        "intervalle_minutes": intervalle_minutes,
-        "active": True,
-        "joueurs": {}
-    }
+async def destination_ouvrir_etape(
+    interaction: discord.Interaction,
+    etape: str,
+    intervalle_minutes: app_commands.Range[int, 1, 60] = DESTINATION_INTERVALLE_MIN,
+    forcer: bool = False
+):
+    cid = interaction.channel_id
+    etape = destination_nom_etape(etape)
+    if not etape:
+        await interaction.response.send_message("❌ Donne un nom d'étape (ex : `1` ou `Finale 1`).", ephemeral=True)
+        return
+    cle = destination_cle(cid, etape)
+
+    # Étape précédente de ce salon encore en cours ?
+    precedente = destination_session_du_salon(cid)
+    if precedente and DESTINATION_ACTIVE.get(cid) != cle:
+        maintenant = datetime.datetime.now(datetime.timezone.utc)
+        en_cours = [uid for uid, j in precedente["joueurs"].items()
+                    if j["reponse"] is None and (maintenant - j["debut"]).total_seconds() < DESTINATION_DUREE_SEC]
+        if en_cours and precedente["active"] and not forcer:
+            await interaction.response.send_message(
+                f"⚠️ Le candidat n'a pas encore répondu à **{precedente['etape']}**. "
+                "Attends sa réponse, ou relance avec `forcer: True` (ses indices s'arrêteront).",
+                ephemeral=True
+            )
+            return
+        for uid in en_cours:
+            tache = precedente["joueurs"][uid].get("tache_indices")
+            if tache and not tache.done():
+                tache.cancel()
+
+    if cle in SESSION_DESTINATION:
+        # Réouverture : on garde les résultats déjà enregistrés
+        SESSION_DESTINATION[cle]["active"] = True
+        SESSION_DESTINATION[cle]["intervalle_minutes"] = intervalle_minutes
+    else:
+        SESSION_DESTINATION[cle] = {
+            "salon": cid,
+            "etape": etape,
+            "intervalle_minutes": intervalle_minutes,
+            "active": True,
+            "joueurs": {}
+        }
+    DESTINATION_ACTIVE[cid] = cle
     sauvegarder_sessions()
 
+    manquants = [i for i in range(1, DESTINATION_NB_INDICES + 1) if not trouver_fichier_indice(etape, i)]
+    duree_txt = f"{DESTINATION_DUREE_SEC // 3600}h" if DESTINATION_DUREE_SEC % 3600 == 0 else f"{DESTINATION_DUREE_SEC // 60} min"
+
     embed = discord.Embed(
-        title=f"🚀 DESTINATION X — ÉTAPE {etape} DISPONIBLE",
+        title=f"🚀 DESTINATION X — {_destination_titre(etape)} DISPONIBLE",
         description=(
-            f"L'étape **#{etape}** est prête pour ce confessionnal.\n\n"
+            f"L'étape **{etape}** est prête pour ce confessionnal.\n\n"
             "▶️ Utilise `/lancer_destination_x` dès que tu souhaites commencer.\n"
-            "⏳ À partir du lancement, tu as **1h** pour donner ta réponse.\n"
-            f"📍 Tu recevras **6 indices ici** (1 toutes les **{intervalle_minutes} min**).\n"
+            f"⏳ À partir du lancement, tu as **{duree_txt}** pour donner ta réponse.\n"
+            f"📍 Tu recevras **{DESTINATION_NB_INDICES} indices ici** (1 toutes les **{intervalle_minutes} min**).\n"
             "📝 Utilise `/repondre_destination` pour valider ta localisation."
         ),
         color=discord.Color.gold()
     )
     await interaction.response.send_message(embed=embed)
+    if manquants:
+        await interaction.followup.send(
+            f"⚠️ Fichiers introuvables pour **{etape}** : indice(s) {', '.join(map(str, manquants))}. "
+            f"Nom attendu : `{etape} Indice 1.png` (ou `Etape {etape} Indice 1.png`) à côté de bot.py.",
+            ephemeral=True
+        )
 
 
-@bot.tree.command(name="lancer_destination_x", description="Démarre ton épreuve, le chrono de 1h et la réception des indices.")
+@bot.tree.command(name="lancer_destination_x", description="Démarre ton épreuve, le chrono et la réception des indices.")
 async def lancer_destination_x(interaction: discord.Interaction):
     cid = interaction.channel_id
-    if cid not in SESSION_DESTINATION or not SESSION_DESTINATION[cid]["active"]:
+    session = destination_session_du_salon(cid)
+    if not session or not session["active"]:
         await interaction.response.send_message("❌ Aucune étape de Destination X n'est active ici.", ephemeral=True)
         return
 
-    session = SESSION_DESTINATION[cid]
     uid = interaction.user.id
-
     if uid in session["joueurs"]:
-        await interaction.response.send_message("⚠️ Tu as déjà lancé ton épreuve pour cette étape !", ephemeral=True)
+        await interaction.response.send_message(f"⚠️ Tu as déjà lancé ton épreuve pour **{session['etape']}** !", ephemeral=True)
         return
 
-    maintenant = datetime.datetime.now(datetime.timezone.utc)
-
     session["joueurs"][uid] = {
-        "debut": maintenant,
+        "debut": datetime.datetime.now(datetime.timezone.utc),
         "reponse": None,
         "temps_ecoule_sec": None,
         "tache_indices": None,
@@ -9175,22 +9305,22 @@ async def lancer_destination_x(interaction: discord.Interaction):
     }
     sauvegarder_sessions()
 
+    fin = int(time.time() + DESTINATION_DUREE_SEC)
     await interaction.response.send_message(
-        f"✅ **Épreuve lancée pour l'Étape {session['etape']} !** Le chrono de **1h** tourne. Voici ton premier indice ci-dessous :"
+        f"✅ **Épreuve lancée : {_destination_titre(session['etape'])} !** Fin du chrono <t:{fin}:R>. "
+        "Voici ton premier indice ci-dessous :"
     )
-
-    tache = asyncio.create_task(
-        boucle_indices_confessionnal(interaction.channel, uid, session["etape"])
+    cle = DESTINATION_ACTIVE[cid]
+    session["joueurs"][uid]["tache_indices"] = asyncio.create_task(
+        boucle_indices_confessionnal(interaction.channel, uid, cle)
     )
-    session["joueurs"][uid]["tache_indices"] = tache
 
 
 @bot.tree.command(name="repondre_destination", description="Envoie ta proposition finale pour l'étape.")
 @app_commands.describe(proposition="Ta réponse ou localisation finale")
 async def repondre_destination(interaction: discord.Interaction, proposition: str):
     cid = interaction.channel_id
-    session = SESSION_DESTINATION.get(cid)
-
+    session = destination_session_du_salon(cid)
     if not session or not session["active"]:
         await interaction.response.send_message("❌ Aucune étape active ici.", ephemeral=True)
         return
@@ -9201,14 +9331,11 @@ async def repondre_destination(interaction: discord.Interaction, proposition: st
         return
 
     infos_joueur = session["joueurs"][uid]
-
     if infos_joueur["reponse"] is not None:
         await interaction.response.send_message("⚠️ Tu as déjà enregistré ta réponse finale pour cette étape !", ephemeral=True)
         return
 
-    maintenant = datetime.datetime.now(datetime.timezone.utc)
-    duree_sec = (maintenant - infos_joueur["debut"]).total_seconds()
-
+    duree_sec = (datetime.datetime.now(datetime.timezone.utc) - infos_joueur["debut"]).total_seconds()
     if duree_sec > DESTINATION_DUREE_SEC:
         await interaction.response.send_message(
             f"❌ **Temps dépassé !** Tu as mis {int(duree_sec // 60)} minutes. Ta réponse ne peut plus être prise en compte.",
@@ -9220,14 +9347,12 @@ async def repondre_destination(interaction: discord.Interaction, proposition: st
     infos_joueur["temps_ecoule_sec"] = duree_sec
     sauvegarder_sessions()
 
-    if infos_joueur["tache_indices"]:
+    if infos_joueur.get("tache_indices"):
         infos_joueur["tache_indices"].cancel()
 
-    mins = int(duree_sec // 60)
-    secs = int(duree_sec % 60)
-
+    mins, secs = int(duree_sec // 60), int(duree_sec % 60)
     embed_validation = discord.Embed(
-        title="🎯 RÉPONSE ENREGISTRÉE",
+        title=f"🎯 RÉPONSE ENREGISTRÉE — {_destination_titre(session['etape'])}",
         description=(
             f"📝 **Proposition :** `{proposition}`\n"
             f"⏱️ **Temps écoulé :** {mins} min {secs} sec"
@@ -9237,67 +9362,54 @@ async def repondre_destination(interaction: discord.Interaction, proposition: st
     await interaction.response.send_message(embed=embed_validation)
 
 
-@bot.tree.command(name="destination_fermer_etape", description="Ferme l'étape active dans TOUS les confessionnaux et affiche le bilan global.")
-@app_commands.describe(etape="Numéro de l'étape à fermer (optionnel si fermé depuis un confessionnal active)")
+@bot.tree.command(name="destination_fermer_etape", description="Ferme une étape dans TOUS les confessionnaux et affiche le bilan global.")
+@app_commands.describe(etape="Étape à fermer (par défaut : celle en cours dans ce salon)")
+@app_commands.autocomplete(etape=autocomplete_etape_destination)
 @app_commands.check(est_orga_ou_admin)
-async def destination_fermer_etape(interaction: discord.Interaction, etape: int | None = None):
-    # Si l'étape n'est pas spécifiée, on essaie de la deviner depuis le salon courant
+async def destination_fermer_etape(interaction: discord.Interaction, etape: str = None):
     if etape is None:
-        session_courante = SESSION_DESTINATION.get(interaction.channel_id)
-        if session_courante:
-            etape = session_courante["etape"]
-        else:
+        courante = destination_session_du_salon(interaction.channel_id)
+        if not courante:
             await interaction.response.send_message(
-                "❌ Précise le numéro de l'étape à fermer (ex: `/destination_fermer_etape etape:1`).", 
-                ephemeral=True
-            )
+                "❌ Précise l'étape à fermer (ex : `/destination_fermer_etape etape: Finale 1`).", ephemeral=True)
             return
+        etape = courante["etape"]
+    etape = destination_nom_etape(etape)
 
-    # Recherche de tous les confessionnaux/salons ayant cette étape active ou enregistrée
-    salons_concernes = [
-        cid for cid, s in SESSION_DESTINATION.items() 
-        if s.get("etape") == etape
-    ]
-
-    if not salons_concernes:
-        await interaction.response.send_message(f"❌ Aucune session trouvée pour l'Étape #{etape}.", ephemeral=True)
+    sessions = [s for s in SESSION_DESTINATION.values() if s["etape"].lower() == etape.lower()]
+    if not sessions:
+        await interaction.response.send_message(f"❌ Aucune session trouvée pour **{etape}**.", ephemeral=True)
         return
 
-    # On clôture et annule les tâches d'indices sur TOUS les salons de cette étape
-    lignes_resultats = []
-
-    for cid in salons_concernes:
-        session = SESSION_DESTINATION[cid]
-        session["active"] = False
-
-        for uid, data in session["joueurs"].items():
-            # Annulation des tâches d'envoi d'indices
-            if data["tache_indices"] and not data["tache_indices"].done():
-                data["tache_indices"].cancel()
-
-            # Récupération du nom du membre (sur le serveur)
+    lignes = []
+    for s in sessions:
+        s["active"] = False
+        for uid, data in s["joueurs"].items():
+            tache = data.get("tache_indices")
+            if tache and not tache.done():
+                tache.cancel()
             membre = interaction.guild.get_member(uid)
             nom = membre.display_name if membre else f"<@{uid}>"
-
             if data["reponse"] is not None:
-                mins = int(data["temps_ecoule_sec"] // 60)
-                secs = int(data["temps_ecoule_sec"] % 60)
-                lignes_resultats.append((data["temps_ecoule_sec"], f"✅ **{nom}** : `{data['reponse']}` *(en {mins}m {secs}s)*"))
+                t = data["temps_ecoule_sec"]
+                lignes.append((t, f"✅ **{nom}** : `{data['reponse']}` *(en {int(t // 60)}m {int(t % 60)}s)*"))
             else:
-                lignes_resultats.append((999999, f"❌ **{nom}** : *Pas de réponse enregistrée*"))
-
+                lignes.append((float("inf"), f"❌ **{nom}** : *Pas de réponse enregistrée*"))
     sauvegarder_sessions()
 
-    # Trier les résultats par temps de réponse (les plus rapides en premier)
-    lignes_resultats.sort(key=lambda x: x[0])
-    text_desc = "\n".join([ligne for _, ligne in lignes_resultats]) if lignes_resultats else "Aucun joueur n'a participé."
+    lignes.sort(key=lambda x: x[0])
+    texte = "\n".join(l for _, l in lignes) if lignes else "Aucun joueur n'a lancé cette étape."
+    pas_lance = sum(1 for s in sessions if not s["joueurs"])
+    if pas_lance:
+        texte += f"\n\n*{pas_lance} confessionnal(aux) ouvert(s) sans lancement.*"
 
     embed = discord.Embed(
-        title=f"🔒 BILAN GLOBAL — DESTINATION X (ÉTAPE {etape})",
-        description=f"📊 **Résultats de tous les confessionnaux :**\n\n{text_desc}",
+        title=f"🔒 BILAN GLOBAL — DESTINATION X ({_destination_titre(etape)})",
+        description=f"📊 **Résultats de tous les confessionnaux :**\n\n{texte}"[:4000],
         color=discord.Color.red()
     )
     await interaction.response.send_message(embed=embed)
+
 
 @bot.tree.command(
     name="config_perm_spectateurs",
