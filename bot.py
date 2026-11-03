@@ -8956,7 +8956,7 @@ async def slam_valider_mot(interaction: discord.Interaction, numero: int):
 # ==============================================================================
 # DESTINATION X : SAUVEGARDE PERSISTANTE (ANTI-CRASH ET ANTI-DOUBLON)
 #
-# Les étapes sont des noms libres : "1", "2", "3", "Finale 1", "Finale 2"...
+# Étapes autorisées : 1, 2, 3, Finale 1, Finale 2, Finale 3, Finale 4 (liste DESTINATION_ETAPES_AUTORISEES).
 # Fichiers d'indices (dans le dossier du bot) : "Etape 1 Indice 1.png" ou "Finale 1 Indice 1.png"
 # (majuscules indifférentes, une suite après le numéro est permise : "Finale 1 Indice 3 Rome.jpg").
 # Chaque confessionnal avance à son rythme : un candidat peut être en Finale 1 pendant
@@ -8966,6 +8966,37 @@ FICHIER_SAUVEGARDE = "destination_sessions.json"
 DESTINATION_DUREE_SEC = 60 * 60       # temps max pour répondre (1h)
 DESTINATION_INTERVALLE_MIN = 5        # minutes entre deux indices
 DESTINATION_NB_INDICES = 6
+# Seules étapes autorisées (menu déroulant dans Discord)
+DESTINATION_ETAPES_AUTORISEES = ["1", "2", "3", "Finale 1", "Finale 2", "Finale 3", "Finale 4"]
+# Infos affichées au candidat pour chaque étape : (lieu de départ ou None, durée du trajet)
+DESTINATION_INFOS_ETAPES = {
+    "1":        ("Allianz Arena", "entre 3h et 5h"),
+    "2":        ("FIFA Museum", "entre 4h30 et 6h"),
+    "3":        ("Stade Luigi Ferraris", "entre 7h et 10h"),
+    "Finale 1": ("Stade Olympique de Nouakchott", "entre 26h et 29h"),
+    "Finale 2": (None, "entre 11h et 15h"),
+    "Finale 3": (None, "entre 11h et 17h"),
+    "Finale 4": (None, "entre 5h et 7h"),
+}
+
+
+def destination_texte_infos(etape: str) -> str:
+    """Lignes « Départ / Trajet » de l'étape (vide si l'étape n'a pas d'infos)."""
+    infos = next((v for k, v in DESTINATION_INFOS_ETAPES.items() if k.lower() == etape.lower()), None)
+    if not infos:
+        return ""
+    depart, trajet = infos
+    lignes = []
+    if depart:
+        lignes.append(f"🛫 **Départ :** {depart}")
+    if trajet:
+        lignes.append(f"🕒 **Trajet :** {trajet}")
+    return "\n".join(lignes)
+
+
+DESTINATION_CHOIX_ETAPES = [
+    app_commands.Choice(name=(f"Étape {e}" if e.isdigit() else e), value=e) for e in DESTINATION_ETAPES_AUTORISEES
+]
 
 # Une session par (salon, étape) : clé "salon_id|etape normalisée"
 SESSION_DESTINATION = {}
@@ -9113,16 +9144,6 @@ def destination_etapes_disponibles() -> list[str]:
     return sorted(noms.values(), key=tri)
 
 
-async def autocomplete_etape_destination(interaction: discord.Interaction, current: str):
-    connues = destination_etapes_disponibles()
-    for s in SESSION_DESTINATION.values():
-        if s["etape"] not in connues:
-            connues.append(s["etape"])
-    cur = current.lower().strip()
-    return [app_commands.Choice(name=f"Étape {n}" if n.isdigit() else n, value=n)
-            for n in connues if cur in n.lower()][:25]
-
-
 async def relancer_boucles_indices_apres_crash(bot: commands.Bot):
     """Au démarrage du bot, relance l'envoi d'indices pour tous les joueurs encore actifs."""
     charger_sessions()
@@ -9208,22 +9229,23 @@ def _destination_titre(etape: str) -> str:
 
 @bot.tree.command(name="destination_ouvrir_etape", description="Ouvre une étape de Destination X dans ce confessionnal (ex : 1, 2, 3, Finale 1).")
 @app_commands.describe(
-    etape="Nom de l'étape : 1, 2, 3, Finale 1, Finale 2...",
+    etape="Étape à ouvrir",
     intervalle_minutes="Temps en minutes entre chaque indice (par défaut : 5)",
     forcer="Passer à cette étape même si le candidat n'a pas fini la précédente"
 )
-@app_commands.autocomplete(etape=autocomplete_etape_destination)
+@app_commands.choices(etape=DESTINATION_CHOIX_ETAPES)
 @app_commands.check(est_orga_ou_admin)
 async def destination_ouvrir_etape(
     interaction: discord.Interaction,
-    etape: str,
+    etape: app_commands.Choice[str],
     intervalle_minutes: app_commands.Range[int, 1, 60] = DESTINATION_INTERVALLE_MIN,
     forcer: bool = False
 ):
     cid = interaction.channel_id
-    etape = destination_nom_etape(etape)
-    if not etape:
-        await interaction.response.send_message("❌ Donne un nom d'étape (ex : `1` ou `Finale 1`).", ephemeral=True)
+    etape = destination_nom_etape(etape.value if isinstance(etape, app_commands.Choice) else etape)
+    if etape.lower() not in [e.lower() for e in DESTINATION_ETAPES_AUTORISEES]:
+        await interaction.response.send_message(
+            "❌ Étape inconnue. Choisis : " + ", ".join(DESTINATION_ETAPES_AUTORISEES) + ".", ephemeral=True)
         return
     cle = destination_cle(cid, etape)
 
@@ -9267,7 +9289,8 @@ async def destination_ouvrir_etape(
         title=f"🚀 DESTINATION X — {_destination_titre(etape)} DISPONIBLE",
         description=(
             f"L'étape **{etape}** est prête pour ce confessionnal.\n\n"
-            "▶️ Utilise `/lancer_destination_x` dès que tu souhaites commencer.\n"
+            + (destination_texte_infos(etape) + "\n\n" if destination_texte_infos(etape) else "")
+            + "▶️ Utilise `/lancer_destination_x` dès que tu souhaites commencer.\n"
             f"⏳ À partir du lancement, tu as **{duree_txt}** pour donner ta réponse.\n"
             f"📍 Tu recevras **{DESTINATION_NB_INDICES} indices ici** (1 toutes les **{intervalle_minutes} min**).\n"
             "📝 Utilise `/repondre_destination` pour valider ta localisation."
@@ -9306,9 +9329,11 @@ async def lancer_destination_x(interaction: discord.Interaction):
     sauvegarder_sessions()
 
     fin = int(time.time() + DESTINATION_DUREE_SEC)
+    infos = destination_texte_infos(session["etape"])
     await interaction.response.send_message(
-        f"✅ **Épreuve lancée : {_destination_titre(session['etape'])} !** Fin du chrono <t:{fin}:R>. "
-        "Voici ton premier indice ci-dessous :"
+        f"✅ **Épreuve lancée : {_destination_titre(session['etape'])} !** Fin du chrono <t:{fin}:R>.\n"
+        + (infos + "\n" if infos else "")
+        + "Voici ton premier indice ci-dessous :"
     )
     cle = DESTINATION_ACTIVE[cid]
     session["joueurs"][uid]["tache_indices"] = asyncio.create_task(
@@ -9362,11 +9387,58 @@ async def repondre_destination(interaction: discord.Interaction, proposition: st
     await interaction.response.send_message(embed=embed_validation)
 
 
-@bot.tree.command(name="destination_fermer_etape", description="Ferme une étape dans TOUS les confessionnaux et affiche le bilan global.")
-@app_commands.describe(etape="Étape à fermer (par défaut : celle en cours dans ce salon)")
-@app_commands.autocomplete(etape=autocomplete_etape_destination)
+async def destination_annuler_dans_salon(interaction: discord.Interaction):
+    """Efface l'étape en cours de ce seul confessionnal (comme si elle n'avait jamais été ouverte)."""
+    cid = interaction.channel_id
+    cle = DESTINATION_ACTIVE.get(cid)
+    session = SESSION_DESTINATION.get(cle) if cle else None
+    if not session:
+        await interaction.response.send_message("❌ Aucune étape de Destination X dans ce confessionnal.", ephemeral=True)
+        return
+
+    perdus = []
+    for uid, data in session["joueurs"].items():
+        tache = data.get("tache_indices")
+        if tache and not tache.done():
+            tache.cancel()
+        if data["reponse"] is not None:
+            membre = interaction.guild.get_member(uid)
+            perdus.append(f"{membre.display_name if membre else uid} : « {data['reponse']} »")
+
+    del SESSION_DESTINATION[cle]
+    # On revient à la dernière autre étape jouée dans ce salon, s'il y en a une (sans la rouvrir)
+    autres = [k for k, s_ in SESSION_DESTINATION.items() if s_["salon"] == cid]
+    if autres:
+        DESTINATION_ACTIVE[cid] = autres[-1]
+    else:
+        DESTINATION_ACTIVE.pop(cid, None)
+    sauvegarder_sessions()
+
+    msg = (f"🗑️ Étape **{session['etape']}** annulée dans ce confessionnal uniquement. "
+           "Les autres confessionnaux ne sont pas touchés. Ouvre la bonne étape avec `/destination_ouvrir_etape`.")
+    if perdus:
+        msg += "\n⚠️ Réponse effacée : " + " ; ".join(perdus)
+    await interaction.response.send_message(msg, ephemeral=True)
+    try:
+        await interaction.channel.send(f"🛑 L'étape **{session['etape']}** a été annulée par un orga. Attends la suite !")
+    except discord.HTTPException:
+        pass
+
+
+@bot.tree.command(name="destination_fermer_etape", description="Ferme une étape partout avec bilan, ou annule l'étape de CE confessionnal (erreur).")
+@app_commands.describe(
+    etape="Étape à fermer (par défaut : celle en cours dans ce salon)",
+    annuler_ici="Annule seulement l'étape en cours dans CE confessionnal (erreur d'ouverture) : effacée, sans bilan"
+)
+@app_commands.choices(etape=DESTINATION_CHOIX_ETAPES)
 @app_commands.check(est_orga_ou_admin)
-async def destination_fermer_etape(interaction: discord.Interaction, etape: str = None):
+async def destination_fermer_etape(interaction: discord.Interaction, etape: app_commands.Choice[str] = None, annuler_ici: bool = False):
+    if isinstance(etape, app_commands.Choice):
+        etape = etape.value
+    if annuler_ici:
+        await destination_annuler_dans_salon(interaction)
+        return
+
     if etape is None:
         courante = destination_session_du_salon(interaction.channel_id)
         if not courante:
@@ -9637,7 +9709,7 @@ async def completer_duos_manquants(
 #
 # Chaque équipe a son propre chrono : on la lance quand on veut, le jour qu'on veut,
 # en tapant /lancer_epreuve (sans option) dans son salon boite-equipe-N.
-# /boite_demo ouvre un salon tutoriel avec une mini-partie d'entraînement.
+# /boite_demo, tapé dans le salon d'une équipe, y lance une mini-partie d'entraînement.
 # ========================================================
 from pathlib import Path
 
@@ -9650,8 +9722,6 @@ BOITE_DEMO_DUREE = 10 * 60     # durée du tutoriel
 BOITE_DEMO_COOLDOWN = 15       # attente après une mauvaise réponse (tutoriel)
 BOITE_NOM_CATEGORIE = "📦 LA BOÎTE À CHAUSSURES"
 BOITE_PREFIXE_ROLE = "Boîte Équipe"
-BOITE_NOM_SALON_DEMO = "boite-tutoriel"
-BOITE_CLE_DEMO = "demo"
 
 BOITE_BASE = Path(__file__).resolve().parent
 BOITE_STATE_FILE = BOITE_BASE / "boite_state.json"
@@ -9773,8 +9843,8 @@ def boite_new_state():
     return {"orga_channel": None, "category": None, "demo_channel": None, "teams": {}}
 
 
-def boite_new_team(channel_id, role_id, demo=False):
-    return {"channel": channel_id, "role": role_id, "demo": demo,
+def boite_new_team(channel_id, role_id):
+    return {"channel": channel_id, "role": role_id, "tuto": False,
             "start": None, "ended": False, "carte_sent": False,
             "solved": {}, "locked_until": 0, "fiche": None}
 
@@ -9790,7 +9860,10 @@ def boite_load_state():
                     base[k] = data[k]
     except (FileNotFoundError, json.JSONDecodeError):
         pass
+    # Ancienne version : équipe « demo » séparée -> supprimée (le tutoriel se joue dans le salon de l'équipe)
+    base["teams"] = {n: t for n, t in base["teams"].items() if not t.get("demo")}
     for t in base["teams"].values():
+        t.pop("demo", None)
         for k, v in boite_new_team(None, None).items():
             t.setdefault(k, v)
     return base
@@ -9813,28 +9886,28 @@ def boite_team_of_channel(channel_id):
 
 
 def boite_vraies_equipes():
-    return {n: t for n, t in boite_state["teams"].items() if not t.get("demo")}
+    return dict(boite_state["teams"])
 
 
 def boite_nom_equipe(n, t):
-    return "Tutoriel" if t.get("demo") else f"Équipe {n}"
+    return f"Équipe {n} (tutoriel)" if t.get("tuto") else f"Équipe {n}"
 
 
 # Données selon le mode (vraie partie ou tutoriel)
 def boite_enigmes(t):
-    return BOITE_DEMO_ENIGMES if t.get("demo") else BOITE_ENIGMES
+    return BOITE_DEMO_ENIGMES if t.get("tuto") else BOITE_ENIGMES
 
 
 def boite_objets(t):
-    return BOITE_DEMO_OBJETS if t.get("demo") else BOITE_OBJETS
+    return BOITE_DEMO_OBJETS if t.get("tuto") else BOITE_OBJETS
 
 
 def boite_duree(t):
-    return BOITE_DEMO_DUREE if t.get("demo") else BOITE_DUREE
+    return BOITE_DEMO_DUREE if t.get("tuto") else BOITE_DUREE
 
 
 def boite_cooldown(t):
-    return BOITE_DEMO_COOLDOWN if t.get("demo") else BOITE_COOLDOWN
+    return BOITE_DEMO_COOLDOWN if t.get("tuto") else BOITE_COOLDOWN
 
 
 # ---------------------------------------------------------------- OUTILS
@@ -9855,8 +9928,8 @@ def boite_contient(texte_norm: str, mot: str) -> bool:
 
 
 def boite_reponse_ok(t: dict, num: int, texte: str) -> bool:
-    reponses = BOITE_DEMO_REPONSES if t.get("demo") else BOITE_REPONSES
-    refus = {} if t.get("demo") else BOITE_REFUS
+    reponses = BOITE_DEMO_REPONSES if t.get("tuto") else BOITE_REPONSES
+    refus = {} if t.get("tuto") else BOITE_REFUS
     if num not in reponses:
         return False
     tn = boite_norm(texte)
@@ -9922,7 +9995,7 @@ async def boite_envoyer_objet(channel, t: dict, n: int):
     titre, texte = boite_objets(t)[n]
     embed = discord.Embed(title=f"Objet {n}. {titre}", description=texte, color=0xB08D57)
     img = BOITE_OBJETS_DIR / f"objet_{n}.png"
-    if not t.get("demo") and img.exists():
+    if not t.get("tuto") and img.exists():
         embed.set_image(url=f"attachment://{img.name}")
         await channel.send(embed=embed, file=discord.File(img, filename=img.name))
     else:
@@ -9942,7 +10015,14 @@ async def boite_log_orga(message: str):
     await boite_envoyer(boite_state["orga_channel"], message)
 
 
+def boite_remettre_a_zero(t):
+    t.update({"tuto": False, "start": None, "ended": False, "carte_sent": False,
+              "solved": {}, "locked_until": 0, "fiche": None})
+
+
 def boite_statut(t):
+    if t.get("tuto"):
+        return "pas joué"
     if t.get("fiche"):
         return "fiche"
     if not t["start"]:
@@ -10010,7 +10090,7 @@ def boite_equipe_depuis(inter: discord.Interaction, equipe):
     if equipe is not None:
         return str(equipe), boite_state["teams"].get(str(equipe))
     n, t = boite_team_of_channel(inter.channel_id)
-    if t and not t.get("demo"):
+    if t:
         return n, t
     return None, None
 
@@ -10018,7 +10098,7 @@ def boite_equipe_depuis(inter: discord.Interaction, equipe):
 # ---------------------------------------------------------------- LANCEMENT D'UNE ÉQUIPE
 def boite_texte_intro(t) -> str:
     fin = int(t["start"] + boite_duree(t))
-    if t.get("demo"):
+    if t.get("tuto"):
         return (
             "🎓 **TUTORIEL : LA BOÎTE À CHAUSSURES**\n"
             "C'est un entraînement : les énigmes sont faciles et rien ne compte. Le but est d'apprendre les commandes.\n\n"
@@ -10046,9 +10126,10 @@ def boite_texte_intro(t) -> str:
     )
 
 
-async def boite_demarrer(channel, t: dict):
-    t.update({"start": time.time(), "ended": False, "carte_sent": False,
-              "solved": {}, "locked_until": 0, "fiche": None})
+async def boite_demarrer(channel, t: dict, tuto: bool = False):
+    boite_remettre_a_zero(t)
+    t["tuto"] = tuto
+    t["start"] = time.time()
     boite_save_state()
     await channel.send(boite_texte_intro(t))
 
@@ -10056,9 +10137,10 @@ async def boite_demarrer(channel, t: dict):
 async def boite_lancer_depuis_salon(interaction: discord.Interaction):
     """Appelé par /lancer_epreuve dans un salon boite-equipe-N : lance la partie de cette équipe."""
     n, t = boite_team_of_channel(interaction.channel_id)
-    if t.get("demo"):
-        await interaction.response.send_message("Ici c'est le tutoriel : relance-le avec `/boite_demo`.", ephemeral=True)
-        return
+    tuto_remplace = False
+    if t.get("tuto"):
+        boite_remettre_a_zero(t)   # le tutoriel en cours laisse la place à la vraie partie
+        tuto_remplace = True
     if t["start"] and not boite_temps_ecoule(t) and not t.get("fiche"):
         r = boite_restant(t)
         await interaction.response.send_message(
@@ -10073,6 +10155,8 @@ async def boite_lancer_depuis_salon(interaction: discord.Interaction):
     joueurs = [m for m in role.members if not m.bot] if role else []
     await boite_demarrer(interaction.channel, t)
     msg = f"🚀 Partie de l'équipe {n} lancée ({len(joueurs)} joueur(s))."
+    if tuto_remplace:
+        msg += "\nLe tutoriel en cours a été arrêté."
     if not joueurs:
         msg += "\n⚠️ Personne n'a le rôle de cette équipe : utilise `/boite_assigner`."
     await interaction.response.send_message(msg, ephemeral=True)
@@ -10094,20 +10178,23 @@ class BoiteConfirmation(discord.ui.View):
             self.stop()
             return
         ts = time.time()
-        pts = boite_corriger_fiche(self.fiche, demo=t.get("demo"))
+        pts = boite_corriger_fiche(self.fiche, demo=t.get("tuto"))
         t["fiche"] = {**self.fiche, "ts": ts, "points": pts, "par": inter.user.display_name}
         t["carte_sent"] = True
         boite_save_state()
         duree = boite_fmt_duree(ts - t["start"])
         await inter.response.edit_message(content="📨 Fiche envoyée.", view=None)
 
-        if t.get("demo"):
+        if t.get("tuto"):
             await inter.channel.send(
                 f"📨 **Fiche déposée** en {duree}. Score d'entraînement : **{pts['total']}/7** "
                 f"(date {pts['date']}/2, stade {pts['stade']}/1, équipes {pts['equipes']}/2, score {pts['score']}/1, "
                 f"bonus supporter {pts['bonus']}/1).\n\n**Solution du tutoriel**\n{BOITE_DEMO_SOLUTION}\n\n"
                 "Vous êtes prêts pour la vraie partie !"
             )
+            boite_remettre_a_zero(t)
+            boite_save_state()
+            self.stop()
             return
 
         await inter.channel.send(f"📨 **Fiche déposée** en {duree}. C'est fini pour vous, merci d'avoir joué !")
@@ -10169,7 +10256,7 @@ class BoiteCog(commands.Cog):
             try:
                 ecoule = time.time() - t["start"]
 
-                if not t.get("demo") and not t["carte_sent"] and ecoule >= BOITE_SEUIL_CARTE:
+                if not t.get("tuto") and not t["carte_sent"] and ecoule >= BOITE_SEUIL_CARTE:
                     t["carte_sent"] = True
                     boite_save_state()
                     if not t.get("fiche"):
@@ -10182,9 +10269,11 @@ class BoiteCog(commands.Cog):
                 if ecoule >= boite_duree(t):
                     t["ended"] = True
                     boite_save_state()
-                    if t.get("demo"):
-                        if not t.get("fiche"):
-                            await boite_envoyer(t["channel"], "⏱️ **Fin du tutoriel.**\n\n**Solution**\n" + BOITE_DEMO_SOLUTION)
+                    if t.get("tuto"):
+                        boite_remettre_a_zero(t)
+                        boite_save_state()
+                        await boite_envoyer(t["channel"], "⏱️ **Fin du tutoriel.**\n\n**Solution**\n" + BOITE_DEMO_SOLUTION
+                                            + "\n\nVous êtes prêts pour la vraie partie !")
                         continue
                     if t.get("fiche"):
                         await boite_envoyer(t["channel"], "⏱️ Temps écoulé. Votre fiche est bien déposée.")
@@ -10237,7 +10326,7 @@ class BoiteCog(commands.Cog):
         await inter.followup.send(
             (f"✅ Créé(s) : {', '.join(crees)}\n" if crees else "Rien à créer, tout existe déjà.\n")
             + "1. `/boite_assigner` pour mettre les joueurs dans leur équipe.\n"
-            "2. `/boite_demo` pour leur montrer le fonctionnement.\n"
+            "2. `/boite_demo` dans le salon d'une équipe pour lui montrer le fonctionnement.\n"
             "3. Le jour J, va dans le salon de l'équipe et tape `/lancer_epreuve` (sans option).\n"
             f"Le salon {orga.mention} reçoit les réponses, dépôts, le classement et la solution.",
             ephemeral=True,
@@ -10280,50 +10369,38 @@ class BoiteCog(commands.Cog):
             msg += f"\n❌ Échec : {', '.join(ko)} (vérifie que le rôle du bot est au-dessus de « {role.name} »)"
         await inter.followup.send(msg, ephemeral=True)
 
-    @app_commands.command(name="boite_demo", description="(Orga) Boîte à chaussures : lance (ou relance) le tutoriel d'entraînement")
-    @app_commands.describe(arreter="Mettre fin au tutoriel en cours")
+    @app_commands.command(name="boite_demo", description="(Orga) Boîte à chaussures : lance le tutoriel dans le salon de l'équipe")
+    @app_commands.describe(arreter="Arrêter le tutoriel en cours dans ce salon")
     @app_commands.check(est_orga_ou_admin)
     async def boite_demo(self, inter: discord.Interaction, arreter: bool = False):
-        g = inter.guild
-        t = boite_state["teams"].get(BOITE_CLE_DEMO)
+        n, t = boite_team_of_channel(inter.channel_id)
+        if not t:
+            await inter.response.send_message(
+                "Tape `/boite_demo` dans le salon `boite-equipe-N` de l'équipe à qui tu veux montrer le jeu.", ephemeral=True)
+            return
 
         if arreter:
-            if t and t["start"] and not t["ended"]:
-                t["ended"] = True
+            if t.get("tuto"):
+                boite_remettre_a_zero(t)
                 boite_save_state()
-                await boite_envoyer(t["channel"], "🛑 Tutoriel arrêté par un orga.\n\n**Solution**\n" + BOITE_DEMO_SOLUTION)
-            await inter.response.send_message("Tutoriel arrêté.", ephemeral=True)
+                await inter.channel.send("🛑 Tutoriel arrêté par un orga.\n\n**Solution**\n" + BOITE_DEMO_SOLUTION)
+                await inter.response.send_message("Tutoriel arrêté. L'équipe est prête pour la vraie partie.", ephemeral=True)
+            else:
+                await inter.response.send_message("Aucun tutoriel en cours dans ce salon.", ephemeral=True)
             return
 
-        if not boite_state["category"] or not g.get_channel(boite_state["category"]):
-            await inter.response.send_message("Fais d'abord `/boite_setup`.", ephemeral=True)
+        if t["start"] and not t.get("tuto"):
+            etat = "est en train de jouer" if not boite_temps_ecoule(t) and not t.get("fiche") else "a déjà joué"
+            await inter.response.send_message(
+                f"L'équipe {n} {etat} la vraie partie : le tutoriel effacerait ses résultats. "
+                f"Si tu veux vraiment, fais d'abord `/boite_reset equipe:{n}`.", ephemeral=True)
             return
-        await inter.response.defer(ephemeral=True)
 
-        # Tous les joueurs de toutes les équipes peuvent écrire dans le tutoriel
-        ow = boite_overwrites_base(g)
-        for x in boite_vraies_equipes().values():
-            r = g.get_role(x["role"]) if x["role"] else None
-            if r:
-                ow[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True,
-                                                    read_message_history=True, use_application_commands=True)
-        role_spec = discord.utils.get(g.roles, name=ROLE_SPECTATEURS_NAME)
-        if role_spec:
-            ow[role_spec] = discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=False)
-
-        ch = g.get_channel(boite_state["demo_channel"]) if boite_state["demo_channel"] else None
-        if ch:
-            await ch.edit(overwrites=ow)
-        else:
-            ch = await g.create_text_channel(BOITE_NOM_SALON_DEMO, category=g.get_channel(boite_state["category"]),
-                                             overwrites=ow, position=0)
-            boite_state["demo_channel"] = ch.id
-
-        t = boite_new_team(ch.id, None, demo=True)
-        boite_state["teams"][BOITE_CLE_DEMO] = t
-        await ch.send("━━━━━━━━━━━━━━━━━━━━━━")
-        await boite_demarrer(ch, t)
-        await inter.followup.send(f"🎓 Tutoriel lancé dans {ch.mention} ({BOITE_DEMO_DUREE // 60} min).", ephemeral=True)
+        await boite_demarrer(inter.channel, t, tuto=True)
+        await inter.response.send_message(
+            f"🎓 Tutoriel lancé pour l'équipe {n} ({BOITE_DEMO_DUREE // 60} min). Il ne compte pas. "
+            "Quand ils sont prêts, `/lancer_epreuve` ici lance la vraie partie (le tutoriel s'arrête tout seul).",
+            ephemeral=True)
 
     @app_commands.command(name="boite_classement", description="(Orga) Boîte à chaussures : classement et avancement de toutes les équipes")
     @app_commands.check(est_orga_ou_admin)
@@ -10446,7 +10523,7 @@ class BoiteCog(commands.Cog):
             boite_save_state()
             await inter.response.send_message(f"✅ Bonne réponse à l'énigme {numero} ! Voici l'objet.")
             await boite_envoyer_objet(inter.channel, t, numero)
-            if not t.get("demo"):
+            if not t.get("tuto"):
                 await boite_log_orga(f"🔓 {nom} ouvre l'objet {numero} ({inter.user.display_name} : « {reponse[:100]} »)")
         else:
             cd = boite_cooldown(t)
@@ -10456,7 +10533,7 @@ class BoiteCog(commands.Cog):
             await inter.response.send_message(
                 f"❌ « {reponse[:100]} » : ce n'est pas ça. Toute l'équipe pourra retenter dans {attente_txt}."
             )
-            if not t.get("demo"):
+            if not t.get("tuto"):
                 await boite_log_orga(f"❌ {nom}, énigme {numero} : « {reponse[:100]} » ({inter.user.display_name})")
 
     @app_commands.command(name="boite_fiche", description="Boîte à chaussures : déposer votre fiche finale (un seul dépôt)")
