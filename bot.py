@@ -9234,7 +9234,7 @@ def _destination_titre(etape: str) -> str:
     forcer="Passer à cette étape même si le candidat n'a pas fini la précédente"
 )
 @app_commands.choices(etape=DESTINATION_CHOIX_ETAPES)
-#@app_commands.check(est_orga_ou_admin)
+@app_commands.check(est_orga_ou_admin)
 async def destination_ouvrir_etape(
     interaction: discord.Interaction,
     etape: app_commands.Choice[str],
@@ -9751,6 +9751,18 @@ BOITE_REPONSES = {
     8: ["independiente"],
 }
 
+# Réponses affichées dans le récap (/boite_recap)
+BOITE_REPONSES_AFFICHAGE = {
+    1: "Plácido Galindo (Pérou), premier expulsé de l'histoire de la Coupe du monde, en 1930",
+    2: "Essam El-Hadary (Égypte), penalty arrêté à 45 ans au Mondial 2018 en Russie",
+    3: "La Chine, hôte du premier Mondial féminin en 1991 (matchs de 80 minutes)",
+    4: "La RFA (Allemagne de l'Ouest), championne du monde 1974 à domicile",
+    5: "Trevor Francis, premier transfert à 1 million de livres (Brian Clough parlait de 999 999)",
+    6: "Le 1. FC Magdebourg (RDA), vainqueur de la Coupe des coupes 1974",
+    7: "Hakan Şükür (Turquie), but après 11 secondes dans le match pour la 3e place en 2002",
+    8: "Independiente (Argentine), 7 Copa Libertadores",
+}
+
 # Réponses refusées même si elles contiennent un mot-clé accepté
 BOITE_REFUS = {
     4: ["rda", "ddr", "east germany", "allemagne de l est", "democratique"],
@@ -9824,6 +9836,10 @@ BOITE_DEMO_OBJETS = {
         "« Deux têtes de Zidane, puis Petit au bout du temps additionnel. Le Brésil n'a rien vu venir. »\n"
         "Dans la marge, griffonné au stylo : **3 - 0**\n"
         "Une écharpe bleu-blanc-rouge était glissée dans le journal."),
+}
+BOITE_DEMO_REPONSES_AFFICHAGE = {
+    1: "L'Uruguay, vainqueur de la première Coupe du monde en 1930, à domicile",
+    2: "Saint-Denis",
 }
 BOITE_DEMO_SOLUTION = (
     "Dimanche 12 juillet 1998, Stade de France (Saint-Denis).\n"
@@ -10507,6 +10523,61 @@ class BoiteCog(commands.Cog):
             f"🎓 Tutoriel lancé pour l'équipe {n} ({BOITE_DEMO_DUREE // 60} min). Il ne compte pas. "
             "Quand ils sont prêts, `/lancer_epreuve` ici lance la vraie partie (le tutoriel s'arrête tout seul).",
             ephemeral=True)
+
+    @app_commands.command(name="boite_recap", description="(Orga) Boîte à chaussures : poste ici le récap (énigmes, réponses en spoiler, objets, solution)")
+    @app_commands.describe(
+        tutoriel="Faire le récap du tutoriel au lieu de la vraie partie",
+        confirmer="Obligatoire si des équipes n'ont pas encore fini la vraie partie"
+    )
+    @app_commands.check(est_orga_ou_admin)
+    async def boite_recap(self, inter: discord.Interaction, tutoriel: bool = False, confirmer: bool = False):
+        if not tutoriel and not confirmer:
+            pas_fini = [n for n, t in boite_vraies_equipes().items()
+                        if t.get("tuto") or not t["start"] or (not t.get("fiche") and not boite_temps_ecoule(t))]
+            if pas_fini:
+                await inter.response.send_message(
+                    f"⚠️ L'équipe/les équipes {', '.join(pas_fini)} n'ont pas encore fini la vraie partie. "
+                    "Si elles voient ce salon, le récap leur donne toutes les réponses. "
+                    "Pour poster quand même : `/boite_recap confirmer: True`.", ephemeral=True)
+                return
+
+        await inter.response.send_message("📜 Récap en cours d'envoi...", ephemeral=True)
+        ch = inter.channel
+        enigmes = BOITE_DEMO_ENIGMES if tutoriel else BOITE_ENIGMES
+        reponses = BOITE_DEMO_REPONSES_AFFICHAGE if tutoriel else BOITE_REPONSES_AFFICHAGE
+        objets = BOITE_DEMO_OBJETS if tutoriel else BOITE_OBJETS
+
+        titre = "🎓 RÉCAP DU TUTORIEL" if tutoriel else "📦 RÉCAP : LA BOÎTE À CHAUSSURES"
+        await ch.send(f"# {titre}\nToutes les énigmes, leurs réponses et les objets. "
+                      "Les réponses sont cachées : cliquez dessus pour les voir.")
+        await asyncio.sleep(1)
+
+        async def poster_objet(n, entete):
+            nom, texte = objets[n]
+            img = BOITE_OBJETS_DIR / f"objet_{n}.png"
+            if not tutoriel and img.exists():
+                await ch.send(f"{entete}\n🧩 **Objet {n} : {nom}**",
+                              file=discord.File(img, filename=f"objet_{n}.png", spoiler=True))
+            else:
+                await ch.send(f"{entete}\n🧩 **Objet {n} : {nom}**\n||{texte}||"[:2000])
+
+        for n, question in enigmes.items():
+            entete = f"## Énigme {n}\n> {question}\n✅ Réponse : ||{reponses.get(n, '?')}||"
+            await poster_objet(n, entete)
+            await asyncio.sleep(0.8)
+
+        if not tutoriel:
+            await poster_objet(9, "## Objet bonus\n📬 Envoyé aux équipes sans dépôt après 40 minutes.")
+            await asyncio.sleep(0.8)
+
+        solution = BOITE_DEMO_SOLUTION if tutoriel else BOITE_SOLUTION
+        await ch.send(
+            "## 🔓 La solution\n||" + solution + "||\n\n"
+            "**Barème de la fiche (7 points) :** date 2, stade 1, les deux équipes 2, score 1, "
+            "équipe du supporter 1 (bonus). En cas d'égalité, la fiche la plus rapide gagne."
+        )
+        if not tutoriel and boite_vraies_equipes():
+            await ch.send(boite_texte_classement()[:2000])
 
     @app_commands.command(name="boite_classement", description="(Orga) Boîte à chaussures : classement et avancement de toutes les équipes")
     @app_commands.check(est_orga_ou_admin)
