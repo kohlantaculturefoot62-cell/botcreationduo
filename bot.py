@@ -750,6 +750,8 @@ async def horloge_serveur_error(error):
 @bot.event
 async def on_ready():
     await bot.tree.sync()
+    nb_cmd = len(bot.tree.get_commands(type=discord.AppCommandType.chat_input))
+    print(f"📊 Commandes slash : {nb_cmd}/100")
     if not horloge_serveur.is_running():
         horloge_serveur.start()
     print(f"🤖 Bot connecté en tant que : {bot.user}")
@@ -7816,154 +7818,6 @@ async def demarrer_conseil(interaction: discord.Interaction, equipe: discord.Rol
     name="depouiller_vote",
     description="Sors et affiche immédiatement le prochain bulletin de l'urne."
 )
-
-@bot.tree.command(
-    name="demarrer_conseil_collier",
-    description="Initialise un conseil où un joueur a joué un collier d'immunité (votes contre lui annulés)."
-)
-@app_commands.describe(
-    equipe="Rôle de la tribu convoquée au conseil",
-    total_votants="Nombre total de bulletins dans l'urne",
-    joueur_immunise="Le joueur qui a joué son collier d'immunité"
-)
-@app_commands.check(est_orga_ou_admin)
-async def demarrer_conseil_collier(
-    interaction: discord.Interaction,
-    equipe: discord.Role,
-    total_votants: int,
-    joueur_immunise: discord.Member
-):
-    if total_votants < 2:
-        await interaction.response.send_message("❌ Il faut au moins 2 votants.", ephemeral=True)
-        return
-
-    await interaction.response.defer()
-
-    membres = [m for m in equipe.members if not m.bot]
-    if not membres:
-        await interaction.followup.send(f"❌ Aucun membre trouvé sous le rôle {equipe.mention}.", ephemeral=True)
-        return
-
-    banque_noms = await pregenerer_variantes_equipe_ia(membres)
-
-    SESSIONS_CONSEIL[interaction.channel_id] = {
-        "equipe": equipe,
-        "total_votants": total_votants,
-        "decompte": Counter(),
-        "votes_depouilles": 0,
-        "votes_annules": 0,
-        "banque_variantes": banque_noms,
-        "immunise": joueur_immunise,
-        "type": "collier",
-        "termine": False
-    }
-
-    embed = discord.Embed(
-        title="📿 CONSEIL D'IMMUNITÉ — COLLIER JOUÉ",
-        description=(
-            f"Tribu convoquée : {equipe.mention} (**{len(membres)} aventuriers**)\n"
-            f"📥 **{total_votants} bulletins** dans l'urne.\n"
-            f"📿 **Collier d'immunité joué par** {joueur_immunise.mention} !\n\n"
-            "*« Les votes contre lui ne seront pas comptabilisés. »*"
-        ),
-        color=discord.Color.dark_gold()
-    )
-    embed.set_footer(text="Enchaîne les bulletins avec /depouiller_vote")
-    await interaction.followup.send(embed=embed)
-
-async def _depouiller_collier(interaction: discord.Interaction, session: dict, candidat: discord.Member, cid: int):
-    guild = interaction.guild
-    immunise = session["immunise"]
-
-    session["votes_depouilles"] += 1
-    index = session["votes_depouilles"]
-    annule = (candidat.id == immunise.id)
-
-    if annule:
-        session["votes_annules"] += 1
-    else:
-        session["decompte"][candidat.id] += 1
-
-    # Nom écrit sur le bulletin
-    pool = session["banque_variantes"].get(candidat.id, [])
-    if not pool:
-        pool = [candidat.display_name.upper(), candidat.display_name.upper() + "E"]
-        session["banque_variantes"][candidat.id] = pool
-    nom_choisi = pool.pop(0)
-    pool.append(nom_choisi)
-
-    img_buf = await asyncio.to_thread(creer_image_parchemin_depuis_jpeg, nom_choisi)
-    fichier = discord.File(img_buf, filename="bulletin.png")
-
-    lignes = [
-        f"▫️ **{(guild.get_member(uid) or candidat).display_name}** : {cnt} vote{'s' if cnt > 1 else ''}"
-        for uid, cnt in session["decompte"].most_common()
-    ]
-    if session["votes_annules"]:
-        lignes.append(f"🚫 **{immunise.display_name}** (collier) : {session['votes_annules']} vote(s) annulé(s)")
-
-    if annule:
-        texte_bulletin = (
-            f"Le nom inscrit est : **{nom_choisi}** *(pour {candidat.mention})*.\n\n"
-            f"📿 **VOTE ANNULÉ !** {immunise.mention} a joué le collier d'immunité : ce bulletin ne compte pas.\n\n"
-        )
-        couleur = discord.Color.dark_grey()
-    else:
-        texte_bulletin = f"Le nom inscrit est : **{nom_choisi}** *(pour {candidat.mention})*.\n\n"
-        couleur = discord.Color.from_rgb(212, 175, 55)
-
-    embed_vote = discord.Embed(
-        title=f"📜 BULLETIN #{index} SUR {session['total_votants']}" + (" — 📿 ANNULÉ" if annule else ""),
-        description=texte_bulletin + "📊 **État de l'urne :**\n" + "\n".join(lignes),
-        color=couleur
-    )
-    embed_vote.set_image(url="attachment://bulletin.png")
-    await interaction.followup.send(file=fichier, embed=embed_vote)
-
-    # Situation : le leader est-il inrattrapable ?
-    restants = session["total_votants"] - session["votes_depouilles"]
-    classement = session["decompte"].most_common()
-    top_uid, top_score = classement[0] if classement else (None, 0)
-    second_score = classement[1][1] if len(classement) > 1 else 0
-
-    if top_uid is not None and top_score > second_score + restants:
-        session["termine"] = True
-        elimine = guild.get_member(top_uid) or candidat
-        txt = f"🛑 **{elimine.mention}** est éliminé avec **{top_score} voix valides**."
-        if restants > 0:
-            txt += f"\n\nInutile de dépouiller les **{restants} bulletin(s)** restant(s) : le résultat ne peut plus changer."
-        if session["votes_annules"]:
-            txt += f"\n\n📿 {session['votes_annules']} vote(s) contre {immunise.mention} ont été annulés."
-        await interaction.channel.send(embed=discord.Embed(
-            title="🛑 LA SENTENCE EST INÉVITABLE", description=txt, color=discord.Color.red()))
-        await asyncio.sleep(2)
-        await terminer_et_bruler(interaction.channel, elimine)
-        del SESSIONS_CONSEIL[cid]
-        return
-
-    # Fin du dépouillement sans vainqueur net
-    if restants == 0:
-        session["termine"] = True
-        if not classement:
-            await interaction.channel.send(
-                f"📿 **Tous les votes étaient contre {immunise.mention}** : ils sont tous annulés. "
-                "Aucun vote valide, une décision des orgas est nécessaire (revote ?)."
-            )
-        else:
-            egalite = [uid for uid, s in classement if s == top_score]
-            mentions = ", ".join(f"<@{uid}>" for uid in egalite)
-            await interaction.channel.send(embed=discord.Embed(
-                title="⚖️ ÉGALITÉ !",
-                description=f"Égalité entre {mentions} avec **{top_score} voix valides**.\nUn départage (ou revote) est nécessaire.",
-                color=discord.Color.gold()
-            ))
-        del SESSIONS_CONSEIL[cid]
-
-
-@bot.tree.command(
-    name="depouiller_vote",
-    description="Sors et affiche immédiatement le prochain bulletin de l'urne."
-)
 @app_commands.describe(candidat="La personne dont le nom est sur ce bulletin")
 @app_commands.check(est_orga_ou_admin)
 async def depouiller_vote(interaction: discord.Interaction, candidat: discord.Member):
@@ -7978,7 +7832,8 @@ async def depouiller_vote(interaction: discord.Interaction, candidat: discord.Me
         return
 
     if session.get("type") == "assurance":
-        await interaction.response.send_message("⚠️ Ce conseil est sous Assurance Survie. Utilise `/devoiler_vote_assurance`.", ephemeral=True)
+        await interaction.response.send_message(
+            "⚠️ Ce conseil est sous Assurance Survie. Utilise `/devoiler_vote_assurance`.", ephemeral=True)
         return
 
     await interaction.response.defer()
@@ -8066,6 +7921,7 @@ async def depouiller_vote(interaction: discord.Interaction, candidat: discord.Me
         elimine = interaction.guild.get_member(top_uid) or candidat
         await terminer_et_bruler(interaction.channel, elimine)
         del SESSIONS_CONSEIL[cid]
+
 # ==============================================================================
 # CONSEIL ASSURANCE SURVIE
 # ==============================================================================
@@ -8270,6 +8126,153 @@ async def devoiler_vote_assurance(interaction: discord.Interaction, candidat: di
 
         del SESSIONS_CONSEIL[cid]
         
+# ==============================================================================
+# CONSEIL COLLIER D'IMMUNITÉ (votes contre l'immunisé annulés)
+# ==============================================================================
+
+@bot.tree.command(
+    name="demarrer_conseil_collier",
+    description="Initialise un conseil où un joueur a joué un collier d'immunité (votes contre lui annulés)."
+)
+@app_commands.describe(
+    equipe="Rôle de la tribu convoquée au conseil",
+    total_votants="Nombre total de bulletins dans l'urne",
+    joueur_immunise="Le joueur qui a joué son collier d'immunité"
+)
+@app_commands.check(est_orga_ou_admin)
+async def demarrer_conseil_collier(
+    interaction: discord.Interaction,
+    equipe: discord.Role,
+    total_votants: int,
+    joueur_immunise: discord.Member
+):
+    if total_votants < 2:
+        await interaction.response.send_message("❌ Il faut au moins 2 votants.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    membres = [m for m in equipe.members if not m.bot]
+    if not membres:
+        await interaction.followup.send(f"❌ Aucun membre trouvé sous le rôle {equipe.mention}.", ephemeral=True)
+        return
+
+    banque_noms = await pregenerer_variantes_equipe_ia(membres)
+
+    SESSIONS_CONSEIL[interaction.channel_id] = {
+        "equipe": equipe,
+        "total_votants": total_votants,
+        "decompte": Counter(),
+        "votes_depouilles": 0,
+        "votes_annules": 0,
+        "banque_variantes": banque_noms,
+        "immunise": joueur_immunise,
+        "type": "collier",
+        "termine": False
+    }
+
+    embed = discord.Embed(
+        title="📿 CONSEIL D'IMMUNITÉ — COLLIER JOUÉ",
+        description=(
+            f"Tribu convoquée : {equipe.mention} (**{len(membres)} aventuriers**)\n"
+            f"📥 **{total_votants} bulletins** dans l'urne.\n"
+            f"📿 **Collier d'immunité joué par** {joueur_immunise.mention} !\n\n"
+            "*« Les votes contre lui ne seront pas comptabilisés. »*"
+        ),
+        color=discord.Color.dark_gold()
+    )
+    embed.set_footer(text="Enchaîne les bulletins avec /depouiller_vote")
+    await interaction.followup.send(embed=embed)
+
+
+async def _depouiller_collier(interaction: discord.Interaction, session: dict, candidat: discord.Member, cid: int):
+    guild = interaction.guild
+    immunise = session["immunise"]
+
+    session["votes_depouilles"] += 1
+    index = session["votes_depouilles"]
+    annule = (candidat.id == immunise.id)
+
+    if annule:
+        session["votes_annules"] += 1
+    else:
+        session["decompte"][candidat.id] += 1
+
+    pool = session["banque_variantes"].get(candidat.id, [])
+    if not pool:
+        pool = [candidat.display_name.upper(), candidat.display_name.upper() + "E"]
+        session["banque_variantes"][candidat.id] = pool
+    nom_choisi = pool.pop(0)
+    pool.append(nom_choisi)
+
+    img_buf = await asyncio.to_thread(creer_image_parchemin_depuis_jpeg, nom_choisi)
+    fichier = discord.File(img_buf, filename="bulletin.png")
+
+    lignes = [
+        f"▫️ **{(guild.get_member(uid) or candidat).display_name}** : {cnt} vote{'s' if cnt > 1 else ''}"
+        for uid, cnt in session["decompte"].most_common()
+    ]
+    if session["votes_annules"]:
+        lignes.append(f"🚫 **{immunise.display_name}** (collier) : {session['votes_annules']} vote(s) annulé(s)")
+
+    if annule:
+        texte_bulletin = (
+            f"Le nom inscrit est : **{nom_choisi}** *(pour {candidat.mention})*.\n\n"
+            f"📿 **VOTE ANNULÉ !** {immunise.mention} a joué le collier d'immunité : ce bulletin ne compte pas.\n\n"
+        )
+        couleur = discord.Color.dark_grey()
+    else:
+        texte_bulletin = f"Le nom inscrit est : **{nom_choisi}** *(pour {candidat.mention})*.\n\n"
+        couleur = discord.Color.from_rgb(212, 175, 55)
+
+    embed_vote = discord.Embed(
+        title=f"📜 BULLETIN #{index} SUR {session['total_votants']}" + (" — 📿 ANNULÉ" if annule else ""),
+        description=texte_bulletin + "📊 **État de l'urne :**\n" + "\n".join(lignes),
+        color=couleur
+    )
+    embed_vote.set_image(url="attachment://bulletin.png")
+    await interaction.followup.send(file=fichier, embed=embed_vote)
+
+    restants = session["total_votants"] - session["votes_depouilles"]
+    classement = session["decompte"].most_common()
+    top_uid, top_score = classement[0] if classement else (None, 0)
+    second_score = classement[1][1] if len(classement) > 1 else 0
+
+    # Leader inrattrapable : on arrête le dépouillement
+    if top_uid is not None and top_score > second_score + restants:
+        session["termine"] = True
+        elimine = guild.get_member(top_uid) or candidat
+        txt = f"🛑 **{elimine.mention}** est éliminé avec **{top_score} voix valides**."
+        if restants > 0:
+            txt += f"\n\nInutile de dépouiller les **{restants} bulletin(s)** restant(s) : le résultat ne peut plus changer."
+        if session["votes_annules"]:
+            txt += f"\n\n📿 {session['votes_annules']} vote(s) contre {immunise.mention} ont été annulés."
+        await interaction.channel.send(embed=discord.Embed(
+            title="🛑 LA SENTENCE EST INÉVITABLE", description=txt, color=discord.Color.red()))
+        await asyncio.sleep(2)
+        await terminer_et_bruler(interaction.channel, elimine)
+        del SESSIONS_CONSEIL[cid]
+        return
+
+    # Fin du dépouillement sans vainqueur net
+    if restants == 0:
+        session["termine"] = True
+        if not classement:
+            await interaction.channel.send(
+                f"📿 **Tous les votes étaient contre {immunise.mention}** : ils sont tous annulés. "
+                "Aucun vote valide, une décision des orgas est nécessaire (revote ?)."
+            )
+        else:
+            egalite = [uid for uid, sc in classement if sc == top_score]
+            mentions = ", ".join(f"<@{uid}>" for uid in egalite)
+            await interaction.channel.send(embed=discord.Embed(
+                title="⚖️ ÉGALITÉ !",
+                description=f"Égalité entre {mentions} avec **{top_score} voix valides**.\nUn départage (ou revote) est nécessaire.",
+                color=discord.Color.gold()
+            ))
+        del SESSIONS_CONSEIL[cid]
+
+
 @bot.tree.command(
     name="annuler_conseil",
     description="Annule et réinitialise la séance de dépouillement en cours."
