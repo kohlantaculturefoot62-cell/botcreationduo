@@ -9642,6 +9642,277 @@ async def destination_fermer_etape(interaction: discord.Interaction, etape: app_
     await interaction.response.send_message(embed=embed)
 
 
+# ==============================================================================
+# DESTINATION X : FINALE EN 4 ÉTAPES ENCHAÎNÉES (Finale 1 → 2 → 3 → 4)
+#
+# /destination_finale (orga, dans le confessionnal du candidat) :
+#  - ouvre "Finale 1" ; le candidat a X min (5 par défaut) pour taper /lancer_destination_x,
+#    sinon l'étape démarre automatiquement ;
+#  - quand il répond (/repondre_destination), la "Finale 2" s'ouvre, avec le même délai, etc. ;
+#  - à la fin : récapitulatif des réponses + somme des temps EFFECTIFS (de chaque lancement
+#    à chaque réponse ; les pauses entre étapes ne sont pas comptées).
+# Étape sans réponse au bout du temps max : l'étape est comptée au temps max et on passe à la suivante.
+# Pour interrompre : /destination_fermer_etape (étape en cours) -> récap partiel.
+# ==============================================================================
+FINALE_NB_ETAPES = 4
+FINALE_POLL_SEC = 2
+FINALES_EN_COURS = {}   # {salon_id: {"task": asyncio.Task, "uid": int}}
+
+
+class _FinaleInterrompue(Exception):
+    pass
+
+
+def _finale_duree_txt(sec: float) -> str:
+    sec = int(round(sec))
+    h, reste = divmod(sec, 3600)
+    m, s = divmod(reste, 60)
+    if h:
+        return f"{h} h {m:02d} min {s:02d} s"
+    return f"{m} min {s:02d} s"
+
+
+def _finale_creer_joueur(session: dict, uid: int) -> dict:
+    session["joueurs"][uid] = {
+        "debut": datetime.datetime.now(datetime.timezone.utc),
+        "reponse": None,
+        "temps_ecoule_sec": None,
+        "tache_indices": None,
+        "indices_envoyes": set()
+    }
+    sauvegarder_sessions()
+    return session["joueurs"][uid]
+
+
+def _finale_clore_session(cle: str, uid: int):
+    """Arrête les indices et désactive l'étape (sans toucher aux résultats gardés pour le bilan)."""
+    session = SESSION_DESTINATION.get(cle)
+    if not session:
+        return
+    j = session["joueurs"].get(uid)
+    if j:
+        tache = j.get("tache_indices")
+        if tache and not tache.done():
+            tache.cancel()
+    session["active"] = False
+    sauvegarder_sessions()
+
+
+async def _finale_envoyer_recap(channel, uid: int, resultats: list, interrompue: bool):
+    lignes = []
+    total = 0.0
+    for r in resultats:
+        total += r["temps"]
+        if r["statut"] == "ok":
+            rep = str(r["reponse"]).replace("`", "'")[:200]
+            lignes.append(f"✅ **{r['etape']}** — `{rep}`\n┗ ⏱️ {_finale_duree_txt(r['temps'])}")
+        else:
+            lignes.append(
+                f"⌛ **{r['etape']}** — *Pas de réponse (temps écoulé)*\n"
+                f"┗ ⏱️ {_finale_duree_txt(r['temps'])} *(temps max compté)*"
+            )
+    for n in range(len(resultats) + 1, FINALE_NB_ETAPES + 1):
+        lignes.append(f"⏸️ **Finale {n}** — *Non jouée*")
+
+    titre = "🏁 RÉCAPITULATIF DE LA FINALE — DESTINATION X"
+    if interrompue:
+        titre += " (INTERROMPUE)"
+    embed = discord.Embed(
+        title=titre,
+        description=(
+            f"👤 Candidat : <@{uid}>\n\n" + "\n".join(lignes) +
+            f"\n\n⏱️ **Temps total effectif : {_finale_duree_txt(total)}**\n"
+            "*Somme des temps de chaque étape (du lancement à la réponse), sans les pauses entre étapes.*"
+        )[:4000],
+        color=discord.Color.red() if interrompue else discord.Color.gold()
+    )
+    await channel.send(embed=embed)
+
+
+async def _finale_orchestrateur(channel, uid: int, delai_sec: int, intervalle_min: int):
+    cid = channel.id
+    resultats = []
+    cle_prec = None
+    interrompue = False
+    try:
+        for n in range(1, FINALE_NB_ETAPES + 1):
+            etape = f"Finale {n}"
+            if cle_prec:
+                _finale_clore_session(cle_prec, uid)
+
+            # --- Ouverture de l'étape (équivalent de /destination_ouvrir_etape) ---
+            cle = destination_cle(cid, etape)
+            SESSION_DESTINATION[cle] = {
+                "salon": cid,
+                "etape": etape,
+                "intervalle_minutes": intervalle_min,
+                "active": True,
+                "joueurs": {}
+            }
+            DESTINATION_ACTIVE[cid] = cle
+            sauvegarder_sessions()
+            session = SESSION_DESTINATION[cle]
+            cle_prec = cle
+
+            deadline = int(time.time() + delai_sec)
+            duree_txt = (f"{DESTINATION_DUREE_SEC // 3600}h" if DESTINATION_DUREE_SEC % 3600 == 0
+                         else f"{DESTINATION_DUREE_SEC // 60} min")
+            infos = destination_texte_infos(etape)
+            embed = discord.Embed(
+                title=f"🏁 FINALE — ÉTAPE {n}/{FINALE_NB_ETAPES}",
+                description=(
+                    (infos + "\n\n" if infos else "")
+                    + "▶️ Utilise `/lancer_destination_x` quand tu es prêt.\n"
+                    f"⏰ Sans lancement de ta part <t:{deadline}:R>, l'étape démarre **automatiquement**.\n"
+                    f"⏳ Une fois lancée, tu as **{duree_txt}** pour répondre avec `/repondre_destination`.\n"
+                    f"📍 **{DESTINATION_NB_INDICES} indices** (1 toutes les **{intervalle_min} min**).\n"
+                    "⏱️ Seul le temps effectif de chaque étape compte dans ton total."
+                ),
+                color=discord.Color.gold()
+            )
+            await channel.send(content=f"<@{uid}>", embed=embed)
+
+            # --- Attente du lancement (manuel, sinon automatique) ---
+            while True:
+                session = SESSION_DESTINATION.get(cle)
+                if session is None or not session["active"]:
+                    raise _FinaleInterrompue()
+                if uid in session["joueurs"]:
+                    break
+                if time.time() >= deadline:
+                    j_auto = _finale_creer_joueur(session, uid)
+                    fin = int(time.time() + DESTINATION_DUREE_SEC)
+                    await channel.send(
+                        f"⏰ **Délai écoulé : {_destination_titre(etape)} démarre automatiquement !** "
+                        f"Fin du chrono <t:{fin}:R>.\nVoici ton premier indice ci-dessous :"
+                    )
+                    j_auto["tache_indices"] = asyncio.create_task(
+                        boucle_indices_confessionnal(channel, uid, cle)
+                    )
+                    break
+                await asyncio.sleep(FINALE_POLL_SEC)
+
+            # --- Attente de la réponse (ou du temps max) ---
+            j = session["joueurs"][uid]
+            while j["reponse"] is None:
+                if SESSION_DESTINATION.get(cle) is not session or not session["active"]:
+                    raise _FinaleInterrompue()
+                ecoule = (datetime.datetime.now(datetime.timezone.utc) - j["debut"]).total_seconds()
+                if ecoule >= DESTINATION_DUREE_SEC:
+                    break
+                await asyncio.sleep(FINALE_POLL_SEC)
+
+            if j["reponse"] is not None:
+                resultats.append({"etape": etape, "statut": "ok", "reponse": j["reponse"],
+                                  "temps": j["temps_ecoule_sec"] or 0})
+            else:
+                tache = j.get("tache_indices")
+                if tache and not tache.done():
+                    tache.cancel()
+                resultats.append({"etape": etape, "statut": "timeout", "reponse": None,
+                                  "temps": DESTINATION_DUREE_SEC})
+                await channel.send(f"⌛ **Temps écoulé pour {_destination_titre(etape)} !** Aucune réponse enregistrée.")
+
+        if cle_prec:
+            _finale_clore_session(cle_prec, uid)
+
+    except _FinaleInterrompue:
+        interrompue = True
+        await channel.send("🛑 La finale a été interrompue par un orga.")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        interrompue = True
+        print(f"❌ Erreur dans la finale Destination X : {e}")
+        try:
+            await channel.send(f"❌ Erreur interne pendant la finale : `{e}`")
+        except Exception:
+            pass
+    finally:
+        FINALES_EN_COURS.pop(cid, None)
+
+    try:
+        await _finale_envoyer_recap(channel, uid, resultats, interrompue)
+    except Exception as e:
+        print(f"❌ Erreur d'envoi du récap de finale : {e}")
+
+
+@bot.tree.command(
+    name="destination_finale",
+    description="Lance les 4 étapes de la finale de Destination X pour un candidat, avec récap et temps total."
+)
+@app_commands.describe(
+    candidat="Le candidat de ce confessionnal qui joue la finale",
+    delai_minutes="Temps laissé pour lancer chaque étape avant démarrage automatique (par défaut : 5)",
+    intervalle_minutes="Temps en minutes entre chaque indice (par défaut : 5)",
+    reinitialiser="Efface d'anciens résultats Finale 1-4 de CE confessionnal avant de relancer"
+)
+@app_commands.check(est_orga_ou_admin)
+async def destination_finale(
+    interaction: discord.Interaction,
+    candidat: discord.Member,
+    delai_minutes: app_commands.Range[int, 1, 60] = 5,
+    intervalle_minutes: app_commands.Range[int, 1, 60] = DESTINATION_INTERVALLE_MIN,
+    reinitialiser: bool = False
+):
+    cid = interaction.channel_id
+
+    en_cours = FINALES_EN_COURS.get(cid)
+    if en_cours and not en_cours["task"].done():
+        await interaction.response.send_message("⚠️ Une finale est déjà en cours dans ce confessionnal.", ephemeral=True)
+        return
+
+    cles_finale = [destination_cle(cid, f"Finale {n}") for n in range(1, FINALE_NB_ETAPES + 1)]
+    deja = [c for c in cles_finale if c in SESSION_DESTINATION]
+    if deja and not reinitialiser:
+        await interaction.response.send_message(
+            "⚠️ Des résultats de finale existent déjà dans ce confessionnal. "
+            "Relance avec `reinitialiser: True` pour les effacer (les autres confessionnaux ne sont pas touchés).",
+            ephemeral=True
+        )
+        return
+
+    # Une autre étape (non finale) encore en cours dans ce salon ?
+    precedente = destination_session_du_salon(cid)
+    if precedente and precedente["active"] and DESTINATION_ACTIVE.get(cid) not in deja:
+        maintenant = datetime.datetime.now(datetime.timezone.utc)
+        non_finis = [u for u, j in precedente["joueurs"].items()
+                     if j["reponse"] is None and (maintenant - j["debut"]).total_seconds() < DESTINATION_DUREE_SEC]
+        if non_finis:
+            await interaction.response.send_message(
+                f"⚠️ Le candidat n'a pas encore répondu à **{precedente['etape']}**. "
+                "Attends sa réponse, ou annule-la avec `/destination_fermer_etape annuler_ici: True`.",
+                ephemeral=True
+            )
+            return
+
+    for c in deja:
+        for j in SESSION_DESTINATION[c]["joueurs"].values():
+            tache = j.get("tache_indices")
+            if tache and not tache.done():
+                tache.cancel()
+        del SESSION_DESTINATION[c]
+    if deja:
+        DESTINATION_ACTIVE.pop(cid, None)
+        sauvegarder_sessions()
+
+    manquants = []
+    for n in range(1, FINALE_NB_ETAPES + 1):
+        absents = [i for i in range(1, DESTINATION_NB_INDICES + 1) if not trouver_fichier_indice(f"Finale {n}", i)]
+        if absents:
+            manquants.append(f"Finale {n} : indice(s) {', '.join(map(str, absents))}")
+
+    msg = f"🏁 Finale lancée pour {candidat.mention} : 4 étapes enchaînées, récap automatique à la fin."
+    if manquants:
+        msg += ("\n⚠️ Fichiers d'indices introuvables (ex : `Finale 1 Indice 1.png`) :\n- " + "\n- ".join(manquants))
+    await interaction.response.send_message(msg, ephemeral=True)
+
+    task = asyncio.create_task(
+        _finale_orchestrateur(interaction.channel, candidat.id, delai_minutes * 60, intervalle_minutes)
+    )
+    FINALES_EN_COURS[cid] = {"task": task, "uid": candidat.id}
+
+
 @bot.tree.command(
     name="config_perm_spectateurs",
     description="Autorise le rôle Spectateur aux commandes dans ses salons accessibles."
